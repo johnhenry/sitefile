@@ -7,6 +7,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { bakePlanJson, bakePlanText, buildArgv, parseBakeDefinition, resolveBake, type BakePlan } from '../src/bake.js';
 import { isSitefileError } from '../src/errors.js';
+import { EXPORT_FORMATS } from '../src/language/ast.js';
 import { parseYaml } from '../src/yaml.js';
 
 // `sitefile bake` (issue #92): several builds from one bake file.
@@ -100,7 +101,7 @@ test('bake file errors are E_DATA naming the file', () => {
   data('targets:\n  a:\n    inherits: x\n', "target 'a' inherits unknown target 'x'");
   data('targets:\n  a:\n    matrix: {l: [en]}\n    output: ${x}\n', "target 'a-en': output: '${x}' is not a matrix variable (l)");
   data('targets:\n  a:\n    bogus: 1\n', "target 'a': unknown key 'bogus' (expected context, file, args, arg-files, target, output, format, tags, matrix, inherits)");
-  data('targets:\n  a:\n    format: rar\n', "target 'a': format must be one of directory, zip, tar, tgz, wbn, oci (or tar.gz), got 'rar'");
+  data('targets:\n  a:\n    format: rar\n', `target 'a': format must be one of ${EXPORT_FORMATS.join(', ')} (or tar.gz), got 'rar'`);
   data('targets:\n  a:\n    args: {x-y: 1}\n', "target 'a': 'x-y' is not a valid ARG name");
   data('targets:\n  a:\n    args: {X: [1]}\n', "target 'a': args.X must be a string, number or boolean");
   data('targets:\n  a:\n    matrix: {l: []}\n', "target 'a': matrix.l must be a non-empty list of strings, numbers or booleans");

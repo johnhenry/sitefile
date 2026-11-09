@@ -89,7 +89,7 @@ const INSTRUCTIONS: &[(&str, &str, &str)] = &[
     ),
     (
         "EXPORT",
-        "EXPORT <path> [AS directory|zip|tar|tgz|wbn|oci] [BASE <url>] [AT <root>] [COMPRESSION gzip|none]",
+        "EXPORT <path> [AS directory|zip|tar|tgz|wbn|oci|car|html|mhtml] [BASE <url>] [AT <root>] [COMPRESSION gzip|none]",
         "Exports `<path>` of the last stage. Exactly one, and the last instruction. The CLI's `--out`, `--format` and `--base-url` override it.",
     ),
 ];
@@ -158,7 +158,7 @@ const CLAUSES: &[(&str, &str, &str)] = &[
     ("CSP", "POLICY", "`POLICY <policy>`: the base policy (quoted; directives separated by `;`, no commas); the hashes are added to its `script-src` and `style-src`."),
     ("CSP", "META", "`META`: a `<meta http-equiv=\"Content-Security-Policy\">` in each page instead of `/_headers` lines (cannot set `frame-ancestors`)."),
     ("REDIRECT", "STATUS", "`STATUS 301|302|303|307|308`: the redirect's status (default 301)."),
-    ("EXPORT", "AS", "`AS format`: directory (default), zip, tar, tgz (alias tar.gz), wbn or oci."),
+    ("EXPORT", "AS", "`AS format`: directory (default), zip, tar, tgz (alias tar.gz), wbn, oci, car (an IPFS CARv1 file; its root CID is the one `ipfs add -r --hidden --cid-version=1` prints), html (index.html with its assets inlined as data: URIs) or mhtml (index.html and its assets as one MHTML file)."),
     ("EXPORT", "BASE", "`BASE <url>`: for wbn, the https URL the files are mounted at; for oci, a container image to build on."),
     ("EXPORT", "AT", "`AT <root>` (oci only): the directory the files occupy in the image (default /srv/www)."),
     ("EXPORT", "COMPRESSION", "`COMPRESSION gzip|none` (oci and wbn only): how the oci site layer is stored, or whether the wbn is gzipped."),
@@ -240,6 +240,9 @@ const EXPORT_FORMATS: &[(&str, &str)] = &[
     ("tgz", "A gzip-compressed tar archive (alias `tar.gz`)."),
     ("wbn", "A Web Bundle; needs `BASE <https url>` or `--base-url`; `COMPRESSION gzip` gzips it."),
     ("oci", "An OCI image (archive for `-o *.tar`, else a layout directory); `BASE`, `AT` and `COMPRESSION` apply."),
+    ("car", "An IPFS CARv1 file (UnixFS, CIDv1); its root CID is the one `ipfs add -r --hidden --cid-version=1` prints."),
+    ("html", "`index.html` as one file, every asset it references inlined as a `data:` URI."),
+    ("mhtml", "`index.html` and its assets as one MHTML (multipart/related) file; `BASE` sets the parts' URLs."),
 ];
 
 const COMPRESSIONS: &[(&str, &str)] = &[

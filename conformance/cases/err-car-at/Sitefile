@@ -1,0 +1,5 @@
+FROM scratch
+COPY <<T /a.txt
+a
+T
+EXPORT / AS car AT /srv
