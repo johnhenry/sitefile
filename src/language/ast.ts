@@ -351,6 +351,14 @@ export interface HeaderInstruction {
   readonly overwrite: boolean;
 }
 
+/** `MIME <.ext> <type/subtype>`: the Content-Type of the files with that extension, as a `/_headers` rule. */
+export interface MimeInstruction {
+  readonly kind: 'MIME';
+  readonly span: SourceSpan;
+  readonly ext: Operand;
+  readonly type: Operand;
+}
+
 /**
  * `FINGERPRINT [--overwrite] [--no-cache-headers] <pattern>… [MANIFEST <dest>] [INTEGRITY]`: rename matching
  * files to `name.<hash>.ext` and rewrite the HTML and CSS that reference them.
@@ -486,6 +494,7 @@ export type Instruction =
   | FeedInstruction
   | RedirectInstruction
   | HeaderInstruction
+  | MimeInstruction
   | FingerprintInstruction
   | CanonicalInstruction
   | PrecompressInstruction

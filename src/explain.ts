@@ -490,7 +490,7 @@ export function why(result: BuildResult, raw: string, contextDir: string): WhyRe
   if (after && !same(before, after)) {
     const site = full === joinVirtual(p.exportPath, '_redirects') || full === joinVirtual(p.exportPath, '_headers');
     const [rules, kind] = full === joinVirtual(p.exportPath, '_redirects') ? [p.redirects, 'REDIRECT'] : [p.headers, 'HEADER'];
-    const inputs = site ? rules.map((r) => `${at(r.span.line)} ${kind}`) : [];
+    const inputs = site ? rules.map((r) => `${at(r.span.line)} ${('instruction' in r && r.instruction) || kind}`) : [];
     const text = new TextDecoder().decode(after.bytes);
     // `/_headers` may also hold FINGERPRINT's Cache-Control lines (or only them): with cacheHeaders set, no
     // HEADER sets Cache-Control, so the name in the file means they were added. Likewise CSP's
@@ -502,7 +502,7 @@ export function why(result: BuildResult, raw: string, contextDir: string): WhyRe
     const first = site ? (rules[0] ?? fp ?? csp) : csp;
     events.push({
       location: at(first!.span.line),
-      instruction: site && rules[0] ? kind : site && fp ? 'FINGERPRINT' : 'CSP',
+      instruction: site && rules[0] ? ('instruction' in rules[0] && rules[0].instruction) || kind : site && fp ? 'FINGERPRINT' : 'CSP',
       stage: stageDisplay(p.stages[lastIndex]!, lastIndex),
       path: full,
       action: before ? 'overwrite' : 'write',

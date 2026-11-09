@@ -15,7 +15,7 @@
 
 /** Keyword lists, checked against the parser by test/keywords.test.mjs. */
 export const KEYWORDS = {
-  instructions: ['FROM', 'STAGE', 'ARG', 'LET', 'IMPORT', 'COPY', 'RENDER', 'TRANSFORM', 'PLUGIN', 'TOOL', 'SITEMAP', 'FEED', 'REDIRECT', 'HEADER', 'FINGERPRINT', 'CANONICAL', 'PRECOMPRESS', 'ROBOTS', 'SECURITY_TXT', 'PRECACHE', 'CSP', 'CHECKLINKS', 'EXPORT'],
+  instructions: ['FROM', 'STAGE', 'ARG', 'LET', 'IMPORT', 'COPY', 'RENDER', 'TRANSFORM', 'PLUGIN', 'TOOL', 'SITEMAP', 'FEED', 'REDIRECT', 'HEADER', 'FINGERPRINT', 'CANONICAL', 'PRECOMPRESS', 'ROBOTS', 'SECURITY_TXT', 'PRECACHE', 'CSP', 'MIME', 'CHECKLINKS', 'EXPORT'],
   unsupported: ['RUN', 'REMOVE', 'GENERATE', 'ASSERT', 'META', 'EXEC'],
   clauses: ['FROM', 'AS', 'TO', 'INTEGRITY', 'SORT', 'BY', 'ASC', 'DESC', 'SCHEMA', 'DRAFTS', 'PAGE', 'FIRST', 'FOR', 'IN', 'WITH', 'OPTIONS', 'ARGS', 'BASE', 'AT', 'COMPRESSION', 'KEY', 'LINK', 'TITLE', 'STATUS', 'IMAGE', 'SECRET', 'HEADER', 'BEARER', 'MANIFEST', 'PRETTY', 'MIN', 'ALLOW', 'DISALLOW', 'SITEMAP', 'CONTACT', 'EXPIRES', 'ENCRYPTION', 'POLICY', 'INTO', 'POLICY', 'META', 'ARG'],
   scratch: 'scratch',
@@ -387,6 +387,7 @@ export function buildGrammar() {
           instruction('SECURITY_TXT', [...flags('SECURITY_TXT'), kw(['CONTACT', 'EXPIRES', 'ENCRYPTION', 'POLICY', 'TO']), { include: '#operands' }]),
           instruction('PRECACHE', [...flags('PRECACHE'), kw(['TO', 'INTO']), { include: '#operands' }]),
           instruction('CSP', [kw(['POLICY', 'META']), { include: '#operands' }]),
+          instruction('MIME', [{ include: '#operands' }]),
           instruction('CHECKLINKS', [...flags('CHECKLINKS')]),
           instruction('FEED', [
             // FEED [--overwrite] <import> BASE … LINK … [TO …] [TITLE …]

@@ -3,7 +3,7 @@ import { importedStage, isFragment, isImageBase, isInline, stageNames, type Imag
 import { normalizeLocal, normalizeVirtual } from './paths.js';
 import { parseRef } from './ref.js';
 import { checkPattern } from './fingerprint.js';
-import { checkBaseUrl, checkFieldUri, checkCspPolicy, checkHeaderName, checkHeaderValue, checkRedirectTarget, checkSitePath, pageUrl, parseFeedDate, robotsTxt, securityTxt } from './site.js';
+import { checkBaseUrl, checkFieldUri, checkCspPolicy, checkHeaderName, checkHeaderValue, checkMimeExtension, checkMimeType, checkRedirectTarget, checkSitePath, pageUrl, parseFeedDate, robotsTxt, securityTxt } from './site.js';
 import { coerce, evaluateOperand, type Scalar } from './values.js';
 import { isGitUri, parseGitUri, type GitLocation } from './resources/git.js';
 import { parseFragmentBody } from './language/validate.js';
@@ -74,13 +74,15 @@ export interface RedirectSpec {
   readonly span: SourceSpan;
 }
 
-/** A HEADER, evaluated; written to `/_headers` at EXPORT. */
+/** A HEADER (or a MIME, as a `Content-Type` rule), evaluated; written to `/_headers` at EXPORT. */
 export interface HeaderSpec {
   readonly pattern: string;
   readonly name: string;
   readonly value: string;
   readonly overwrite: boolean;
   readonly span: SourceSpan;
+  /** Set for a MIME line (names it in origins and `why`). */
+  readonly instruction?: 'MIME';
 }
 
 /** A file whose text the planner wrote (ROBOTS: `/robots.txt`, SECURITY_TXT: `/.well-known/security.txt`). */
@@ -328,6 +330,7 @@ export function plan(program: Program, buildArgs: Readonly<Record<string, string
   const sitemapUrls: string[] = [];
   const robots: Array<{ op: Extract<Operation, { kind: 'ROBOTS' }>; rules: Array<{ allow: boolean; path: string }>; stage: number }> = [];
   let csp: CspSpec | undefined;
+  const mimes = new Map<string, number>();
   const warnings: string[] = [];
   const declaredArgs = new Set<string>();
   const allStageNames = stageNames(program.instructions);
@@ -603,6 +606,14 @@ export function plan(program: Program, buildArgs: Readonly<Record<string, string
         if (csp) throw new SitefileError('E_VALIDATION', `CSP given twice (line ${csp.span.line} already sets the policy)`, ins.span);
         const policy = ins.policy ? checkCspPolicy(evaluateOperand(ins.policy, vars), ins.policy.span) : DEFAULT_CSP;
         csp = { policy, meta: ins.meta, span: ins.span };
+        break;
+      }
+      case 'MIME': {
+        const ext = checkMimeExtension(evaluateOperand(ins.ext, vars), ins.ext.span);
+        const prior = mimes.get(ext);
+        if (prior !== undefined) throw new SitefileError('E_VALIDATION', `MIME ${ext} given twice (line ${prior} already sets its type)`, ins.ext.span);
+        mimes.set(ext, ins.span.line);
+        headers.push({ pattern: `/*${ext}`, name: 'Content-Type', value: checkMimeType(evaluateOperand(ins.type, vars), ins.type.span), overwrite: false, span: ins.span, instruction: 'MIME' });
         break;
       }
       case 'EXPORT':
