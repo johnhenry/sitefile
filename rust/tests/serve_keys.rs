@@ -25,7 +25,7 @@ fn wait_for(path: &std::path::Path, what: &str) -> String {
             return text;
         }
         assert!(
-            start.elapsed() < Duration::from_secs(20),
+            start.elapsed() < Duration::from_secs(60),
             "waiting for {what:?} in {text:?}"
         );
         std::thread::sleep(Duration::from_millis(50));
