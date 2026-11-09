@@ -117,7 +117,9 @@ pub fn flags_of(keyword: &str) -> &'static [(&'static str, Shape)] {
         "COPY" => COPY_FLAGS,
         "RENDER" => RENDER_FLAGS,
         "TRANSFORM" => TRANSFORM_FLAGS,
-        "SITEMAP" | "FEED" | "REDIRECT" | "HEADER" | "PRECOMPRESS" | "ROBOTS" | "SECURITY_TXT" => SITE_FLAGS,
+        "SITEMAP" | "FEED" | "REDIRECT" | "HEADER" | "PRECOMPRESS" | "ROBOTS" | "SECURITY_TXT" => {
+            SITE_FLAGS
+        }
         "FINGERPRINT" => FINGERPRINT_FLAGS,
         "CHECKLINKS" => CHECKLINKS_FLAGS,
         _ => &[],
