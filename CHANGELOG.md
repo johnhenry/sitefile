@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.0.3 (2026-11-09)
 
 - **`serve` keys under `--tls-cert`, and `u`'s network URLs** (johnhenry/sitefile#300): `o` and `u`
   use `https://` for an HTTPS server, and `u` lists every interface address (the start line's
