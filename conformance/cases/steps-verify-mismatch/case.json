@@ -1,0 +1,29 @@
+{
+  "stdout": true,
+  "steps": [
+    [
+      "build",
+      "${CTX}",
+      "-o",
+      "${OUT}/site",
+      "--no-lockfile",
+      "--manifest",
+      "${OUT}/m.json"
+    ],
+    [
+      "build",
+      "${CTX}",
+      "-o",
+      "${OUT}/other",
+      "--no-lockfile",
+      "--build-arg",
+      "TITLE=Other"
+    ],
+    [
+      "verify",
+      "${OUT}/other",
+      "--manifest",
+      "${OUT}/m.json"
+    ]
+  ]
+}

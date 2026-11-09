@@ -3,12 +3,13 @@
 use super::args::Parsed;
 use crate::error::{ErrorCode::E_USAGE, Result, SitefileError};
 use crate::resources::network::{
-    merge_network, network_from_env, network_problem, split_list, NetworkSettings,
+    merge_network, network_from_env, network_problem, parse_network_mode, split_list,
+    NetworkSettings,
 };
 
 /// Help lines for the network flags, at the given flag-column width.
 pub fn network_help(width: usize) -> Vec<String> {
-    let rows: [(&str, &[&str]); 6] = [
+    let rows: [(&str, &[&str]); 8] = [
         (
             "--proxy <url>",
             &[
@@ -38,6 +39,20 @@ pub fn network_help(width: usize) -> Vec<String> {
             ],
         ),
         (
+            "--network <mode>",
+            &[
+                "open (default) or strict: every host must match --allow-hosts, even with none",
+                "given (also $SITEFILE_NETWORK)",
+            ],
+        ),
+        (
+            "--allow-secret-host <id=host>",
+            &[
+                "in strict mode, let IMPORT ... SECRET <id> send its secret to this host",
+                "(a host pattern; repeatable)",
+            ],
+        ),
+        (
             "--connect-timeout <ms>",
             &["time limit for opening each connection (also $SITEFILE_FETCH_TIMEOUT)"],
         ),
@@ -48,8 +63,14 @@ pub fn network_help(width: usize) -> Vec<String> {
     ];
     let mut out = Vec::new();
     for (flag, lines) in rows {
+        // A flag wider than the column gets a line of its own.
+        let own_line = flag.len() >= width;
+        if own_line {
+            out.push(flag.to_string());
+        }
         for (i, l) in lines.iter().enumerate() {
-            out.push(format!("{:<width$}{l}", if i == 0 { flag } else { "" }));
+            let f = if i == 0 && !own_line { flag } else { "" };
+            out.push(format!("{f:<width$}{l}"));
         }
     }
     out
@@ -78,10 +99,19 @@ pub fn network_option(v: &Parsed) -> Result<NetworkSettings> {
         no_proxy: list("no-proxy"),
         allow_hosts: list("allow-hosts"),
         deny_hosts: list("deny-hosts"),
+        strict: false,
+        secret_hosts: list("allow-secret-host"),
         connect_timeout_ms: ms(v.str("connect-timeout"), "--connect-timeout")?,
         read_timeout_ms: ms(v.str("read-timeout"), "--read-timeout")?,
     };
-    let env = network_from_env(&crate::registry::process_env())?;
+    let mut env = network_from_env(&crate::registry::process_env())?;
+    // --network replaces SITEFILE_NETWORK (--network open turns an inherited strict mode off).
+    let mut flags = flags;
+    if let Some(raw) = v.str("network") {
+        let mode = parse_network_mode(if raw.is_empty() { "?" } else { raw }, "--network")?;
+        env.strict = false;
+        flags.strict = mode == Some(true);
+    }
     let merged = merge_network(&env, &flags);
     if let Some(problem) = network_problem(&merged) {
         return Err(SitefileError::plain(E_USAGE, problem));

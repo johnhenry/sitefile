@@ -51,6 +51,7 @@ use crate::render::{
     decode_utf8, fragment_not_value, parse_render_template, render_template_with,
     resolve_json_path, walk, TemplateContext, TemplateNode,
 };
+use crate::resources::archive::{os_metadata_warning, without_os_metadata};
 use crate::resources::convert::{bytes_to_resource, verify_integrity, BytesInfo};
 use crate::resources::git::{
     fetch_git_commit, pinned_git_url, select_git_path, GitLocation, GitSelection, GitTransport,
@@ -65,14 +66,15 @@ use crate::resources::types::{
 use crate::resources::vendor::{find_vendor_dir, Vendor};
 use crate::secrets::{redact_error, redact_secrets, secret_headers, Secrets};
 use crate::site::{
-    atom_xml, headers_file, page_url, parse_feed_date, redirects_file, sitemap_xml, FeedEntry,
+    atom_xml, cache_header_rules, headers_file, page_url, parse_feed_date, redirects_file,
+    sitemap_xml, FeedEntry,
 };
 use crate::store::Store;
 use crate::tree::{make_file, ConflictPolicy, FileNode, Node, Tree};
 use crate::values::{js_string_of, Env, Scalar};
 use serde_json::{json, Map, Value};
 use std::borrow::Cow;
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
@@ -126,8 +128,14 @@ pub struct BuildOptions {
     /// Maximum imports resolved at once (default 4).
     pub concurrency: usize,
     pub plugin_policy: PluginPolicy,
+    /// `--node` / `SITEFILE_NODE`: the absolute path of the Node binary JavaScript plugins run on
+    /// (default: `node` on PATH). Checked to be at least `MIN_NODE` before the first plugin starts.
+    pub node: Option<PathBuf>,
     /// Permit hard-linked files in the context.
     pub allow_hardlinks: bool,
+    /// Keep OS metadata (`__MACOSX/`, `._*`, `.DS_Store`, `Thumbs.db`, `desktop.ini`, `Icon\r`) in
+    /// archives imported AS tree (`--keep-os-metadata`). Default false: dropped with a warning.
+    pub keep_os_metadata: bool,
     /// `--allow-exec` entries: `name` or `name=/absolute/path`.
     pub allow_exec: Vec<String>,
     /// `--allow-plugin` entries: JavaScript PLUGINs allowed to run, by declared name.
@@ -236,7 +244,9 @@ impl Default for BuildOptions {
             strict_pins: false,
             concurrency: 4,
             plugin_policy: DEFAULT_PLUGIN_POLICY,
+            node: None,
             allow_hardlinks: false,
+            keep_os_metadata: false,
             allow_exec: Vec::new(),
             allow_plugin: Vec::new(),
             allow_all_plugins: false,
@@ -851,6 +861,7 @@ fn build_with(options: &BuildOptions, temp_dirs: &Mutex<Vec<PathBuf>>) -> Result
     let env = ImportEnv {
         local: &local,
         archive_limits: &options.archive_limits,
+        keep_os_metadata: options.keep_os_metadata,
         remote: RemoteEnv {
             policy: &options.fetch_policy,
             lock: &lock,
@@ -974,6 +985,7 @@ fn build_with(options: &BuildOptions, temp_dirs: &Mutex<Vec<PathBuf>>) -> Result
         memo: options.memo.as_deref(),
         concurrency: options.concurrency,
         allow_hardlinks: options.allow_hardlinks,
+        keep_os_metadata: options.keep_os_metadata,
         strict_pins: options.strict_pins,
         skip,
         temp_dirs,
@@ -1072,6 +1084,12 @@ fn build_with(options: &BuildOptions, temp_dirs: &Mutex<Vec<PathBuf>>) -> Result
         plugins: {
             let mut h = PluginHost::new(options.plugin_policy, move |m: &str| plugin_warn(m));
             h.set_store_home(options.store_home.clone());
+            if let Some(node) = &options.node {
+                h.set_node(node.clone());
+            }
+            if let Some(n) = options.on_notice.clone() {
+                h.set_notice(move |m: &str| n(m));
+            }
             h
         },
         tools: tools.iter().map(|t| (t.name.clone(), t.clone())).collect(),
@@ -1194,7 +1212,7 @@ fn build_with(options: &BuildOptions, temp_dirs: &Mutex<Vec<PathBuf>>) -> Result
             ),
         ));
     }
-    let tree = with_site_rules(tree, &p, &label, &current_renames)?;
+    let tree = with_site_rules(tree, &p, &label, &current_renames, &|m: &str| warn(m))?;
     let output = tree.subtree(&p.export_path);
     if output.is_empty() {
         warn(&match &p.target {
@@ -1272,6 +1290,7 @@ fn with_site_rules(
     p: &Plan,
     label: &str,
     renames: &BTreeMap<String, String>,
+    warn: &dyn Fn(&str),
 ) -> Result<Tree> {
     let url_below = |path: &str| -> Option<String> {
         if p.export_path == "/" {
@@ -1294,11 +1313,44 @@ fn with_site_rules(
             .zip(&to)
             .map(|(r, to)| (r.from.as_str(), to.as_str(), r.status)),
     );
+    // FINGERPRINT's Cache-Control lines, after the HEADER lines (see `cache_header_rules`).
+    let mut auto: Vec<(String, &str)> = Vec::new();
+    let mut header_rules: Vec<(bool, &SourceSpan)> =
+        p.headers.iter().map(|h| (h.overwrite, &h.span)).collect();
+    let mut header_kind = "HEADER";
+    let headers_path = join_virtual(&p.export_path, "_headers");
+    if let (Some(fp), false) = (&p.cache_headers, urls.is_empty()) {
+        let files: Vec<String> = tree
+            .subtree(&p.export_path)
+            .entries()
+            .map(|(f, _)| f.clone())
+            .collect();
+        let present: HashSet<&String> = files.iter().collect();
+        let hashed: HashSet<String> = urls
+            .values()
+            .filter(|u| present.contains(u))
+            .cloned()
+            .collect();
+        let rules = cache_header_rules(&files, &hashed);
+        if !rules.is_empty() && p.headers.is_empty() && tree.is_file(&headers_path) {
+            warn(&format!("{label}:{} FINGERPRINT: {headers_path} already exists (not written by HEADER), so no Cache-Control lines were added for the fingerprinted files; add them to that file, or use HEADER", fp.line));
+        } else if !rules.is_empty() {
+            auto = rules;
+            if p.headers.is_empty() {
+                header_rules = vec![(false, fp)];
+                header_kind = "FINGERPRINT";
+            }
+        }
+    }
     let headers = headers_file(
         p.headers
             .iter()
             .zip(&patterns)
-            .map(|(h, pattern)| (pattern.as_str(), h.name.as_str(), h.value.as_str())),
+            .map(|(h, pattern)| (pattern.as_str(), h.name.as_str(), h.value.as_str()))
+            .chain(
+                auto.iter()
+                    .map(|(pattern, value)| (pattern.as_str(), "Cache-Control", *value)),
+            ),
     );
     /// (file name, content, each rule's `--overwrite` and span, instruction)
     type SiteFile<'a> = (&'a str, String, Vec<(bool, &'a SourceSpan)>, &'a str);
@@ -1309,12 +1361,7 @@ fn with_site_rules(
             p.redirects.iter().map(|r| (r.overwrite, &r.span)).collect(),
             "REDIRECT",
         ),
-        (
-            "_headers",
-            headers,
-            p.headers.iter().map(|h| (h.overwrite, &h.span)).collect(),
-            "HEADER",
-        ),
+        ("_headers", headers, header_rules, header_kind),
     ];
     for (name, text, rules, kind) in files {
         let Some((_, first)) = rules.first() else {
@@ -1737,6 +1784,7 @@ fn export_build(
 struct ImportEnv<'a> {
     local: &'a LocalContext,
     archive_limits: &'a ArchiveLimits,
+    keep_os_metadata: bool,
     remote: RemoteEnv<'a>,
     memo: Option<&'a Mutex<BuildMemo>>,
     cancel: Option<&'a CancelToken>,
@@ -1850,7 +1898,13 @@ pub fn fetch_git_import(
                 env.label, spec.span.line, spec.name, v.dir
             ));
         }
-        let origin_headers = secret_headers(&spec.name, &spec.secrets, &spec.span, env.secrets)?;
+        let origin_headers = secret_headers(
+            &spec.name,
+            &spec.secrets,
+            &spec.span,
+            env.secrets,
+            Some((&loc.repo, &env.policy.network)),
+        )?;
         let transport = GitTransport {
             origin_headers: &origin_headers,
             ..GitTransport::new(env.policy, span)
@@ -1921,8 +1975,13 @@ pub fn fetch_remote_import(
     let (bytes, final_url) = match (env.vendor, vendored) {
         (Some((v, local)), Some(e)) => v.read_resource(local, url, e, span)?,
         _ => {
-            let origin_headers =
-                secret_headers(&spec.name, &spec.secrets, &spec.span, env.secrets)?;
+            let origin_headers = secret_headers(
+                &spec.name,
+                &spec.secrets,
+                &spec.span,
+                env.secrets,
+                Some((url, &env.policy.network)),
+            )?;
             let f = fetch_remote_with(
                 url,
                 env.policy,
@@ -2198,6 +2257,7 @@ fn resolve_import(spec: &ImportSpec, env: &ImportEnv<'_>) -> Result<(Resource, S
                     };
                     let res = convert(&key, &|_| {
                         bytes_to_resource(bytes.clone(), kind, &info, span, env.archive_limits)
+                            .and_then(|r| drop_os_metadata(r, spec, env))
                     })?;
                     Ok((res, key))
                 }
@@ -2223,6 +2283,7 @@ fn resolve_import(spec: &ImportSpec, env: &ImportEnv<'_>) -> Result<(Resource, S
                     let kind = spec.as_kind.unwrap_or(ImportKind::File);
                     let res = convert(&key, &|_| {
                         bytes_to_resource(bytes.to_vec(), kind, &info, span, env.archive_limits)
+                            .and_then(|r| drop_os_metadata(r, spec, env))
                     })?;
                     Ok((with_commit(res, &commit), key))
                 }
@@ -2305,9 +2366,30 @@ fn resolve_import(spec: &ImportSpec, env: &ImportEnv<'_>) -> Result<(Resource, S
             };
             let res = convert(&key, &|_| {
                 bytes_to_resource(bytes.clone(), kind, &info, span, env.archive_limits)
+                    .and_then(|r| drop_os_metadata(r, spec, env))
             })?;
             Ok((res, key))
         }
+    }
+}
+
+/// An archive imported AS tree without its OS metadata files (unless `--keep-os-metadata`), with a warning.
+fn drop_os_metadata(res: Resource, spec: &ImportSpec, env: &ImportEnv) -> Result<Resource> {
+    if env.keep_os_metadata {
+        return Ok(res);
+    }
+    match res {
+        Resource::Tree { tree, provenance } => {
+            let (tree, skipped) = without_os_metadata(tree)?;
+            if skipped > 0 {
+                (env.remote.warn)(&os_metadata_warning(
+                    &format!("IMPORT {}", spec.name),
+                    skipped,
+                ));
+            }
+            Ok(Resource::Tree { tree, provenance })
+        }
+        other => Ok(other),
     }
 }
 
@@ -2682,6 +2764,7 @@ struct UnitsEnv<'a> {
     memo: Option<&'a Mutex<BuildMemo>>,
     concurrency: usize,
     allow_hardlinks: bool,
+    keep_os_metadata: bool,
     strict_pins: bool,
     /// Real paths the build writes or skips (export, vendor, --profile): left out of an imported context inside the build context.
     skip: Vec<PathBuf>,
@@ -2962,6 +3045,7 @@ fn load_sitefile_import(
     let ienv = ImportEnv {
         local: &local,
         archive_limits: &env.remote.archive_limits,
+        keep_os_metadata: env.keep_os_metadata,
         remote: RemoteEnv {
             label: &label,
             ..env.remote
@@ -3429,11 +3513,11 @@ fn register_plugin(
 ) -> Result<()> {
     let span = Some(&spec.span);
     let (real, bytes) = local.real_file(&spec.path, span)?;
-    if let Some(i) = &spec.integrity {
-        verify_integrity(&bytes, i, &format!("./{}", spec.path), span)?;
-    }
     if real.to_string_lossy().ends_with(".wasm") {
-        // A wasm plugin has no imports, so it reads nothing: no own-folder rule needed.
+        // A wasm plugin has no imports, so it reads nothing: no own-folder rule needed, and INTEGRITY pins the module.
+        if let Some(i) = &spec.integrity {
+            verify_integrity(&bytes, i, &format!("./{}", spec.path), span)?;
+        }
         check_wasm_plugin_in(host.store_home(), &spec.name, &bytes, span)?;
         host.register(&spec.name, real, Some(spec.span.clone()), Some(bytes));
         return Ok(());
@@ -3451,6 +3535,46 @@ fn register_plugin(
             format!("PLUGIN {}: put the plugin in its own folder (e.g. ./plugins/{base}); a plugin can read every file next to it", spec.name),
             &spec.span,
         ));
+    }
+    // It can read and import everything in its folder, so INTEGRITY pins the whole folder (#158).
+    if let Some(expected) = &spec.integrity {
+        let dir = real.parent().unwrap_or(local.root());
+        let rel = dir.strip_prefix(local.root()).unwrap_or(dir);
+        let rel: Vec<String> = rel
+            .components()
+            .map(|c| c.as_os_str().to_string_lossy().into_owned())
+            .collect();
+        let shown = format!("./{}/", rel.join("/"));
+        let r = crate::plugins::cache::plugin_folder_integrity(dir).map_err(|e| {
+            SitefileError::at(
+                E_INTEGRITY,
+                format!(
+                    "PLUGIN {}: could not read the plugin's folder {shown}: {e}",
+                    spec.name
+                ),
+                &spec.span,
+            )
+        })?;
+        match r {
+            Err(problem) => {
+                return Err(SitefileError::at(
+                    E_INTEGRITY,
+                    format!(
+                        "PLUGIN {}: INTEGRITY pins the plugin's folder {shown}, which {problem}",
+                        spec.name
+                    ),
+                    &spec.span,
+                ))
+            }
+            Ok(digest) if digest != expected.to_ascii_lowercase() => {
+                return Err(SitefileError::at(
+                    E_INTEGRITY,
+                    format!("integrity mismatch for {shown} (PLUGIN {}'s folder: INTEGRITY covers every file in it): expected {expected}, got {digest}", spec.name),
+                    &spec.span,
+                ))
+            }
+            Ok(_) => {}
+        }
     }
     host.register(&spec.name, real, Some(spec.span.clone()), None);
     Ok(())
@@ -4388,6 +4512,7 @@ impl<'a> Exec<'a> {
         let Operation::Fingerprint {
             patterns,
             manifest,
+            integrity,
             root,
             overwrite,
             span,
@@ -4399,6 +4524,7 @@ impl<'a> Exec<'a> {
         let op = FingerprintOp {
             patterns,
             manifest: manifest.as_deref(),
+            integrity: *integrity,
             root,
             overwrite: *overwrite,
             span,

@@ -3,7 +3,7 @@
 //! Plugins run one Node process each, under Node's permission model:
 //!
 //! ```text
-//! node --permission --allow-fs-read=<plugin folder> --input-type=module -e <runner>
+//! node --permission --allow-fs-read=<plugin folder> --max-old-space-size=<MiB> --input-type=module -e <runner>
 //! ```
 //!
 //! so a plugin can read files in its own folder and nothing else: no writes,
@@ -15,6 +15,11 @@
 //! Node documents the permission model as a "seat belt" for trusted code, not a
 //! defence against deliberately malicious code: plugins are code you choose to
 //! run. Pin them with INTEGRITY.
+//!
+//! The sandbox is only as strong as the Node that runs it: `node` on PATH by
+//! default, or the one named by `--node` / `SITEFILE_NODE` / `BuildOptions::node`.
+//! Its version is checked (at least [`MIN_NODE`]) before the first plugin starts,
+//! and reported through the notice callback.
 //!
 //! Each process is driven with plain threads and channels: a writer thread feeds
 //! stdin (so a plugin that stops reading cannot block the build), a reader thread
@@ -44,17 +49,130 @@ pub struct PluginPolicy {
     pub timeout_ms: u64,
     /// Largest result accepted from one call (default 64 MiB).
     pub max_output_bytes: usize,
+    /// Memory limit in MiB (default 1024, `--plugin-memory`): a JavaScript plugin's heap
+    /// (`node --max-old-space-size`) and a wasm plugin's linear memory.
+    pub max_memory_mib: usize,
 }
 
 pub const DEFAULT_PLUGIN_POLICY: PluginPolicy = PluginPolicy {
     timeout_ms: 60_000,
     max_output_bytes: 64 * 1024 * 1024,
+    max_memory_mib: 1024,
 };
+
+/// What V8 prints when a heap passes --max-old-space-size (followed by a native stack trace).
+const OUT_OF_MEMORY: &str = "JavaScript heap out of memory";
+
+/// V8's out-of-memory report starts with one of these; it and everything after it is not logged.
+fn is_fatal_report(line: &str) -> bool {
+    line.starts_with("<--- Last few GCs --->") || line.starts_with("FATAL ERROR:")
+}
 
 impl Default for PluginPolicy {
     fn default() -> Self {
         DEFAULT_PLUGIN_POLICY
     }
+}
+
+/// The oldest Node that JavaScript plugins run on. Node 25 added network permissions
+/// (before it, `--permission` did not block sockets); 26 is the release sitefile
+/// requires and tests with (package.json `engines`).
+pub const MIN_NODE: [u64; 3] = [26, 0, 0];
+
+/// The Node binary JavaScript plugins run on, as checked when the first one starts.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NodeRuntime {
+    /// Absolute real path.
+    pub path: PathBuf,
+    /// `process.version` of that binary, e.g. `v26.11.1`.
+    pub version: String,
+}
+
+/// `vX.Y.Z` -> [X, Y, Z].
+pub fn parse_node_version(v: &str) -> Option<[u64; 3]> {
+    let rest = v.trim().strip_prefix('v')?;
+    let mut it = rest.split('.');
+    let mut out = [0u64; 3];
+    for slot in &mut out {
+        let part = it.next()?;
+        if part.is_empty() || !part.bytes().all(|b| b.is_ascii_digit()) {
+            return None;
+        }
+        *slot = part.parse().ok()?;
+    }
+    if it.next().is_some() {
+        return None;
+    }
+    Some(out)
+}
+
+/// Resolve and check the Node binary for JavaScript plugins (`node`: an absolute path; default
+/// `node` on PATH). The error text is the part after `PLUGIN name: `.
+pub fn check_node(
+    node: Option<&Path>,
+    timeout_ms: u64,
+) -> std::result::Result<NodeRuntime, String> {
+    let choose = "choose another with --node or SITEFILE_NODE";
+    let given = match node {
+        Some(n) => n.to_path_buf(),
+        None => find_on_path("node")
+            .ok_or_else(|| "could not start: node was not found on PATH".to_string())?,
+    };
+    if !given.is_absolute() {
+        return Err(format!(
+            "the Node binary must be an absolute path, got '{}'",
+            given.display()
+        ));
+    }
+    let real = std::fs::canonicalize(&given)
+        .ok()
+        .filter(|r| r.is_file())
+        .ok_or_else(|| format!("could not start: no Node binary at {}", given.display()))?;
+    let no_version = || {
+        format!(
+            "could not start: {} --version did not print a Node version; {choose}",
+            real.display()
+        )
+    };
+    let mut child = Command::new(&real)
+        .arg("--version")
+        .env_clear()
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(|_| no_version())?;
+    let deadline = Instant::now() + Duration::from_millis(timeout_ms);
+    loop {
+        match child.try_wait() {
+            Ok(Some(_)) => break,
+            Ok(None) if Instant::now() < deadline => thread::sleep(Duration::from_millis(2)),
+            _ => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(no_version());
+            }
+        }
+    }
+    let mut out = String::new();
+    if let Some(mut s) = child.stdout.take() {
+        let _ = s.read_to_string(&mut out);
+    }
+    let parsed = parse_node_version(&out).ok_or_else(no_version)?;
+    let version = out.trim().to_string();
+    if parsed < MIN_NODE {
+        return Err(format!(
+            "node {version} ({}) is too old for the plugin sandbox: JavaScript plugins need Node {}.{}.{} or later; {choose}",
+            real.display(),
+            MIN_NODE[0],
+            MIN_NODE[1],
+            MIN_NODE[2]
+        ));
+    }
+    Ok(NodeRuntime {
+        path: real,
+        version,
+    })
 }
 
 /// The file a plugin receives (`request.input`).
@@ -319,6 +437,8 @@ struct PluginProcess {
     rx: Receiver<Msg>,
     stderr: Arc<Mutex<String>>,
     stderr_done: Arc<AtomicBool>,
+    /// V8 reported that the heap passed the memory limit.
+    out_of_memory: Arc<AtomicBool>,
     next_id: u64,
     /// False when the module exports `cache = false`; known once it has loaded.
     cacheable: bool,
@@ -388,7 +508,7 @@ impl PluginProcess {
     fn start(
         name: &str,
         file: &Path,
-        node: Option<&Path>,
+        node: &Path,
         policy: PluginPolicy,
         log: Log,
         span: Option<SourceSpan>,
@@ -401,6 +521,7 @@ impl PluginProcess {
             rx,
             stderr: Arc::new(Mutex::new(String::new())),
             stderr_done: Arc::new(AtomicBool::new(true)),
+            out_of_memory: Arc::new(AtomicBool::new(false)),
             next_id: 1,
             cacheable: true,
             load: LoadState::Pending,
@@ -409,13 +530,10 @@ impl PluginProcess {
             span,
         };
         let dir = file.parent().unwrap_or(Path::new("/")).to_path_buf();
-        let Some(node) = node.map(Path::to_path_buf).or_else(|| find_on_path("node")) else {
-            p.fail("could not start: node was not found on PATH");
-            return p;
-        };
-        let spawned = Command::new(&node)
+        let spawned = Command::new(node)
             .arg("--permission")
             .arg(format!("--allow-fs-read={}", dir.display()))
+            .arg(format!("--max-old-space-size={}", policy.max_memory_mib))
             .args([
                 "--disable-warning=ExperimentalWarning",
                 "--input-type=module",
@@ -510,12 +628,18 @@ impl PluginProcess {
         let tail = p.stderr.clone();
         let done = Arc::new(AtomicBool::new(false));
         p.stderr_done = done.clone();
+        let oom = p.out_of_memory.clone();
         thread::spawn(move || {
             let mut pending: Vec<u8> = Vec::new();
             let mut chunk = vec![0u8; 16 * 1024];
-            let flush = |line: &[u8]| {
+            // Set once V8's fatal error report starts: the rest is a native stack trace, not logged.
+            let mut quiet = false;
+            let mut flush = |line: &[u8]| {
                 let l = String::from_utf8_lossy(line);
-                if !l.trim().is_empty() {
+                if is_fatal_report(&l) {
+                    quiet = true;
+                }
+                if !l.trim().is_empty() && !quiet {
                     log(&l);
                 }
             };
@@ -533,6 +657,9 @@ impl PluginProcess {
                             cut += 1;
                         }
                         t.drain(..cut);
+                    }
+                    if t.contains(OUT_OF_MEMORY) {
+                        oom.store(true, Ordering::SeqCst);
                     }
                 }
                 pending.extend_from_slice(&chunk[..n]);
@@ -571,8 +698,23 @@ impl PluginProcess {
 
     /// Stop the process for `reason`; returns the message for pending callers (reason + stderr tail).
     fn fail(&mut self, reason: &str) -> String {
+        let first = self.exited.is_none();
+        let out_of_memory = first && self.out_of_memory.load(Ordering::SeqCst);
         let reason = match &self.exited {
             Some(r) => r.clone(),
+            // The stderr tail would be V8's native stack trace: machine-specific, and no help.
+            None if out_of_memory => {
+                let r = format!(
+                    "ran out of memory (more than the {} MiB limit)",
+                    self.policy.max_memory_mib
+                );
+                self.stderr
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .clear();
+                self.exited = Some(r.clone());
+                r
+            }
             None => {
                 self.exited = Some(reason.to_string());
                 reason.to_string()
@@ -798,6 +940,9 @@ pub struct PluginHost {
     policy: PluginPolicy,
     log: Log,
     node: Option<PathBuf>,
+    /// The checked Node binary, once the first JavaScript plugin needed it.
+    runtime: Option<std::result::Result<NodeRuntime, String>>,
+    notice: Option<Log>,
     registered: HashMap<String, Registered>,
     procs: HashMap<String, Runner>,
     pub stats: HostStats,
@@ -811,6 +956,8 @@ impl PluginHost {
             policy,
             log: Arc::new(log),
             node: None,
+            runtime: None,
+            notice: None,
             registered: HashMap::new(),
             procs: HashMap::new(),
             stats: HostStats::default(),
@@ -828,9 +975,32 @@ impl PluginHost {
         self.store_home.as_deref()
     }
 
-    /// The Node binary for JS plugins (default: `node` on PATH, looked up at first use).
+    /// The Node binary for JS plugins, an absolute path (default: `node` on PATH, looked up and
+    /// version-checked at first use).
     pub fn set_node(&mut self, node: impl Into<PathBuf>) {
         self.node = Some(node.into());
+        self.runtime = None;
+    }
+
+    /// Receives `plugins run on node <version> (<path>)` when the first JavaScript plugin starts.
+    pub fn set_notice(&mut self, notice: impl Fn(&str) + Send + Sync + 'static) {
+        self.notice = Some(Arc::new(notice));
+    }
+
+    /// The checked Node binary (resolved once, on the first JavaScript plugin).
+    pub fn node(&mut self) -> std::result::Result<NodeRuntime, String> {
+        if self.runtime.is_none() {
+            let r = check_node(self.node.as_deref(), self.policy.timeout_ms);
+            if let (Ok(rt), Some(n)) = (&r, &self.notice) {
+                n(&format!(
+                    "plugins run on node {} ({})",
+                    rt.version,
+                    rt.path.display()
+                ));
+            }
+            self.runtime = Some(r);
+        }
+        self.runtime.clone().expect("set above")
     }
 
     /// `file` is the plugin's absolute real path (already sandbox- and integrity-checked).
@@ -918,6 +1088,15 @@ impl PluginHost {
                     span.cloned(),
                 ));
             };
+            let node = if reg.wasm.is_none() {
+                let span = reg.span.clone();
+                Some(self.node().map_err(|m| {
+                    SitefileError::new(ErrorCode::E_PLUGIN, format!("PLUGIN {name}: {m}"), span)
+                })?)
+            } else {
+                None
+            };
+            let reg = self.registered.get(name).expect("checked above");
             let runner = match &reg.wasm {
                 Some(bytes) => Runner::Wasm(
                     WasmPlugin::new(name, bytes.clone(), self.policy)
@@ -930,7 +1109,7 @@ impl PluginHost {
                     Runner::Js(PluginProcess::start(
                         name,
                         &reg.file,
-                        self.node.as_deref(),
+                        &node.expect("a JavaScript plugin").path,
                         self.policy,
                         log,
                         reg.span.clone(),
@@ -1231,6 +1410,54 @@ mod tests {
     }
 
     #[test]
+    fn a_plugin_that_passes_the_memory_limit_fails_without_the_v8_report() {
+        if !node_available() {
+            return;
+        }
+        // Retained objects grow the heap until V8 gives up at --max-old-space-size (#157).
+        let (root, file) = plugin(
+            "export function transform() { const keep = []; for (;;) keep.push({ n: keep.length, s: String(keep.length) }); }",
+            &[],
+        );
+        let policy = PluginPolicy {
+            max_memory_mib: 32,
+            ..PluginPolicy::default()
+        };
+        let (mut h, logs) = host_with(&file, policy);
+        let t0 = Instant::now();
+        let e = h.call("p", &req("/a"), None).unwrap_err();
+        assert_eq!(e.code, ErrorCode::E_PLUGIN);
+        assert_eq!(
+            e.message(),
+            "PLUGIN p: ran out of memory (more than the 32 MiB limit)"
+        );
+        assert!(t0.elapsed() < Duration::from_secs(30));
+        let logs = logs.lock().unwrap();
+        assert!(
+            !logs.iter().any(|l| l.contains("FATAL ERROR")
+                || l.contains("Last few GCs")
+                || l.contains("node::")),
+            "{logs:?}"
+        );
+        drop(logs);
+        h.close();
+        fs::remove_dir_all(root).unwrap();
+
+        // Within the limit: unaffected.
+        let (root, file) = plugin(
+            "export function transform() { return 'x'.repeat(4 << 20).length + ''; }",
+            &[],
+        );
+        let policy = PluginPolicy {
+            max_memory_mib: 64,
+            ..PluginPolicy::default()
+        };
+        let (mut h, _) = host_with(&file, policy);
+        assert_eq!(text(&h.call("p", &req("/a"), None).unwrap()), "4194304");
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn a_dead_process_fails_later_calls() {
         if !node_available() {
             return;
@@ -1281,6 +1508,93 @@ mod tests {
         let (mut h, _) = host_with(&file, PluginPolicy::default());
         h.call("p", &req("/a"), None).unwrap();
         assert!(!h.cacheable("p"));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    /// An executable that prints `out` for --version, standing in for another Node.
+    #[cfg(unix)]
+    fn fake_node(out: &str) -> PathBuf {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tmp("sitefile-node-rs-");
+        let file = dir.join("node");
+        fs::write(&file, format!("#!/bin/sh\necho '{out}'\n")).unwrap();
+        fs::set_permissions(&file, fs::Permissions::from_mode(0o755)).unwrap();
+        file
+    }
+
+    #[test]
+    fn node_versions_parse_and_compare() {
+        assert_eq!(parse_node_version("v26.11.1\n"), Some([26, 11, 1]));
+        assert_eq!(parse_node_version("26.1.0"), None);
+        assert_eq!(parse_node_version("v26.1"), None);
+        assert_eq!(parse_node_version("v26.1.0.1"), None);
+        assert_eq!(parse_node_version("v26.x.0"), None);
+        assert_eq!(MIN_NODE, [26, 0, 0]);
+        assert!([25, 9, 9] < MIN_NODE && [26, 0, 0] >= MIN_NODE && [27, 0, 0] > MIN_NODE);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_node_binary_is_checked_and_reported_once() {
+        assert_eq!(
+            check_node(Some(Path::new("node")), 10_000).unwrap_err(),
+            "the Node binary must be an absolute path, got 'node'"
+        );
+        assert_eq!(
+            check_node(Some(Path::new("/nonexistent/node")), 10_000).unwrap_err(),
+            "could not start: no Node binary at /nonexistent/node"
+        );
+        let old = fake_node("v22.1.0");
+        assert_eq!(
+            check_node(Some(&old), 10_000).unwrap_err(),
+            format!(
+                "node v22.1.0 ({}) is too old for the plugin sandbox: JavaScript plugins need Node 26.0.0 or later; choose another with --node or SITEFILE_NODE",
+                old.display()
+            )
+        );
+        let garbage = fake_node("hello");
+        assert!(check_node(Some(&garbage), 10_000)
+            .unwrap_err()
+            .contains("--version did not print a Node version"));
+
+        // A too-old Node fails at the PLUGIN line, before any plugin process starts.
+        let (root, file) = plugin("export function transform() { return 'x'; }", &[]);
+        let (mut h, _) = host_with(&file, PluginPolicy::default());
+        h.set_node(&old);
+        let e = h.call("p", &req("/a"), None).unwrap_err();
+        assert_eq!(e.code, ErrorCode::E_PLUGIN);
+        assert!(
+            e.message()
+                .starts_with("Sitefile:2:1: PLUGIN p: node v22.1.0 ("),
+            "{}",
+            e.message()
+        );
+        assert_eq!(e.span, Some(SourceSpan::new("Sitefile", 2, 1)));
+        assert_eq!(h.stats.spawned, 0);
+        fs::remove_dir_all(old.parent().unwrap()).unwrap();
+        fs::remove_dir_all(garbage.parent().unwrap()).unwrap();
+
+        if !node_available() {
+            fs::remove_dir_all(root).unwrap();
+            return;
+        }
+        // The chosen Node runs the plugin and is named in one notice.
+        let node = fs::canonicalize(find_on_path("node").unwrap()).unwrap();
+        let version = check_node(Some(&node), 10_000).unwrap().version;
+        let notices = Arc::new(Mutex::new(Vec::<String>::new()));
+        let n = notices.clone();
+        let (mut h, _) = host_with(&file, PluginPolicy::default());
+        h.set_node(&node);
+        h.set_notice(move |m| n.lock().unwrap().push(m.to_string()));
+        assert_eq!(text(&h.call("p", &req("/a"), None).unwrap()), "x");
+        assert_eq!(text(&h.call("p", &req("/b"), None).unwrap()), "x");
+        assert_eq!(
+            *notices.lock().unwrap(),
+            vec![format!(
+                "plugins run on node {version} ({})",
+                node.display()
+            )]
+        );
         fs::remove_dir_all(root).unwrap();
     }
 

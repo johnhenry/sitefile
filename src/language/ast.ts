@@ -337,7 +337,10 @@ export interface HeaderInstruction {
   readonly overwrite: boolean;
 }
 
-/** `FINGERPRINT [--overwrite] <pattern>… [MANIFEST <dest>]`: rename matching files to `name.<hash>.ext` and rewrite the HTML and CSS that reference them. */
+/**
+ * `FINGERPRINT [--overwrite] [--no-cache-headers] <pattern>… [MANIFEST <dest>] [INTEGRITY]`: rename matching
+ * files to `name.<hash>.ext` and rewrite the HTML and CSS that reference them.
+ */
 export interface FingerprintInstruction {
   readonly kind: 'FINGERPRINT';
   readonly span: SourceSpan;
@@ -345,6 +348,10 @@ export interface FingerprintInstruction {
   readonly patterns: readonly Operand[];
   /** `MANIFEST <dest>`: where to write the JSON map of old to new paths. */
   readonly manifest?: Operand;
+  /** `INTEGRITY`: add `integrity="sha384-…"` to the `<script src>` and `<link rel=stylesheet|modulepreload>` tags that load a renamed file. */
+  readonly integrity?: true;
+  /** `--no-cache-headers`: EXPORT writes no `Cache-Control` lines to `/_headers` for this Sitefile's fingerprinted files. */
+  readonly noCacheHeaders?: true;
   readonly overwrite: boolean;
 }
 
