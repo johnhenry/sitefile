@@ -3,7 +3,8 @@ import https from 'node:https';
 import os from 'node:os';
 import type { AddressInfo } from 'node:net';
 import { SitefileError } from './errors.js';
-import { globMatch, headersFor, isRewriteStatus, matchRule, parseHeaderRules, parseRedirectRules, substituteTarget } from './serve-rules.js';
+import { globMatch, headersFor, isRewriteStatus, matchRedirect, type RedirectRequest, type ServeRedirect, matchRule, parseHeaderRules, parseRedirectRules, substituteTarget } from './serve-rules.js';
+import { deltaFor } from './dictionary.js';
 import type { Tree } from './tree.js';
 import { nfc } from './paths.js';
 import { gzip } from './deflate.js';
@@ -43,6 +44,18 @@ export interface SiteServerOptions {
    * redirects to it, `/repo` gets its slash, everything else is 404. Normalized by {@link normalizeBase}.
    */
   readonly base?: string | (() => string | undefined);
+  /**
+   * `--rewrite-base`: the production URL ({@link normalizeProductionUrl}) that HTML, CSS and XML
+   * responses have replaced by this server's origin and `--base`, so absolute self-links stay local.
+   */
+  readonly rewriteBase?: string | (() => string | undefined);
+  /** `--host-profile` / `--html-handling`: behave like a static host ({@link hostProfile}). Absent: sitefile's own rules. */
+  readonly profile?: RoutingProfile;
+  /**
+   * Foreground and `--watch` servers (never detached or shared ones): a 404 with no `404.html` to
+   * answer it lists near misses ({@link nearMisses}).
+   */
+  readonly devNotFound?: boolean;
   /** `--country`: what `_redirects` `Country=` conditions match (there is no geolocation locally). */
   readonly country?: string;
   /**
@@ -742,6 +755,11 @@ export function originForm(target: string): string {
   return rest.startsWith('/') ? rest : '/' + rest;
 }
 
+/** A request header as one string (repeated headers joined with `, `). */
+function header(v: string | string[] | undefined): string | undefined {
+  return Array.isArray(v) ? v.join(', ') : v;
+}
+
 const DAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 
@@ -847,6 +865,142 @@ export function spaFallback(segs: readonly string[], trailingSlash: boolean, isF
     for (const name of ['200.html', 'index.html']) if (isFile(dir + name)) return dir + name;
   }
   return undefined;
+}
+
+/** `--html-handling` (Cloudflare's names): `auto`, `force-slash`, `drop-slash` or `none`. */
+export type HtmlHandling = 'auto' | 'force-slash' | 'drop-slash' | 'none';
+export const HTML_HANDLINGS: readonly HtmlHandling[] = ['auto', 'force-slash', 'drop-slash', 'none'];
+export const HOST_PROFILES = ['netlify', 'cloudflare', 'vercel', 'github-pages', 'firebase'] as const;
+export type HostProfileName = (typeof HOST_PROFILES)[number];
+
+/** How a server routes like a static host (`--host-profile`, `--html-handling`). */
+export interface RoutingProfile {
+  /** Canonical page URLs; undefined keeps sitefile's own rules (clean URLs plus both spellings). */
+  readonly htmlHandling?: HtmlHandling;
+  /** The status of a canonicalizing redirect. */
+  readonly redirectStatus: number;
+  /** Whether `/_redirects` and `/_headers` are read (and hidden). */
+  readonly siteFiles: boolean;
+  /** Which 404.html answers a miss: the nearest, only the root one, or (no 404.html) `/index.html` with 200. */
+  readonly notFound: 'nearest' | 'root' | 'index';
+  /** Sitefile's own rules only: `/about/` with only `about.html` redirects to `/about`, or is 404. */
+  readonly slashHtml: 'redirect' | 'not-found';
+}
+
+/**
+ * The routing of a host profile, with `--html-handling` replacing its HTML handling (the profile
+ * undefined: sitefile's rules, a 307 for the canonical redirects as on Cloudflare).
+ *
+ * | profile | HTML handling | redirect | `_redirects`/`_headers` | 404 |
+ * | netlify | auto | 301 | yes | nearest 404.html |
+ * | cloudflare | auto | 307 | yes | nearest 404.html, else /index.html (200) |
+ * | vercel | none | 308 | no | /404.html |
+ * | github-pages | sitefile's, `/about/` 404 | 301 | no | /404.html |
+ * | firebase | none | 301 | no | /404.html |
+ */
+export function hostProfile(name: HostProfileName | undefined, htmlHandling?: HtmlHandling): RoutingProfile {
+  const base: RoutingProfile =
+    name === 'netlify'
+      ? { htmlHandling: 'auto', redirectStatus: 301, siteFiles: true, notFound: 'nearest', slashHtml: 'redirect' }
+      : name === 'cloudflare'
+        ? { htmlHandling: 'auto', redirectStatus: 307, siteFiles: true, notFound: 'index', slashHtml: 'redirect' }
+        : name === 'vercel'
+          ? { htmlHandling: 'none', redirectStatus: 308, siteFiles: false, notFound: 'root', slashHtml: 'redirect' }
+          : name === 'github-pages'
+            ? { redirectStatus: 301, siteFiles: false, notFound: 'root', slashHtml: 'not-found' }
+            : name === 'firebase'
+              ? { htmlHandling: 'none', redirectStatus: 301, siteFiles: false, notFound: 'root', slashHtml: 'redirect' }
+              : { redirectStatus: 307, siteFiles: true, notFound: 'nearest', slashHtml: 'redirect' };
+  return htmlHandling === undefined ? base : { ...base, htmlHandling };
+}
+
+/** The server's routing profile for the flags (undefined: sitefile's own rules). */
+export function routingFor(o: { hostProfile?: HostProfileName | undefined; htmlHandling?: HtmlHandling | undefined }): RoutingProfile | undefined {
+  return o.hostProfile === undefined && o.htmlHandling === undefined ? undefined : hostProfile(o.hostProfile, o.htmlHandling);
+}
+
+/** A near miss for a 404: a file (`path`) or a `_redirects` rule (`line`), and why. */
+export interface NearMiss {
+  readonly path?: string;
+  readonly line?: number;
+  readonly why: string;
+}
+
+const utf8Order = (a: string, b: string): number => Buffer.compare(Buffer.from(a), Buffer.from(b));
+
+/**
+ * What a missing path almost matched (at most 20): files whose path differs only in ASCII letter case
+ * from the path, `<path>.html` or `<path>/index.html` (which work on a case-insensitive disk but not on a
+ * host), sorted by path; then `_redirects` rules whose source matches but whose query parameters or
+ * conditions do not, in file order.
+ */
+export function nearMisses(tree: Tree, isFile: (p: string) => boolean, vpath: string, redirects: readonly ServeRedirect[], req: RedirectRequest): NearMiss[] {
+  const lower = (s: string): string => s.replace(/[A-Z]/g, (c) => c.toLowerCase());
+  const wanted = new Set([vpath, `${vpath === '/' ? '' : vpath}.html`, `${vpath === '/' ? '' : vpath}/index.html`].map(lower));
+  const out: NearMiss[] = [];
+  const files = tree
+    .entries()
+    .map(([p]) => p)
+    .filter((p) => isFile(p) && wanted.has(lower(p)))
+    .sort(utf8Order);
+  for (const p of files) out.push({ path: p, why: 'the letter case differs (a case-insensitive disk finds it, a host does not)' });
+  for (const r of redirects) {
+    if (matchRedirect(r, vpath) !== undefined && matchRule(r, vpath, req) === undefined) {
+      out.push({ line: r.line, why: `matches the path but not its ${r.query.length > 0 ? 'query parameters' : 'conditions'}${r.query.length > 0 && r.conditions.length > 0 ? ' or conditions' : ''}` });
+    }
+  }
+  return out.slice(0, 20);
+}
+
+const escapeHtml = (s: string): string => s.replace(/[&<>"]/g, (c) => (c === '&' ? '&amp;' : c === '<' ? '&lt;' : c === '>' ? '&gt;' : '&quot;'));
+
+/** The development 404 page listing near misses. */
+export function nearMissPage(vpath: string, misses: readonly NearMiss[], mount = ''): string {
+  let out = `<!doctype html><meta charset="utf-8"><title>404 Not Found</title><h1>404 Not Found</h1>\n<p>Nothing is served at <code>${escapeHtml(vpath)}</code>. Near misses:</p>\n<ul>\n`;
+  for (const m of misses) {
+    const what = m.path !== undefined ? `<a href="${escapeHtml(mount + encodePath(m.path))}">${escapeHtml(m.path)}</a>` : `<code>_redirects:${m.line}</code>`;
+    out += `<li>${what}: ${escapeHtml(m.why)}</li>\n`;
+  }
+  return out + '</ul>\n';
+}
+
+/** A `Host` header safe to write into a page: a name, IPv4 or bracketed IPv6 address, and a port. */
+const SAFE_HOST = /^(?:[A-Za-z0-9.-]+|\[[0-9A-Fa-f:.]+\])(?::[0-9]{1,5})?$/;
+
+/** Types `--rewrite-base` rewrites: HTML, CSS and any XML (feeds, sitemaps, SVG). */
+export function isRebasedType(type: string): boolean {
+  return type.startsWith('text/html') || type.startsWith('text/css') || type.split(';', 1)[0]!.includes('xml');
+}
+
+/**
+ * A production URL for `--rewrite-base`: `scheme://host[/path]` without a trailing slash, query or
+ * fragment (`https://example.com/blog/` → `https://example.com/blog`), or undefined when it is not an
+ * http(s) URL with a host.
+ */
+export function normalizeProductionUrl(raw: string): string | undefined {
+  const m = /^(https?:\/\/[^/?#\s]+)(\/[^?#\s]*)?$/i.exec(raw.replace(/[?#].*$/, ''));
+  if (!m) return undefined;
+  return m[1]! + (m[2] ?? '').replace(/\/+$/, '');
+}
+
+/**
+ * `body` with every `from` (a production URL) replaced by `to` (the local origin and base), where
+ * the next byte cannot continue a host or path segment (a letter, digit, `.`, `-`, `_`, `~`, `:` or `%`),
+ * so `https://example.com` does not match `https://example.com.evil` and `/blog` not `/blogroll`.
+ */
+export function rewriteBaseUrls(body: Uint8Array, from: string, to: string): Uint8Array {
+  const text = Buffer.from(body.buffer, body.byteOffset, body.byteLength).toString('latin1');
+  let out = '';
+  let i = 0;
+  for (;;) {
+    const at = text.indexOf(from, i);
+    if (at === -1) break;
+    const next = text[at + from.length];
+    out += text.slice(i, at) + (next !== undefined && /[A-Za-z0-9._~:%-]/.test(next) ? from : to);
+    i = at + from.length;
+  }
+  if (i === 0) return body;
+  return Buffer.from(out + text.slice(i), 'latin1');
 }
 
 /**
@@ -1043,8 +1197,10 @@ export function createSiteServer(site: Tree | (() => Tree), options: SiteServerO
     }
     if (method !== 'GET' && method !== 'HEAD') return page(405, METHOD_PAGE, { allow: options.cors ? 'GET, HEAD, OPTIONS' : 'GET, HEAD' });
     const tree = current();
-    const { redirects, headers: headerRules } = rulesFor(tree);
-    const isFile = (p: string): boolean => tree.isFile(p) && p !== '/_redirects' && p !== '/_headers';
+    const profile = options.profile;
+    const siteFiles = profile?.siteFiles !== false;
+    const { redirects, headers: headerRules } = siteFiles ? rulesFor(tree) : { redirects: [], headers: [] };
+    const isFile = (p: string): boolean => tree.isFile(p) && !(siteFiles && (p === '/_redirects' || p === '/_headers'));
 
     const q = url.indexOf('?');
     const hash = url.indexOf('#');
@@ -1086,9 +1242,15 @@ export function createSiteServer(site: Tree | (() => Tree), options: SiteServerO
       const type = (ext !== undefined ? options.mime?.get(ext) : undefined) ?? mimeTypeFor(served);
       const live = options.liveReload !== undefined && type.startsWith('text/html') && isNavigation(req.headers);
       if (live) warnCsp(served, custom['content-security-policy']);
+      const prodNow = typeof options.rewriteBase === 'function' ? options.rewriteBase() : options.rewriteBase;
+      const host = req.headers.host;
+      const rebase = prodNow !== undefined && isRebasedType(type) && host !== undefined && SAFE_HOST.test(host) ? { from: prodNow, to: `http://${host}${mount}` } : undefined;
+      // A `.dcz` sidecar (build --experimental-dictionary): sent when the request offers its dictionary.
+      const delta = live || rebase ? undefined : deltaFor(tree, served, header(req.headers['available-dictionary']), header(req.headers['accept-encoding']));
+      const dictionaryVary = tree.isFile(`${served}.dcz`);
       // A deflated zip entry goes to a gzip client as is, wrapped in a gzip header and trailer (not for a
       // range request: ranges are served from the identity body).
-      const deflated = !live && req.headers.range === undefined && acceptsGzip(req.headers['accept-encoding']) ? options.content?.deflated?.(served) : undefined;
+      const deflated = !live && !delta && !rebase && req.headers.range === undefined && acceptsGzip(req.headers['accept-encoding']) ? options.content?.deflated?.(served) : undefined;
       let body: Uint8Array;
       try {
         body = deflated ? gzipMember(deflated.deflate, deflated.crc, deflated.size) : (options.content?.read(served) ?? file.bytes);
@@ -1096,13 +1258,15 @@ export function createSiteServer(site: Tree | (() => Tree), options: SiteServerO
         options.log?.(`error: ${e instanceof SitefileError ? e.message : String(e)}`);
         return page(500, ERROR_PAGE);
       }
+      if (rebase) body = rewriteBaseUrls(body, rebase.from, rebase.to);
       if (live) body = injectReloadScript(body);
       // Otherwise: a precompressed `<path>.br` / `<path>.gz` the client accepts (br first), else gzip on the fly
-      // under --compress. Range requests and live pages are always identity.
+      // under --compress. Range requests, live pages, rebased pages and deltas are never compressed here.
       const ae = req.headers['accept-encoding'];
-      const hasBr = !deflated && status === 200 && isFile(`${served}.br`);
-      const hasGz = !deflated && status === 200 && isFile(`${served}.gz`);
-      const onTheFly = !deflated && status === 200 && !!options.compress && isCompressible(type) && body.byteLength >= 1024;
+      const plain = !deflated && !delta && !rebase && status === 200;
+      const hasBr = plain && isFile(`${served}.br`);
+      const hasGz = plain && isFile(`${served}.gz`);
+      const onTheFly = plain && !!options.compress && isCompressible(type) && body.byteLength >= 1024;
       const negotiated = !live && (hasBr || hasGz || onTheFly);
       let coding: 'br' | 'gzip' | undefined;
       if (negotiated && req.headers.range === undefined) {
@@ -1110,13 +1274,15 @@ export function createSiteServer(site: Tree | (() => Tree), options: SiteServerO
         else if (hasGz && acceptsEncoding(ae, 'gzip')) [coding, body] = ['gzip', tree.get(`${served}.gz`)!.bytes];
         else if (onTheFly && acceptsEncoding(ae, 'gzip')) [coding, body] = ['gzip', gzipped(file.digest, body)];
       }
-      const vary: Record<string, string> = deflated || negotiated ? { vary: 'accept-encoding' } : {};
+      const varyOn = dictionaryVary ? 'accept-encoding, available-dictionary' : 'accept-encoding';
+      const vary: Record<string, string> = deflated || negotiated || dictionaryVary ? { vary: varyOn } : {};
       const encoding: Record<string, string> = deflated ? { 'content-encoding': 'gzip', ...vary } : coding ? { 'content-encoding': coding, ...vary } : vary;
       if (status !== 200) return finish(status, { 'content-type': type, 'content-length': body.byteLength, ...encoding, ...custom }, body);
       const preview = cacheControlFor(type, options.cache);
       const cc: Record<string, string> = preview === undefined ? {} : { 'cache-control': preview };
-      // An injected page and a gzip response are other representations of the file: they get their own ETags.
-      const etag = `"${file.digest.replace(/^sha256:/, '')}${live ? '-live' : ''}${deflated ? '-gzip' : coding ? `-${coding}` : ''}"`;
+      // An injected page, a rebased page, a compressed response and a delta are other representations of the
+      // file: they get their own ETags.
+      const etag = `"${file.digest.replace(/^sha256:/, '')}${rebase ? '-rebased' : ''}${live ? '-live' : ''}${deflated ? '-gzip' : coding ? `-${coding}` : ''}${delta ? '-dcz' : ''}"`;
       const modified = options.lastModified?.();
       const lm: Record<string, string> = modified === undefined ? {} : { 'last-modified': httpDate(modified) };
       if (etagMatches(req.headers['if-none-match'], etag)) return finish(304, { ...encoding, ...cc, ...custom, etag, ...lm }, undefined);
@@ -1124,6 +1290,8 @@ export function createSiteServer(site: Tree | (() => Tree), options: SiteServerO
       const ims = req.headers['if-none-match'] === undefined ? req.headers['if-modified-since'] : undefined;
       const since = ims === undefined ? undefined : parseHttpDate(ims);
       if (modified !== undefined && since !== undefined && modified <= since) return finish(304, { ...encoding, ...cc, ...custom, etag, ...lm }, undefined);
+      // The delta is sent whole (no byte ranges of an encoded body).
+      if (delta) return finish(200, { 'content-type': type, 'content-length': delta.byteLength, ...cc, ...custom, ...vary, 'content-encoding': 'dcz', etag, ...lm }, delta);
       // A single byte range of a GET (`If-Range` must name this ETag); anything else gets the whole file.
       const ifRange = req.headers['if-range'] as string | undefined;
       const range = method === 'GET' && (ifRange === undefined || ifRange.trim() === etag) ? byteRange(req.headers.range, body.byteLength) : undefined;
@@ -1135,7 +1303,7 @@ export function createSiteServer(site: Tree | (() => Tree), options: SiteServerO
         const part = body.subarray(start, end + 1);
         return finish(
           206,
-          { 'content-type': type, 'content-length': part.byteLength, ...cc, ...custom, etag, ...lm, ...vary, 'accept-ranges': 'bytes', 'content-range': `bytes ${start}-${end}/${body.byteLength}` },
+          { 'content-type': type, 'content-length': part.byteLength, ...cc, ...encoding, ...custom, etag, ...lm, 'accept-ranges': 'bytes', 'content-range': `bytes ${start}-${end}/${body.byteLength}` },
           part,
         );
       }
@@ -1185,29 +1353,75 @@ export function createSiteServer(site: Tree | (() => Tree), options: SiteServerO
     };
 
     if (redirect(true)) return;
-    let served = resolve(vpath, trailingSlash);
-    if (served === undefined && !trailingSlash && tree.isDirectory(vpath)) {
+    const handling = profile?.htmlHandling;
+    let served: string | undefined;
+    if (handling !== undefined) {
+      // `--html-handling` (Cloudflare's modes): one canonical spelling per page, the others redirect to it.
+      const go = (to: readonly string[], slash: boolean): void => {
+        const path = to.length === 0 ? '/' : '/' + to.map(encodeURIComponent).join('/') + (slash ? '/' : '');
+        finish(profile!.redirectStatus, { location: mount + path + search, 'content-length': 0 }, undefined);
+      };
+      const last = segs[segs.length - 1];
+      const index = vpath === '/' ? '/index.html' : `${vpath}/index.html`;
+      const hasIndex = isFile(index);
+      const hasHtml = segs.length > 0 && isFile(`${vpath}.html`);
+      if (!trailingSlash && last !== undefined && last.endsWith('.html') && isFile(vpath) && handling !== 'none') {
+        // `/x.html` and `/x/index.html` are spelled out: send them to the clean form.
+        const dir = segs.slice(0, -1);
+        if (last === 'index.html') return go(dir, dir.length > 0 && handling !== 'drop-slash');
+        return go([...dir, last.slice(0, -'.html'.length)], handling === 'force-slash');
+      }
+      if (!trailingSlash && isFile(vpath)) served = vpath;
+      else if (handling === 'none') served = trailingSlash && hasIndex ? index : undefined;
+      else if (segs.length === 0) served = hasIndex ? index : undefined;
+      else if (handling === 'auto') {
+        if (hasIndex) {
+          if (!trailingSlash) return go(segs, true);
+          served = index;
+        } else if (hasHtml) {
+          if (trailingSlash) return go(segs, false);
+          served = `${vpath}.html`;
+        }
+      } else if (hasIndex || hasHtml) {
+        const slash = handling === 'force-slash';
+        if (trailingSlash !== slash) return go(segs, slash);
+        served = slash ? (hasIndex ? index : `${vpath}.html`) : hasHtml ? `${vpath}.html` : index;
+      }
+    } else served = resolve(vpath, trailingSlash);
+    if (handling === undefined && served === undefined && !trailingSlash && tree.isDirectory(vpath)) {
       const location = mount + '/' + segs.map(encodeURIComponent).join('/') + '/' + search;
       return finish(301, { location, 'content-length': 0 }, undefined);
     }
     if (served === undefined && redirect(false)) return;
     // `/about/` when only `/about.html` answers: redirect to the clean URL `/about` (relative links in the
     // page then resolve as they do at `/about`). `_redirects` rules for the path come first.
-    if (served === undefined && trailingSlash && segs.length > 0 && isFile(`${vpath}.html`)) {
+    if (handling === undefined && profile?.slashHtml !== 'not-found' && served === undefined && trailingSlash && segs.length > 0 && isFile(`${vpath}.html`)) {
       const location = mount + '/' + segs.map(encodeURIComponent).join('/') + search;
       return finish(301, { location, 'content-length': 0 }, undefined);
     }
     if (served === undefined && options.spa && isNavigation(req.headers) && !(options.spaExclude ?? []).some((g) => globMatch(g, vpath + (trailingSlash && segs.length > 0 ? '/' : '')))) {
       served = spaFallback(segs, trailingSlash, isFile, options.spaFallback);
+      if (served !== undefined) note = ` \u2192 ${encodePath(served)} (spa fallback)`;
     }
+    if (served !== undefined && note === '' && served === `${vpath}.html`) note = ` \u2192 ${encodePath(served)} (clean URL)`;
     if (served !== undefined) return sendFile(200, served);
-    // The nearest 404.html: in the request's directory, then each parent up to the root.
+    // The nearest 404.html: in the request's directory, then each parent up to the root (only the
+    // root one for a profile whose host does not look further).
     const dirs = trailingSlash ? segs : segs.slice(0, -1);
-    for (let n = dirs.length; n >= 0; n--) {
+    for (let n = profile?.notFound === 'root' ? 0 : dirs.length; n >= 0; n--) {
       const notFound = `/${dirs.slice(0, n).map((d) => d + '/').join('')}404.html`;
-      if (isFile(notFound)) return sendFile(404, notFound);
+      if (isFile(notFound)) {
+        note = ` \u2192 ${encodePath(notFound)}`;
+        return sendFile(404, notFound);
+      }
     }
-    page(404, NOT_FOUND_PAGE, custom);
+    // Cloudflare Pages: a site without a 404.html is taken for a single-page app.
+    if (profile?.notFound === 'index' && isFile('/index.html')) {
+      note = ' \u2192 /index.html (no 404.html)';
+      return sendFile(200, '/index.html');
+    }
+    const misses = options.devNotFound ? nearMisses(tree, isFile, vpath, redirects, ruleRequest) : [];
+    page(404, misses.length === 0 ? NOT_FOUND_PAGE : nearMissPage(vpath, misses, mount), custom);
   };
 
   // HTTPS when a certificate is given (same handler; an https.Server has the http.Server API).

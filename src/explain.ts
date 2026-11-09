@@ -51,6 +51,13 @@ export function operationLabel(op: Operation): string {
       return `FINGERPRINT ${op.patterns.join(' ')}`;
     case 'CANONICAL':
       return `CANONICAL ${op.base}${op.pretty ? ' PRETTY' : ''}`;
+    case 'PRECOMPRESS':
+      return `PRECOMPRESS ${op.formats.join(' ')} ${op.patterns.join(' ')}`;
+    case 'ROBOTS':
+    case 'SECURITY_TXT':
+      return `${op.kind} ${op.dest}`;
+    case 'PRECACHE':
+      return `PRECACHE ${op.patterns.join(' ')}`;
     case 'CHECKLINKS':
       return `CHECKLINKS${op.warn ? ' --warn' : ''}${op.external ? ' --external' : ''}`;
   }
@@ -461,7 +468,10 @@ export function why(result: BuildResult, raw: string, contextDir: string): WhyRe
       } else if (op.kind === 'SITEMAP') inputs.push('the .html files in the tree');
       else if (op.kind === 'CHECKLINKS') return;
       else if (op.kind === 'CANONICAL') inputs.push('the page (canonical link)');
+      else if (op.kind === 'ROBOTS' || op.kind === 'SECURITY_TXT') inputs.push('the Sitefile');
+      else if (op.kind === 'PRECACHE') inputs.push(op.into === file ? 'the service worker (manifest injected)' : 'the files it lists');
       else if (op.kind === 'FINGERPRINT') inputs.push(op.manifest === file ? 'the files it renamed' : 'references to renamed files');
+      else if (op.kind === 'PRECOMPRESS') inputs.push(`${file.slice(0, -'.gz'.length)} (compressed)`);
       else inputs.push(`list ${op.list}`);
       events.push({ location: at(op.span.line), instruction: operationLabel(op), stage: display, path: file, action: prev ? 'overwrite' : 'write', digest: next.digest, inputs });
       prev = next;
@@ -478,15 +488,21 @@ export function why(result: BuildResult, raw: string, contextDir: string): WhyRe
   const before = finalOf(root, lastIndex).get(full);
   const after = result.tree.get(full);
   if (after && !same(before, after)) {
+    const site = full === joinVirtual(p.exportPath, '_redirects') || full === joinVirtual(p.exportPath, '_headers');
     const [rules, kind] = full === joinVirtual(p.exportPath, '_redirects') ? [p.redirects, 'REDIRECT'] : [p.headers, 'HEADER'];
-    const inputs = rules.map((r) => `${at(r.span.line)} ${kind}`);
+    const inputs = site ? rules.map((r) => `${at(r.span.line)} ${('instruction' in r && r.instruction) || kind}`) : [];
+    const text = new TextDecoder().decode(after.bytes);
     // `/_headers` may also hold FINGERPRINT's Cache-Control lines (or only them): with cacheHeaders set, no
-    // HEADER sets Cache-Control, so the name in the file means they were added.
-    const fp = kind === 'HEADER' && p.cacheHeaders && new TextDecoder().decode(after.bytes).includes('  Cache-Control: ') ? p.cacheHeaders : undefined;
+    // HEADER sets Cache-Control, so the name in the file means they were added. Likewise CSP's
+    // Content-Security-Policy lines; with CSP … META, a page changed at EXPORT got its <meta>.
+    const fp = site && kind === 'HEADER' && p.cacheHeaders && text.includes('  Cache-Control: ') ? p.cacheHeaders : undefined;
     if (fp) inputs.push(`${at(fp.span.line)} FINGERPRINT`);
+    const csp = p.csp && (site ? kind === 'HEADER' && text.includes('  Content-Security-Policy: ') : true) ? p.csp : undefined;
+    if (csp) inputs.push(site ? `${at(csp.span.line)} CSP` : 'the page (inline scripts and styles)');
+    const first = site ? (rules[0] ?? fp ?? csp) : csp;
     events.push({
-      location: at((rules[0] ?? fp)!.span.line),
-      instruction: rules.length ? kind : 'FINGERPRINT',
+      location: at(first!.span.line),
+      instruction: site && rules[0] ? ('instruction' in rules[0] && rules[0].instruction) || kind : site && fp ? 'FINGERPRINT' : 'CSP',
       stage: stageDisplay(p.stages[lastIndex]!, lastIndex),
       path: full,
       action: before ? 'overwrite' : 'write',

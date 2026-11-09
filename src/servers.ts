@@ -1,3 +1,4 @@
+import { looksLikeWarc, readWarc } from './warc.js';
 import { randomBytes } from 'node:crypto';
 import { promises as fs } from 'node:fs';
 import http from 'node:http';
@@ -44,6 +45,12 @@ export interface ServerState {
   readonly spaFallback?: string;
   /** `--base`: the path prefix the site is served under, `/repo/` (absent: `/`). */
   readonly base?: string;
+  /** `--rewrite-base`: the production URL replaced by the local one in HTML, CSS and XML (absent: none). */
+  readonly rewriteBase?: string;
+  /** `--host-profile`: netlify, cloudflare, vercel, github-pages or firebase (absent: sitefile's own rules). */
+  readonly hostProfile?: 'netlify' | 'cloudflare' | 'vercel' | 'github-pages' | 'firebase';
+  /** `--html-handling`: auto, force-slash, drop-slash or none (absent: the profile's). */
+  readonly htmlHandling?: 'auto' | 'force-slash' | 'drop-slash' | 'none';
   /** `--keep-os-metadata`: serve a directory's or archive's OS metadata files too (absent: false). */
   readonly keepOsMetadata?: boolean;
   /** `--allowed-host` names (absent: none; localhost names and IP addresses are always allowed). */
@@ -275,8 +282,9 @@ export async function loadArchiveTree(
   const origin = file;
   const unreadable = await checkArchiveFile(file, limits);
   const bytes = new Uint8Array(await fs.readFile(file).catch(() => { throw unreadable(); }));
-  const tree = await extractArchive(bytes, origin, limits);
-  if (tree.get('/oci-layout')) return ociArchiveTree(tree, origin, limits);
+  const warc = looksLikeWarc(bytes);
+  const tree = warc ? readWarc(bytes, origin, limits) : await extractArchive(bytes, origin, limits);
+  if (!warc && tree.get('/oci-layout')) return ociArchiveTree(tree, origin, limits);
   return options.hidden ? tree : served(tree, origin, options);
 }
 

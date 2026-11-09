@@ -96,6 +96,27 @@ pub struct ServerState {
     /// `--base`: the path prefix the site is served under, `/repo/` (absent: `/`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub base: Option<String>,
+    /// `--rewrite-base`: the production URL replaced by the local one in HTML, CSS and XML.
+    #[serde(
+        default,
+        rename = "rewriteBase",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub rewrite_base: Option<String>,
+    /// `--host-profile`: netlify, cloudflare, vercel, github-pages or firebase.
+    #[serde(
+        default,
+        rename = "hostProfile",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub host_profile: Option<String>,
+    /// `--html-handling`: auto, force-slash, drop-slash or none.
+    #[serde(
+        default,
+        rename = "htmlHandling",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub html_handling: Option<String>,
     /// `--keep-os-metadata`: serve a directory's or archive's OS metadata files too.
     #[serde(
         default,
@@ -646,8 +667,13 @@ fn load_archive(
     let unreadable = || SitefileError::plain(E_ARCHIVE, format!("cannot read '{origin}'"));
     check_archive_file(file, limits)?;
     let bytes = fs::read(file).map_err(|_| unreadable())?;
-    let tree = extract_archive(&bytes, &origin, limits, None)?;
-    if tree.is_file("/oci-layout") {
+    let warc = crate::warc::looks_like_warc(&bytes);
+    let tree = if warc {
+        crate::warc::read_warc(&bytes, &origin, limits, None)?
+    } else {
+        extract_archive(&bytes, &origin, limits, None)?
+    };
+    if !warc && tree.is_file("/oci-layout") {
         return oci_archive_tree(&tree, &origin, limits);
     }
     if hidden {
@@ -1046,6 +1072,12 @@ pub struct DetachedServe {
     pub spa_fallback: Option<String>,
     /// `--base` (normalized; `None` for `/`).
     pub base: Option<String>,
+    /// `--rewrite-base` (normalized).
+    pub rewrite_base: Option<String>,
+    /// `--host-profile`.
+    pub host_profile: Option<String>,
+    /// `--html-handling`.
+    pub html_handling: Option<String>,
     /// `--keep-os-metadata`.
     pub keep_os_metadata: bool,
     /// `--allowed-host` names, lowercased (see [`crate::server::parse_allowed_host`]).
@@ -1106,6 +1138,9 @@ impl DetachedServe {
             spa_exclude: Vec::new(),
             spa_fallback: None,
             base: None,
+            rewrite_base: None,
+            host_profile: None,
+            html_handling: None,
             keep_os_metadata: false,
             allowed_hosts: Vec::new(),
             cors: false,
@@ -1162,12 +1197,18 @@ pub fn serve_detached_with(
     };
     // fail fast on a bad image, directory or archive (or an ignored site-file line with --strict-site-files)
     let site = load_served_site(&reg.store, &serve.source, &options)?;
-    check_site_files(
-        &site.tree,
-        serve.strict_site_files,
-        warn,
-        site.content.as_deref(),
-    )?;
+    let routing = crate::server::routing_for(
+        serve.host_profile.as_deref(),
+        serve.html_handling.as_deref(),
+    );
+    if routing.is_none_or(|p| p.site_files) {
+        check_site_files(
+            &site.tree,
+            serve.strict_site_files,
+            warn,
+            site.content.as_deref(),
+        )?;
+    }
     drop(site);
     let (id, final_name) = reg.allocate(serve.name.as_deref())?;
     let state = ServerState {
@@ -1179,6 +1220,9 @@ pub fn serve_detached_with(
         spa_exclude: serve.spa_exclude.clone(),
         spa_fallback: serve.spa_fallback.clone(),
         base: serve.base.clone(),
+        rewrite_base: serve.rewrite_base.clone(),
+        host_profile: serve.host_profile.clone(),
+        html_handling: serve.html_handling.clone(),
         keep_os_metadata: serve.keep_os_metadata,
         allowed_hosts: serve.allowed_hosts.clone(),
         cors: serve.cors,
@@ -1412,6 +1456,9 @@ mod tests {
             spa_exclude: Vec::new(),
             spa_fallback: None,
             base: None,
+            rewrite_base: None,
+            host_profile: None,
+            html_handling: None,
             keep_os_metadata: false,
             allowed_hosts: Vec::new(),
             cors: false,

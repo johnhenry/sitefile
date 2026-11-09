@@ -16,12 +16,14 @@
 ; Instructions and clauses (case-insensitive in the source).
 [
   "FROM" "STAGE" "ARG" "LET" "IMPORT" "COPY" "RENDER" "TRANSFORM" "PLUGIN" "TOOL" "EXPORT"
-  "SITEMAP" "FEED" "REDIRECT" "HEADER" "FINGERPRINT" "CANONICAL" "CHECKLINKS"
-  "AS" "TO" "INTEGRITY" "SORT" "BY" "ASC" "DESC" "SCHEMA" "DRAFTS" "WITH" "OPTIONS" "ARGS" "BASE" "AT" "COMPRESSION"
-  "LINK" "TITLE" "STATUS" "IMAGE" "SECRET" "BEARER" "MANIFEST" "PRETTY"
+  "SITEMAP" "FEED" "REDIRECT" "HEADER" "FINGERPRINT" "CANONICAL" "PRECOMPRESS" "ROBOTS" "SECURITY_TXT" "PRECACHE" "CSP" "MIME" "CHECKLINKS"
+  "AS" "TO" "INTEGRITY" "SORT" "BY" "ASC" "DESC" "SCHEMA" "DRAFTS" "WITH" "OPTIONS" "ARGS" "BASE" "AT" "COMPRESSION" "KEY"
+  "LINK" "TITLE" "STATUS" "IMAGE" "SECRET" "BEARER" "MANIFEST" "PRETTY" "MIN"
+  "ALLOW" "DISALLOW" "CONTACT" "EXPIRES" "ENCRYPTION" "POLICY" "INTO" "POLICY" "META"
 ] @keyword
 
 (secret_clause id: (identifier) @variable)
+(export_instruction key: (identifier) @variable)
 (secret_clause header: (header_name) @property)
 
 (for_clause [ "FOR" "IN" ] @keyword.repeat)
@@ -73,8 +75,8 @@
     "FILE" "TEXT" "JSON" "TREE" "MARKDOWN" "YAML" "CSV" "WBN" "HTML" "SITEFILE"))
 ((export_format) @type.builtin
   (#any-of? @type.builtin
-    "directory" "zip" "tar" "tgz" "tar.gz" "wbn" "oci" "car" "html" "mhtml"
-    "DIRECTORY" "ZIP" "TAR" "TGZ" "TAR.GZ" "WBN" "OCI" "CAR" "HTML" "MHTML"))
+    "directory" "zip" "tar" "tgz" "tar.gz" "wbn" "oci" "car" "html" "mhtml" "warc" "swbn"
+    "DIRECTORY" "ZIP" "TAR" "TGZ" "TAR.GZ" "WBN" "OCI" "CAR" "HTML" "MHTML" "WARC" "SWBN"))
 ((compression) @constant.builtin
   (#any-of? @constant.builtin "gzip" "none" "GZIP" "NONE"))
 

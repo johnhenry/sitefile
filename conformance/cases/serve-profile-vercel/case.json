@@ -1,0 +1,57 @@
+{
+  "command": "serve",
+  "args": [
+    "--host-profile",
+    "vercel"
+  ],
+  "requests": [
+    {
+      "target": "/about",
+      "expect": {
+        "status": 404
+      }
+    },
+    {
+      "target": "/about.html",
+      "expect": {
+        "status": 200
+      }
+    },
+    {
+      "target": "/about/",
+      "expect": {
+        "status": 404
+      }
+    },
+    {
+      "target": "/docs",
+      "expect": {
+        "status": 404
+      }
+    },
+    {
+      "target": "/docs/",
+      "expect": {
+        "status": 200
+      }
+    },
+    {
+      "target": "/docs/index.html",
+      "expect": {
+        "status": 200
+      }
+    },
+    {
+      "target": "/old",
+      "expect": {
+        "status": 404
+      }
+    },
+    {
+      "target": "/_redirects",
+      "expect": {
+        "status": 200
+      }
+    }
+  ]
+}

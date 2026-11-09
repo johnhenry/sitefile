@@ -9,12 +9,16 @@
 pub mod casefold_data;
 pub mod cbor;
 pub mod deflate;
+pub mod dictionary;
 pub mod digest;
+pub mod ed25519;
 pub mod error;
 pub mod paths;
+pub mod portable;
 pub mod sha1;
 pub mod tree;
 pub mod values;
+pub mod zstd;
 
 // Language
 pub mod build_args;
@@ -42,11 +46,15 @@ pub mod resources;
 pub mod cache_limit;
 pub mod canonical;
 pub mod checklinks;
+pub mod csp;
 pub mod export;
 pub mod fingerprint;
 pub mod integrity;
 pub mod links;
 pub mod mime_data;
+pub mod precache;
+pub mod precompress;
+pub mod qr;
 pub mod refs;
 pub mod serve_auth;
 pub mod server;
@@ -68,6 +76,7 @@ pub mod outdated;
 pub mod plugins;
 pub mod profile;
 pub mod vendor;
+pub mod warc;
 pub mod watch;
 
 // Editor tooling (Rust only; docs/LSP.md)

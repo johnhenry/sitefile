@@ -1,0 +1,7 @@
+# PRECOMPRESS: gzip sidecars (.gz) next to the text files, for servers that send them
+# in place of the file (nginx gzip_static, Caddy file_server precompressed).
+FROM scratch
+COPY ./public/ /
+# Only compressible types of at least MIN bytes, and only when the .gz is smaller.
+PRECOMPRESS gzip / MIN 256
+EXPORT /

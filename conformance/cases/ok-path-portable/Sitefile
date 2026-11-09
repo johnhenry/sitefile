@@ -1,0 +1,16 @@
+# Paths other systems cannot hold are warnings (compared: the output tree).
+FROM scratch
+COPY <<X /www/aux.html
+x
+X
+COPY <<X "/www/a:b.txt"
+x
+X
+COPY <<X /www/_includes/x.html
+x
+X
+COPY <<X /outside/con.txt
+x
+X
+HEADER /* X: 1
+EXPORT /www

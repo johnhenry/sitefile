@@ -69,8 +69,18 @@ const examples = {
     for (const p of ['index.html', 'feed.xml', 'sitemap.xml', 'asset-manifest.json']) assert.ok(list.includes(p), `blog writes ${p}`);
     assert.ok(list.some((p) => p.startsWith('posts/')) && list.some((p) => p.startsWith('tags/')), 'one page per post and per tag');
   },
+  precompress() {
+    const list = files(build('precompress'));
+    assert.ok(list.includes('index.html.gz') && list.includes('style.css.gz'), 'PRECOMPRESS writes .gz sidecars');
+    assert.ok(!list.includes('logo.svg.gz'), 'files under MIN are left alone');
+  },
   data() {
     assert.ok(files(build('data')).length > 0, 'YAML, CSV and Web Bundle data render');
+  },
+  robots() {
+    const site = build('robots');
+    assert.match(read(site, 'robots.txt'), /^User-agent: \*\nDisallow: \/drafts\/\n\nSitemap: https:\/\/example.com\/sitemap.xml\n$/, 'ROBOTS points at the sitemap');
+    assert.match(read(site, '.well-known/security.txt'), /^Contact: mailto:security@example.com\nExpires: 2099-01-01T00:00:00Z\n/, 'SECURITY_TXT writes RFC 9116 fields');
   },
   motion() {
     assert.throws(() => build('motion'), 'a JavaScript plugin does not run without --allow-plugin');
@@ -95,12 +105,27 @@ const examples = {
       "fileable's cmd attribute fails clearly in the sandbox",
     );
   },
+  precache() {
+    const site = build('precache');
+    const manifest = JSON.parse(read(site, 'precache-manifest.json'));
+    assert.deepEqual(manifest.map((e) => e.url).slice(0, 2), ['/index.html', '/offline.html'], 'PRECACHE lists the files');
+    assert.ok(manifest.some((e) => e.url.startsWith('/style.') && e.revision === null), 'a fingerprinted file needs no revision');
+    assert.match(read(site, 'sw.js'), /precacheAndRoute\(\[/, 'the manifest is injected into the service worker');
+  },
   wasm() {
     assert.ok(files(build('wasm')).some((p) => p.endsWith('.svg')), 'an import-free WebAssembly plugin runs with no flag');
+  },
+  csp() {
+    const site = build('csp');
+    assert.match(read(site, '_headers'), /^\/\n  Content-Security-Policy: default-src 'self';.*script-src 'self' 'sha256-[A-Za-z0-9+\/]+=';.*style-src 'self' 'sha256-/m, 'CSP hashes the inline script and style');
   },
   image() {
     const list = files(build('image'));
     assert.ok(list.some((p) => /\.(png|jpe?g|webp)$/.test(p)), 'the image plugin writes resized images');
+  },
+  mime() {
+    const site = build('mime');
+    assert.equal(read(site, '_headers'), '/*.usdz\n  Content-Type: model/vnd.usdz+zip\n/*.ts\n  Content-Type: video/mp2t\n', 'MIME writes Content-Type rules');
   },
   theme() {
     // Stored as an image only: themed-site starts FROM it.

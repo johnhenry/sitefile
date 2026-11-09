@@ -229,6 +229,57 @@ pub(crate) fn instruction(ins: &Instruction) -> Value {
             ("base", Some(operand(base))),
             ("pretty", Some(json!(pretty))),
         ]),
+        Instruction::Precompress { span: sp, formats, patterns, min, overwrite } => obj(vec![
+            ("kind", s("PRECOMPRESS")),
+            ("span", Some(span(sp))),
+            ("formats", Some(json!(formats))),
+            ("patterns", Some(Value::Array(patterns.iter().map(operand).collect()))),
+            ("min", min.as_ref().map(operand)),
+            ("overwrite", Some(json!(overwrite))),
+        ]),
+        Instruction::Robots { span: sp, rules, sitemap, dest, overwrite } => obj(vec![
+            ("kind", s("ROBOTS")),
+            ("span", Some(span(sp))),
+            (
+                "rules",
+                Some(Value::Array(
+                    rules.iter().map(|(a, p, r)| json!({ "allow": a, "path": operand(p), "span": span(r) })).collect(),
+                )),
+            ),
+            ("sitemap", Some(json!(sitemap))),
+            ("dest", dest.as_ref().map(operand)),
+            ("overwrite", Some(json!(overwrite))),
+        ]),
+        Instruction::SecurityTxt { span: sp, contact, expires, encryption, policy, dest, overwrite } => obj(vec![
+            ("kind", s("SECURITY_TXT")),
+            ("span", Some(span(sp))),
+            ("contact", Some(Value::Array(contact.iter().map(operand).collect()))),
+            ("expires", Some(operand(expires))),
+            ("encryption", Some(Value::Array(encryption.iter().map(operand).collect()))),
+            ("policy", Some(Value::Array(policy.iter().map(operand).collect()))),
+            ("dest", dest.as_ref().map(operand)),
+            ("overwrite", Some(json!(overwrite))),
+        ]),
+        Instruction::Precache { span: sp, patterns, dest, into, overwrite } => obj(vec![
+            ("kind", s("PRECACHE")),
+            ("span", Some(span(sp))),
+            ("patterns", Some(Value::Array(patterns.iter().map(operand).collect()))),
+            ("dest", dest.as_ref().map(operand)),
+            ("into", into.as_ref().map(operand)),
+            ("overwrite", Some(json!(overwrite))),
+        ]),
+        Instruction::Csp { span: sp, policy, meta } => obj(vec![
+            ("kind", s("CSP")),
+            ("span", Some(span(sp))),
+            ("policy", policy.as_ref().map(operand)),
+            ("meta", Some(json!(meta))),
+        ]),
+        Instruction::Mime { span: sp, ext, media_type } => obj(vec![
+            ("kind", s("MIME")),
+            ("span", Some(span(sp))),
+            ("ext", Some(operand(ext))),
+            ("type", Some(operand(media_type))),
+        ]),
         Instruction::Sitemap { span: sp, base, dest, overwrite } => obj(vec![
             ("kind", s("SITEMAP")),
             ("span", Some(span(sp))),
@@ -263,7 +314,7 @@ pub(crate) fn instruction(ins: &Instruction) -> Value {
             ("value", Some(Value::Array(value.iter().map(operand).collect()))),
             ("overwrite", Some(json!(overwrite))),
         ]),
-        Instruction::Export { span: sp, path, format, base, at, compression } => obj(vec![
+        Instruction::Export { span: sp, path, format, base, at, compression, key } => obj(vec![
             ("kind", s("EXPORT")),
             ("span", Some(span(sp))),
             ("path", Some(operand(path))),
@@ -271,6 +322,7 @@ pub(crate) fn instruction(ins: &Instruction) -> Value {
             ("base", base.as_ref().map(operand)),
             ("at", at.as_ref().map(operand)),
             ("compression", compression.as_ref().map(|(v, cs)| json!({ "value": v.as_str(), "span": span(cs) }))),
+            ("key", key.as_ref().map(|(id, ks)| json!({ "id": id, "span": span(ks) }))),
         ]),
     }
 }
