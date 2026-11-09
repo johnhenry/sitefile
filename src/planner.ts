@@ -3,7 +3,7 @@ import { importedStage, isFragment, isImageBase, isInline, stageNames, type Imag
 import { normalizeLocal, normalizeVirtual } from './paths.js';
 import { parseRef } from './ref.js';
 import { checkPattern } from './fingerprint.js';
-import { checkBaseUrl, checkHeaderName, checkHeaderValue, checkRedirectTarget, checkSitePath } from './site.js';
+import { checkBaseUrl, checkFieldUri, checkHeaderName, checkHeaderValue, checkRedirectTarget, checkSitePath, pageUrl, parseFeedDate, robotsTxt, securityTxt } from './site.js';
 import { coerce, evaluateOperand, type Scalar } from './values.js';
 import { isGitUri, parseGitUri, type GitLocation } from './resources/git.js';
 import { parseFragmentBody } from './language/validate.js';
@@ -83,6 +83,15 @@ export interface HeaderSpec {
   readonly span: SourceSpan;
 }
 
+/** A file whose text the planner wrote (ROBOTS: `/robots.txt`, SECURITY_TXT: `/.well-known/security.txt`). */
+export interface TextFileOperation<K extends 'ROBOTS' | 'SECURITY_TXT'> {
+  readonly kind: K;
+  readonly dest: string;
+  readonly text: string;
+  readonly overwrite: boolean;
+  readonly span: SourceSpan;
+}
+
 export type Operation =
   | {
       /** Report the references in the tree's HTML and CSS files that point at nothing. */
@@ -109,6 +118,8 @@ export type Operation =
       readonly overwrite: boolean;
       readonly span: SourceSpan;
     }
+  | TextFileOperation<'ROBOTS'>
+  | TextFileOperation<'SECURITY_TXT'>
   | {
       /** Add a canonical link to every page below `root` that has none. */
       readonly kind: 'CANONICAL';
@@ -126,6 +137,17 @@ export type Operation =
       /** Checked absolute patterns, NFC; a trailing `/` became `/**`. */
       readonly patterns: readonly string[];
       readonly min: number;
+      readonly overwrite: boolean;
+      readonly span: SourceSpan;
+    }
+  | {
+      /** A precache manifest of the files matching `patterns` (checked, NFC), written to `dest` and/or injected into `into`. */
+      readonly kind: 'PRECACHE';
+      readonly patterns: readonly string[];
+      readonly dest?: string;
+      readonly into?: string;
+      /** The EXPORT path: URLs are paths below it. */
+      readonly root: string;
       readonly overwrite: boolean;
       readonly span: SourceSpan;
     }
@@ -287,6 +309,8 @@ export function plan(program: Program, buildArgs: Readonly<Record<string, string
   const redirects: RedirectSpec[] = [];
   const headers: HeaderSpec[] = [];
   const fingerprints: Array<{ span: SourceSpan; headers: boolean }> = [];
+  const sitemapUrls: string[] = [];
+  const robots: Array<{ op: Extract<Operation, { kind: 'ROBOTS' }>; rules: Array<{ allow: boolean; path: string }>; stage: number }> = [];
   const warnings: string[] = [];
   const declaredArgs = new Set<string>();
   const allStageNames = stageNames(program.instructions);
@@ -450,7 +474,34 @@ export function plan(program: Program, buildArgs: Readonly<Record<string, string
         break;
       case 'SITEMAP': {
         const base = checkBaseUrl(evaluateOperand(ins.base, vars), 'SITEMAP BASE', ins.base.span);
-        operations().push({ kind: 'SITEMAP', base, dest: fileDest(ins.dest, vars, '/sitemap.xml', 'SITEMAP'), overwrite: ins.overwrite, span: ins.span });
+        const dest = fileDest(ins.dest, vars, '/sitemap.xml', 'SITEMAP');
+        sitemapUrls.push(pageUrl(base, dest));
+        operations().push({ kind: 'SITEMAP', base, dest, overwrite: ins.overwrite, span: ins.span });
+        break;
+      }
+      case 'ROBOTS': {
+        const rules = ins.rules.map((r) => ({ allow: r.allow, path: checkSitePath(evaluateOperand(r.path, vars), `ROBOTS ${r.allow ? 'ALLOW' : 'DISALLOW'} path`, r.path.span) }));
+        const op = { kind: 'ROBOTS' as const, dest: fileDest(ins.dest, vars, '/robots.txt', 'ROBOTS'), text: robotsTxt(rules, []), overwrite: ins.overwrite, span: ins.span };
+        operations().push(op);
+        // The Sitemap lines name every SITEMAP of the Sitefile, also later ones: filled in below.
+        if (ins.sitemap) robots.push({ op, rules, stage: stages.length - 1 });
+        break;
+      }
+      case 'SECURITY_TXT': {
+        const raw = evaluateOperand(ins.expires, vars);
+        const date = parseFeedDate(raw);
+        if (!date) throw new SitefileError('E_VALIDATION', `SECURITY_TXT EXPIRES '${raw}' must be a date (YYYY-MM-DD) or an RFC 3339 date-time; durations are not accepted, so the file is the same on every build`, ins.expires.span);
+        const now = Date.now() / 1000;
+        if (date.seconds <= now) warnings.push(`${program.file}:${ins.span.line}: SECURITY_TXT EXPIRES ${raw} is in the past, so security.txt is already stale (RFC 9116); set a later date`);
+        else if (date.seconds - now < 30 * 86400) warnings.push(`${program.file}:${ins.span.line}: SECURITY_TXT EXPIRES ${raw} is less than 30 days away; set a later date before it passes`);
+        const uri = (o: Operand, field: string, schemes: readonly string[]): string => checkFieldUri(evaluateOperand(o, vars), field, schemes, o.span);
+        const text = securityTxt({
+          contact: ins.contact.map((o) => uri(o, 'CONTACT', ['mailto:', 'tel:', 'https://'])),
+          expires: date.text,
+          encryption: ins.encryption.map((o) => uri(o, 'ENCRYPTION', ['https://', 'openpgp4fpr:', 'dns:'])),
+          policy: ins.policy.map((o) => uri(o, 'POLICY', ['https://'])),
+        });
+        operations().push({ kind: 'SECURITY_TXT', dest: fileDest(ins.dest, vars, '/.well-known/security.txt', 'SECURITY_TXT'), text, overwrite: ins.overwrite, span: ins.span });
         break;
       }
       case 'FINGERPRINT': {
@@ -483,6 +534,14 @@ export function plan(program: Program, buildArgs: Readonly<Record<string, string
           span: ins.span,
         });
         break;
+      case 'PRECACHE': {
+        const patterns = ins.patterns.map((o) => checkPattern(evaluateOperand(o, vars), o.span, 'PRECACHE'));
+        const into = ins.into ? fileDest(ins.into, vars, '', 'PRECACHE INTO') : undefined;
+        const dest = ins.dest || !into ? fileDest(ins.dest, vars, '/sw-manifest.json', 'PRECACHE') : undefined;
+        // `root` is the EXPORT path, filled in below.
+        operations().push({ kind: 'PRECACHE', patterns, ...(dest !== undefined ? { dest } : {}), ...(into !== undefined ? { into } : {}), root: '/', overwrite: ins.overwrite, span: ins.span });
+        break;
+      }
       case 'CHECKLINKS':
         // `root` and `redirects` are filled in below, once every line is planned.
         operations().push({ kind: 'CHECKLINKS', warn: ins.warn, external: ins.external, root: '/', redirects: [], span: ins.span });
@@ -533,9 +592,14 @@ export function plan(program: Program, buildArgs: Readonly<Record<string, string
     }
   }
 
+  for (const r of robots) {
+    if (sitemapUrls.length === 0) throw new SitefileError('E_VALIDATION', 'ROBOTS … SITEMAP: the Sitefile has no SITEMAP to point to (add SITEMAP BASE <url>, or leave out SITEMAP)', r.op.span);
+    const ops = stages[r.stage]!.operations;
+    ops[ops.indexOf(r.op)] = { ...r.op, text: robotsTxt(r.rules, [...new Set(sitemapUrls)]) };
+  }
   for (const st of stages) {
     st.operations.forEach((op, i) => {
-      if (op.kind === 'FINGERPRINT' || op.kind === 'CANONICAL') st.operations[i] = { ...op, root: exportPath ?? '/' };
+      if (op.kind === 'FINGERPRINT' || op.kind === 'CANONICAL' || op.kind === 'PRECACHE') st.operations[i] = { ...op, root: exportPath ?? '/' };
       if (op.kind === 'CHECKLINKS') st.operations[i] = { ...op, root: exportPath ?? '/', redirects: redirects.map((r) => r.from) };
     });
   }

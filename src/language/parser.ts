@@ -21,6 +21,7 @@ import {
   type Instruction,
   type Operand,
   type RenderEach,
+  type RobotsRule,
   type StageRef,
   type ValueType,
 } from './ast.js';
@@ -76,6 +77,12 @@ function parseInstruction(c: Cursor): Instruction {
       return parseCanonical(c, span);
     case 'PRECOMPRESS':
       return parsePrecompress(c, span);
+    case 'ROBOTS':
+      return parseRobots(c, span);
+    case 'SECURITY_TXT':
+      return parseSecurityTxt(c, span);
+    case 'PRECACHE':
+      return parsePrecache(c, span);
     case 'CHECKLINKS':
       return parseCheckLinks(c, span);
     case 'RUN':
@@ -621,6 +628,63 @@ function parsePrecompress(c: Cursor, span: SourceSpan): Instruction {
   const min = c.keyword('MIN') ? c.operand('minimum size in bytes') : undefined;
   c.expectEnd();
   return { kind: 'PRECOMPRESS', span, formats: formats.length ? formats : ['gzip'], patterns, ...(min ? { min } : {}), overwrite: flags.has('overwrite') };
+}
+
+/** `ROBOTS [--overwrite] [ALLOW <path> | DISALLOW <path>]… [SITEMAP] [TO <dest>]` (in this order) */
+function parseRobots(c: Cursor, span: SourceSpan): Instruction {
+  const flags = parseFlags(c, { overwrite: 'bare' });
+  const rules: RobotsRule[] = [];
+  for (;;) {
+    const at = c.span;
+    if (c.keyword('ALLOW')) rules.push({ allow: true, path: c.operand('path'), span: at });
+    else if (c.keyword('DISALLOW')) rules.push({ allow: false, path: c.operand('path'), span: at });
+    else break;
+  }
+  const sitemap = c.keyword('SITEMAP');
+  const dest = c.keyword('TO') ? c.operand('destination') : undefined;
+  if (!c.atEnd()) {
+    const at = c.span;
+    throw c.error('E_SYNTAX', `unexpected '${c.word()}' (expected ALLOW, DISALLOW, SITEMAP or TO, in this order)`, at);
+  }
+  return { kind: 'ROBOTS', span, rules, sitemap, ...(dest ? { dest } : {}), overwrite: flags.has('overwrite') };
+}
+
+/** `SECURITY_TXT [--overwrite] CONTACT <uri>… EXPIRES <date> [ENCRYPTION <uri>]… [POLICY <uri>]… [TO <dest>]` (any order) */
+function parseSecurityTxt(c: Cursor, span: SourceSpan): Instruction {
+  const flags = parseFlags(c, { overwrite: 'bare' });
+  const contact: Operand[] = [];
+  const encryption: Operand[] = [];
+  const policy: Operand[] = [];
+  let expires: Operand | undefined;
+  let dest: Operand | undefined;
+  while (!c.atEnd()) {
+    const at = c.span;
+    if (c.keyword('CONTACT')) contact.push(c.operand('contact URI'));
+    else if (c.keyword('ENCRYPTION')) encryption.push(c.operand('encryption key URI'));
+    else if (c.keyword('POLICY')) policy.push(c.operand('policy URI'));
+    else if (c.keyword('EXPIRES')) {
+      if (expires) throw c.error('E_SYNTAX', 'EXPIRES given twice', at);
+      expires = c.operand('expiry date');
+    } else if (c.keyword('TO')) {
+      if (dest) throw c.error('E_SYNTAX', 'TO given twice', at);
+      dest = c.operand('destination');
+    } else throw c.error('E_SYNTAX', `unexpected '${c.word()}' (expected CONTACT, EXPIRES, ENCRYPTION, POLICY or TO)`, at);
+  }
+  if (contact.length === 0) throw c.error('E_VALIDATION', 'SECURITY_TXT needs CONTACT <uri> (RFC 9116 requires at least one Contact field)', span);
+  if (!expires) throw c.error('E_VALIDATION', 'SECURITY_TXT needs EXPIRES <date> (RFC 9116 requires an Expires field)', span);
+  return { kind: 'SECURITY_TXT', span, contact, expires, encryption, policy, ...(dest ? { dest } : {}), overwrite: flags.has('overwrite') };
+}
+
+/** `PRECACHE [--overwrite] <pattern>… [TO <dest>] [INTO <service-worker>]` (clauses in this order) */
+function parsePrecache(c: Cursor, span: SourceSpan): Instruction {
+  const flags = parseFlags(c, { overwrite: 'bare' });
+  const patterns: Operand[] = [];
+  while (!c.atEnd() && !c.peekKeyword('TO') && !c.peekKeyword('INTO')) patterns.push(c.operand('path pattern'));
+  if (patterns.length === 0) throw c.error('E_SYNTAX', 'expected a path pattern (PRECACHE /assets/ or PRECACHE /**/*.css /index.html)');
+  const dest = c.keyword('TO') ? c.operand('destination') : undefined;
+  const into = c.keyword('INTO') ? c.operand('service worker path') : undefined;
+  c.expectEnd();
+  return { kind: 'PRECACHE', span, patterns, ...(dest ? { dest } : {}), ...(into ? { into } : {}), overwrite: flags.has('overwrite') };
 }
 
 /** `CHECKLINKS [--warn] [--external]` */

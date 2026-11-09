@@ -16,6 +16,7 @@ import { transformCacheDir } from './cache.js';
 import { requireArgs, str, strs, table, usage, usageError, type Command, type ParsedValues } from './common.js';
 import { watchMemo } from '../memo.js';
 import { pollOption, watchLoop } from './watch.js';
+import { CLEAR, KEYS_HELP, KEYS_HINT, openBrowser, openUrl, qrText, readKeys, serveUrls, urlsText } from './serve-keys.js';
 
 const WORKER = fileURLToPath(new URL('./serve-worker.js', import.meta.url));
 
@@ -180,6 +181,8 @@ const run: Command = {
     '--country <code>  the country _redirects Country= conditions match (there is no geolocation locally)',
     '--strict-site-files  refuse to serve when a _redirects or _headers line would be ignored',
     '--keep-os-metadata  serve __MACOSX, ._*, Thumbs.db and desktop.ini of a directory or archive (default: skipped)',
+    '--open[=<path>]   open the site (at <path>) in the browser once it is served ($BROWSER, else the system default)',
+    '--qr              print a QR code of the network URL (with -p 0.0.0.0:...), else of the local URL',
     '--watch           build the context, serve it, rebuild on change and live-reload pages (foreground only)',
     '-f, --file <path>            Sitefile path (--watch; default <context>/Sitefile)',
     '--target <stage>             build up to this stage and serve its whole tree (--watch)',
@@ -216,6 +219,8 @@ const run: Command = {
     'connect-timeout': { type: 'string' },
     'read-timeout': { type: 'string' },
     cors: { type: 'boolean' },
+    open: { type: 'string' },
+    qr: { type: 'boolean' },
     isolate: { type: 'boolean' },
     coep: { type: 'string' },
     watch: { type: 'boolean' },
@@ -258,16 +263,30 @@ const run: Command = {
       checkSiteFiles(tree, strictSiteFiles, warn, content);
       warnSpaFallback(tree, spa.spaFallback, warn);
       const modified = await servedLastModified(store, source);
+      let current = tree;
       const proxy = proxyOption(v);
-      const server = createSiteServer(tree, { allowedHosts, proxy, cors: !!v.cors, ...(isolate ? { isolate } : {}), lastModified: () => modified, log: (l) => process.stdout.write(`${l}\n`), ...(content ? { content } : {}), ...(country !== undefined ? { country } : {}), ...spa, ...(base !== undefined ? { base } : {}) });
+      const server = createSiteServer(() => current, { allowedHosts, proxy, cors: !!v.cors, ...(isolate ? { isolate } : {}), lastModified: () => modified, log: (l) => process.stdout.write(`${l}\n`), ...(content ? { content } : {}), ...(country !== undefined ? { country } : {}), ...spa, ...(base !== undefined ? { base } : {}) });
       const addr = await listen(server, bind.host, bind.port);
       process.stdout.write(`Serving ${label} (${tree.size} files) at ${siteUrl(addr.host, addr.port, base)}  (Ctrl-C to stop)\n`);
-      await waitForSignal();
+      const quit = await terminal(v, addr, base, warn, async () => {
+        if (source.kind !== 'dir') {
+          process.stdout.write(`Nothing to re-read: ${label} is ${source.kind === 'image' ? 'an image' : 'an archive file'}; start serve again to read it again\n`);
+          return;
+        }
+        const next = await loadServedSite(store, source, { keepOsMetadata, warn });
+        checkSiteFiles(next.tree, false, warn, next.content);
+        current = next.tree;
+        next.close();
+        process.stdout.write(`Re-read ${label} (${current.size} files)\n`);
+      });
+      await Promise.race([waitForSignal(), quit.promise]);
+      quit.stop();
       await closeServer(server);
       close();
       return 0;
     }
 
+    if (v.open !== undefined || v.qr) usage('--open and --qr are for a server in the foreground, not -d');
     const reg = await ServerRegistry.open(store);
     for (const f of PROXY_FLAGS) if (v[f] !== undefined) usage(`--${f} is for a server in the foreground (or --watch), not -d`);
     const up = await serveDetached(reg, { label, source, name, bind, keepOsMetadata, allowedHosts, cors: !!v.cors, ...(isolate ? { isolate } : {}), country, strictSiteFiles, ...spa, base }, warn);
@@ -366,6 +385,38 @@ export async function restartDetached(reg: ServerRegistry, s: ServerState, grace
     await reg.update(s.id, { ready: false });
     throw e;
   });
+}
+
+/**
+ * After the server listens: `--qr`, `--open[=path]`, then single keys (a terminal, see serve-keys.ts).
+ * `promise` resolves on `q`; `stop` stops reading keys.
+ */
+async function terminal(
+  v: ParsedValues,
+  addr: { host: string; port: number },
+  base: string | undefined,
+  warn: (m: string) => void,
+  restart: () => Promise<void>,
+): Promise<{ promise: Promise<void>; stop: () => void }> {
+  const urls = await serveUrls(addr.host, addr.port, base);
+  if (v.qr) process.stdout.write(qrText(urls.network ?? urls.local));
+  const open = str(v.open);
+  if (open !== undefined) openBrowser(openUrl(urls.local, open), warn);
+  let resolve!: () => void;
+  const promise = new Promise<void>((r) => (resolve = r));
+  let busy = Promise.resolve();
+  const stop = readKeys((a) => {
+    busy = busy.then(async () => {
+      if (a === 'quit') resolve();
+      else if (a === 'help') process.stdout.write(KEYS_HELP);
+      else if (a === 'clear') process.stdout.write(CLEAR);
+      else if (a === 'urls') process.stdout.write(urlsText(urls));
+      else if (a === 'open') openBrowser(openUrl(urls.local, open ?? '/'), warn);
+      else await restart();
+    });
+  });
+  if (stop) process.stdout.write(KEYS_HINT);
+  return { promise, stop: stop ?? (() => undefined) };
 }
 
 /** serve flags that only mean something with --watch. */
@@ -480,9 +531,15 @@ async function serveWatch(v: ParsedValues, pos: string[]): Promise<number> {
   };
   const proxy = proxyOption(v);
   const server = createSiteServer(() => current, { allowedHosts, proxy, cors: !!v.cors, ...(isolate ? { isolate } : {}), liveReload: live, lastModified: () => builtAt, log: (l) => process.stdout.write(`${l}\n`), warn: (m) => process.stderr.write(`warning: ${m}\n`), ...(country !== undefined ? { country } : {}), ...spa, base: () => base });
+  const control: { rebuild?: () => void } = {};
+  let quit: { promise: Promise<void>; stop: () => void } | undefined;
+  let quitNow!: () => void;
+  const quitting = new Promise<void>((r) => (quitNow = r));
   try {
     return await watchLoop({
       context,
+      control,
+      stop: Promise.race([waitForSignal().then(() => undefined), quitting]),
       ...(pollMs !== undefined ? { pollMs } : {}),
       ...(file ? { sitefile: file } : {}),
       ...(plain ? { plain } : {}),
@@ -527,9 +584,12 @@ async function serveWatch(v: ParsedValues, pos: string[]): Promise<number> {
         const addr = await listen(server, bind.host, bind.port);
         started = true;
         process.stdout.write(`Serving ${context} (${current.size} files) at ${siteUrl(addr.host, addr.port, base)}  (Ctrl-C to stop)\n`);
+        quit = await terminal(v, addr, base, (m) => process.stderr.write(`warning: ${m}\n`), async () => control.rebuild?.());
+        void quit.promise.then(() => quitNow());
       },
     });
   } finally {
+    quit?.stop();
     if (started) await closeServer(server);
   }
 }
