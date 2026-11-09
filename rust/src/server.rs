@@ -1133,7 +1133,7 @@ fn is_http_url(s: &str) -> bool {
 }
 
 /// JavaScript's `String.prototype.trim` whitespace (the characters that matter in these files).
-fn js_trim(s: &str) -> &str {
+pub(crate) fn js_trim(s: &str) -> &str {
     s.trim_matches(|c: char| c.is_whitespace() || c == '\u{feff}')
 }
 

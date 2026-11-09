@@ -8,6 +8,15 @@
   `If-Modified-Since` without `If-None-Match` gives `304`. An HTML page whose
   `_headers` `Link` preloads or preconnects is preceded by a `103 Early Hints`
   response with those links (HTTP/1.1 `GET` only). Both servers.
+- **`sitefile import-config`** (johnhenry/sitefile#204): translates
+  netlify.toml, vercel.json, firebase.json, staticwebapp.config.json,
+  wrangler.toml/.json (`[assets]`) and an `.htaccess` subset into the
+  `_redirects` and `_headers` that `sitefile serve` understands today. Every
+  rule written is checked against serve's parser. Placeholders, conditions,
+  regular expressions, proxies and settings with no `_redirects` form are
+  listed as unsupported, never half translated. `--json` lists both. It reads
+  the TOML files with a small TOML subset shared by both implementations.
+  Fixtures for every format are conformance cases.
 - **`serve` answers byte ranges** (johnhenry/sitefile#166): `Accept-Ranges:
   bytes` on file responses; a single `Range` on `GET` gets `206` with
   `Content-Range`, an unsatisfiable one `416`; `If-Range` (strong ETag match)
