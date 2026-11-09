@@ -1,12 +1,35 @@
 import http from 'node:http';
+import https from 'node:https';
+import os from 'node:os';
 import type { AddressInfo } from 'node:net';
-import { SitefileError } from './errors.js';
-import { globMatch, headersFor, isRewriteStatus, matchRule, parseHeaderRules, parseRedirectRules, substituteTarget } from './serve-rules.js';
+import { isSitefileError, SitefileError } from './errors.js';
+import { fetchRemote, redactUrl } from './resources/https.js';
+import { DEFAULT_FETCH_POLICY, type FetchPolicy } from './resources/types.js';
+import { globMatch, headersFor, isRewriteStatus, matchRedirect, type RedirectRequest, type ServeRedirect, matchRule, parseHeaderRules, parseRedirectRules, substituteTarget } from './serve-rules.js';
 import { deltaFor } from './dictionary.js';
 import type { Tree } from './tree.js';
 import { nfc } from './paths.js';
+import { gzip } from './deflate.js';
 import { mimeTypeFor } from './wbn.js';
 import { RELOAD_CLIENT } from './reload-client.js';
+import type { BasicAuth } from './serve-auth.js';
+
+/** `serve`'s proxying (#172): `--proxy` routes and the fetch policy every proxied request follows. */
+export interface ServeProxy {
+  /** `--proxy /prefix=https://host/path`: requests under `prefix` go to `target` + the rest of the path. */
+  readonly routes: ReadonlyArray<{ readonly prefix: string; readonly target: string }>;
+  /**
+   * The policy: https only unless allowHttp, public addresses only unless allowPrivateNetwork, and a strict
+   * host list (`--allow-hosts`, plus each `--proxy` route's host): a `_redirects` proxy rule to any other
+   * host is refused.
+   */
+  readonly policy: FetchPolicy;
+}
+
+/** Response headers a proxy does not pass on (RFC 9110 section 7.6.1), and the length it recomputes. */
+const HOP_BY_HOP = new Set(['connection', 'keep-alive', 'proxy-authenticate', 'proxy-authorization', 'proxy-connection', 'te', 'trailer', 'transfer-encoding', 'upgrade', 'content-length']);
+/** Request headers passed to the upstream (no cookies or credentials: they belong to this server's origin). */
+const PROXY_REQUEST_HEADERS = ['accept', 'accept-language', 'if-none-match', 'if-modified-since', 'range'];
 
 export interface SiteServerOptions {
   /**
@@ -14,6 +37,8 @@ export interface SiteServerOptions {
    * with the nearest app shell ({@link spaFallback}). Never for subresources (scripts, images, `fetch()`).
    */
   readonly spa?: boolean;
+  /** Proxy rules (`_redirects` status 200 to a URL) and `--proxy` routes; without this every proxy rule is refused. */
+  readonly proxy?: ServeProxy;
   /** `--spa-exclude`: request paths (`*` matches any characters) that never fall back. */
   readonly spaExclude?: readonly string[];
   /** `--spa-fallback`: the one file every fallback serves, instead of the nearest `200.html` or `index.html`. */
@@ -47,6 +72,11 @@ export interface SiteServerOptions {
   readonly rewriteBase?: string | (() => string | undefined);
   /** `--host-profile` / `--html-handling`: behave like a static host ({@link hostProfile}). Absent: sitefile's own rules. */
   readonly profile?: RoutingProfile;
+  /**
+   * Foreground and `--watch` servers (never detached or shared ones): a 404 with no `404.html` to
+   * answer it lists near misses ({@link nearMisses}).
+   */
+  readonly devNotFound?: boolean;
   /** `--country`: what `_redirects` `Country=` conditions match (there is no geolocation locally). */
   readonly country?: string;
   /**
@@ -63,6 +93,36 @@ export interface SiteServerOptions {
    * `Cross-Origin-Resource-Policy: same-origin`. `_headers` still wins.
    */
   readonly isolate?: 'require-corp' | 'credentialless';
+  /** `--max-age`, `--immutable`, `--max-age-html`: a production `Cache-Control` preview for files ({@link cacheControlFor}). */
+  readonly cache?: CachePreview;
+  /** `--log-format`: access-log lines as text (the default, `GET /path 200 1234 1.2ms`) or one JSON object each ({@link accessLogLine}). */
+  readonly logFormat?: 'text' | 'json';
+  /** `--log-ip`: add the client address to access-log lines. */
+  readonly logIp?: boolean;
+  /** `--quiet`: no access-log lines (other log lines still go to {@link log}). */
+  readonly quiet?: boolean;
+  /** `--auth`, `--auth-file`: every request needs one of these credentials (`Authorization: Basic`), else `401`. */
+  readonly auth?: BasicAuth;
+  /** `--max-connections-per-ip`: open connections one non-loopback client may hold (0 or unset: no limit); a connection over it gets `503` with `Retry-After: 1` and is closed. */
+  readonly maxConnectionsPerIp?: number;
+  /** Count loopback clients against {@link maxConnectionsPerIp} too (tests only). */
+  readonly limitLoopback?: boolean;
+  /** `--random-route`: {@link base} is a secret, so `/` is a plain `404` instead of a redirect into it. */
+  readonly hideBase?: boolean;
+  /** `--allow-ip`, `--deny-ip` (CIDRs, {@link parseCidr}): a non-loopback client they refuse gets `403` before anything else. */
+  readonly ipRules?: { readonly allow: readonly Cidr[]; readonly deny: readonly Cidr[] };
+  /** `X-Robots-Tag: noindex` on every response (the CLI sets it on non-loopback binds). */
+  readonly noindex?: boolean;
+  /** Add the client address and device (from `User-Agent`) to access-log lines of non-loopback clients. */
+  readonly clientInfo?: boolean;
+  /** `--tls-cert`, `--tls-key`: serve HTTPS with this PEM certificate chain and private key. */
+  readonly tls?: { readonly cert: string | Uint8Array; readonly key: string | Uint8Array };
+  /** `--compress`: gzip compressible files of at least 1024 bytes on the fly when no precompressed variant exists. */
+  readonly compress?: boolean;
+  /** `--throttle`: response bandwidth (bytes per second) and latency added before each response. */
+  readonly throttle?: Throttle;
+  /** `--mime`, `--mime-file`: content types by lowercase extension, checked before the built-in table. */
+  readonly mime?: ReadonlyMap<string, string>;
   /**
    * Where file contents come from when the tree holds only digests (a zip served in place,
    * `openZipFile`): `read` returns a file's bytes (undefined: use the node's), `deflated` a
@@ -385,6 +445,8 @@ export function injectReloadScript(html: Uint8Array): Uint8Array {
 
 const NOT_FOUND_PAGE = '<!doctype html><meta charset="utf-8"><title>404 Not Found</title><h1>404 Not Found</h1>\n';
 const BAD_REQUEST_PAGE = '<!doctype html><meta charset="utf-8"><title>400 Bad Request</title><h1>400 Bad Request</h1>\n';
+const FORBIDDEN_PAGE = '<!doctype html><meta charset="utf-8"><title>403 Forbidden</title><h1>403 Forbidden</h1>\n';
+const UNAUTHORIZED_PAGE = '<!doctype html><meta charset="utf-8"><title>401 Unauthorized</title><h1>401 Unauthorized</h1>\n';
 const FORBIDDEN_HOST_PAGE =
   '<!doctype html><meta charset="utf-8"><title>403 Forbidden</title><h1>403 Forbidden</h1><p>This server answers requests for localhost and IP addresses only. To allow another host name, restart it with <code>--allowed-host &lt;name&gt;</code>.</p>\n';
 const ERROR_PAGE = '<!doctype html><meta charset="utf-8"><title>500 Internal Server Error</title><h1>500 Internal Server Error</h1>\n';
@@ -415,10 +477,261 @@ export function safeSegments(rawPath: string): string[] | undefined {
  * section 3.2.2, sent by proxies and some clients) loses its scheme and authority (`/path?q`, or
  * `/` for an empty path); any other target is returned as it is. The authority is not checked.
  */
+/** One access-log request, as {@link accessLogLine} writes it. */
+export interface AccessLogEntry {
+  readonly ts: string;
+  readonly method: string;
+  /** The request target as received (made printable: other bytes become `%xx`). */
+  readonly target: string;
+  readonly status: number;
+  readonly bytes: number;
+  readonly ms: number;
+  /** `Content-Range` of a `206`/`416`, else undefined. */
+  readonly range?: string;
+  /** The client address (`--log-ip`, or a non-loopback client with client info), else undefined. */
+  /** What answered, as the `_redirects` log note (` → /new (_redirects:3)`), else undefined. */
+  readonly note?: string;
+  /** The client address (`--log-ip`), else undefined. */
+  readonly remote?: string;
+  /** The client's device ({@link deviceOf}), for non-loopback clients with client info. */
+  readonly device?: string;
+}
+
+/**
+ * An access-log line. Text: `METHOD target STATUS BYTES MSms` (then ` <remote>` with `--log-ip`). JSON, a stable
+ * contract (docs/CLI.md): `{"type":"request","ts","method","path","query","status","bytes","ms","encoding","range"}`
+ * and `"remote"` with `--log-ip`, in that order; `path` and `query` split the target at the first `?` (the `?`
+ * dropped), `ms` has one decimal, `range` is the response's `Content-Range` or null.
+ */
+export function accessLogLine(format: 'text' | 'json', e: AccessLogEntry): string {
+  const target = printable(e.target);
+  if (format === 'text') return `${e.method} ${target} ${e.status} ${e.bytes} ${e.ms.toFixed(1)}ms${e.note ?? ''}${e.remote !== undefined ? ` ${e.remote}` : ''}${e.device !== undefined ? ` ${e.device}` : ''}`;
+  const q = target.indexOf('?');
+  const path = q === -1 ? target : target.slice(0, q);
+  const query = q === -1 ? '' : target.slice(q + 1);
+  return (
+    `{"type":"request","ts":${JSON.stringify(e.ts)},"method":${JSON.stringify(e.method)},"path":${JSON.stringify(path)},"query":${JSON.stringify(query)},` +
+    `"status":${e.status},"bytes":${e.bytes},"ms":${e.ms.toFixed(1)},"encoding":"identity","range":${e.range === undefined ? 'null' : JSON.stringify(e.range)}` +
+    `${e.note !== undefined ? `,"note":${JSON.stringify(e.note.replace(/^ \u2192 /, ''))}` : ''}` +
+    `${e.remote !== undefined ? `,"remote":${JSON.stringify(e.remote)}` : ''}${e.device !== undefined ? `,"device":${JSON.stringify(e.device)}` : ''}}`
+  );
+}
+
+/** A log line that is not a request, as a JSON object (`--log-format json`): `warning: …` and `error…` lines get their own types. */
+export function jsonLogLine(ts: string, line: string): string {
+  const [type, message] = line.startsWith('warning: ') ? ['warning', line.slice(9)] : line.startsWith('error') ? ['error', line] : ['message', line];
+  return `{"type":${JSON.stringify(type)},"ts":${JSON.stringify(ts)},"message":${JSON.stringify(message)}}`;
+}
+
+/** `{"type":"started","ts","site","files","url"}`: a server is listening (`--log-format json`). */
+export function startedLogLine(ts: string, site: string, files: number, url: string): string {
+  return `{"type":"started","ts":${JSON.stringify(ts)},"site":${JSON.stringify(site)},"files":${files},"url":${JSON.stringify(url)}}`;
+}
+
+/** `{"type":"stopped","ts","signal"}`: a server shuts down (`--log-format json`). */
+export function stoppedLogLine(ts: string, signal: string): string {
+  return `{"type":"stopped","ts":${JSON.stringify(ts)},"signal":${JSON.stringify(signal)}}`;
+}
+
+/**
+ * A detached server's log line as JSON (`server logs --json`): JSON lines as they are; a text line
+ * (`<ISO time> <rest>`) as a request, started, stopped, warning, error or message object.
+ */
+export function logLineAsJson(line: string): string {
+  if (line.startsWith('{')) return line;
+  const m = /^([0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:.]+Z) (.*)$/.exec(line);
+  if (!m) return jsonLogLine('', line);
+  const [, ts, rest] = m as unknown as [string, string, string];
+  const r = /^([A-Z][A-Z-]*) (\S+) ([0-9]{3}) ([0-9]+) ([0-9]+\.[0-9])ms(?: (\S+))?$/.exec(rest);
+  if (r) {
+    return accessLogLine('json', { ts, method: r[1]!, target: r[2]!, status: Number(r[3]), bytes: Number(r[4]), ms: Number(r[5]), ...(r[6] !== undefined ? { remote: r[6] } : {}) });
+  }
+  const started = /^serving (.+) \(([0-9]+) files\) at (\S+)$/.exec(rest);
+  if (started) return startedLogLine(ts, started[1]!, Number(started[2]), started[3]!);
+  const stopped = /^received (SIG[A-Z]+), shutting down$/.exec(rest);
+  if (stopped) return stoppedLogLine(ts, stopped[1]!);
+  return jsonLogLine(ts, rest);
+}
+
+/**
+ * Whether an `Accept-Encoding` value accepts `coding`: listed (or `*`) with a q-value above 0, ASCII
+ * case-insensitive; an explicit entry wins over `*`.
+ */
+export function acceptsEncoding(header: string | undefined, coding: string): boolean {
+  if (header === undefined) return false;
+  let star: boolean | undefined;
+  for (const part of header.split(',')) {
+    const [name, ...params] = part.split(';').map((x) => x.trim());
+    const n = (name ?? '').replace(/[A-Z]/g, (c) => c.toLowerCase());
+    let q = 1;
+    for (const p of params) {
+      const m = /^[qQ][ \t]*=[ \t]*([0-9.]+)$/.exec(p);
+      if (m) q = Number(m[1]);
+    }
+    const ok = Number.isFinite(q) && q > 0;
+    if (n === coding) return ok;
+    if (n === '*') star = ok;
+  }
+  return star ?? false;
+}
+
+/** Media types worth compressing: `text/*`, JSON, XML, SVG, JavaScript, wasm and `+json`/`+xml` types. */
+export function isCompressible(type: string): boolean {
+  const t = (type.split(';')[0] ?? '').trim();
+  return t.startsWith('text/') || t.endsWith('+json') || t.endsWith('+xml') || ['application/json', 'application/xml', 'application/javascript', 'application/wasm', 'image/svg+xml'].includes(t);
+}
+
+/** `--throttle` limits ({@link parseThrottle}). */
+export interface Throttle {
+  readonly bytesPerSecond: number;
+  readonly latencyMs: number;
+}
+
+/** Presets: Chrome DevTools' "3G" (1.6 Mbit/s, 150 ms) and "Slow 3G" (400 kbit/s, 400 ms). */
+export const THROTTLE_PRESETS: Readonly<Record<string, Throttle>> = {
+  '3g': { bytesPerSecond: 200_000, latencyMs: 150 },
+  'slow-3g': { bytesPerSecond: 50_000, latencyMs: 400 },
+};
+
+/** `3g`, `slow-3g` or `<kbit/s>[/<latency ms>]`, else undefined. */
+export function parseThrottle(value: string): Throttle | undefined {
+  const preset = THROTTLE_PRESETS[value];
+  if (preset) return preset;
+  const m = /^([0-9]{1,7})(?:\/([0-9]{1,5}))?$/.exec(value);
+  if (!m || Number(m[1]) === 0) return undefined;
+  return { bytesPerSecond: Number(m[1]) * 125, latencyMs: Number(m[2] ?? 0) };
+}
+
+/** A content type `--mime` accepts: `type/subtype`, then optional parameters, printable ASCII. */
+const MIME_VALUE = /^[A-Za-z0-9][A-Za-z0-9!#$&^_.+-]*\/[A-Za-z0-9][A-Za-z0-9!#$&^_.+-]*( *;[\x20-\x7e]*)?$/;
+
+/** `--mime ext=type` (a leading `.` is dropped; the extension is lowercased), else undefined. */
+export function parseMimeFlag(value: string): [string, string] | undefined {
+  const i = value.indexOf('=');
+  if (i <= 0) return undefined;
+  const ext = value.slice(0, i).replace(/^\./, '').replace(/[A-Z]/g, (c) => c.toLowerCase());
+  const type = value.slice(i + 1).trim();
+  return /^[a-z0-9_+-]+$/.test(ext) && MIME_VALUE.test(type) ? [ext, type] : undefined;
+}
+
+/** A `mime.types` file (nginx `types { type ext ...; }` or Apache `type ext ...` lines; `#` comments): ext → type. */
+export function parseMimeTypes(text: string, origin: string): Map<string, string> {
+  const out = new Map<string, string>();
+  for (const [n, raw] of text.split('\n').entries()) {
+    const line = raw.replace(/#.*$/, '').replace(/^[ \t]*types\b/, ' ').replace(/[{};]/g, ' ').trim();
+    if (line === '') continue;
+    const [type, ...exts] = line.split(/[ \t]+/);
+    if (type === undefined || !MIME_VALUE.test(type)) throw new SitefileError('E_USAGE', `${origin}:${n + 1}: not a content type: ${type ?? ''}`);
+    for (const e of exts) {
+      const ext = e.replace(/^\./, '').replace(/[A-Z]/g, (c) => c.toLowerCase());
+      if (!/^[a-z0-9_+-]+$/.test(ext)) throw new SitefileError('E_USAGE', `${origin}:${n + 1}: not an extension: ${e}`);
+      out.set(ext, type);
+    }
+  }
+  return out;
+}
+
+/** Production cache headers to preview instead of `no-cache` (`serve --max-age`). */
+export interface CachePreview {
+  /** Seconds for files other than HTML: `public, max-age=N`. */
+  readonly maxAge?: number;
+  /** Adds `immutable` to the non-HTML value (needs {@link maxAge}). */
+  readonly immutable?: boolean;
+  /** Seconds for HTML pages (absent: they keep `no-cache`, the common production practice). */
+  readonly maxAgeHtml?: number;
+}
+
+/** The `Cache-Control` a file of media `type` gets under `cache`, or undefined to keep `no-cache`. */
+export function cacheControlFor(type: string, cache: CachePreview | undefined): string | undefined {
+  if (cache === undefined) return undefined;
+  if (type.startsWith('text/html')) return cache.maxAgeHtml === undefined ? undefined : `public, max-age=${cache.maxAgeHtml}`;
+  if (cache.maxAge === undefined) return undefined;
+  return `public, max-age=${cache.maxAge}${cache.immutable ? ', immutable' : ''}`;
+}
+
+/**
+ * The origin form of a request target: an absolute-form target (`http://host/path?q`, RFC 9112
+ * section 3.2.2, sent by proxies and some clients) loses its scheme and authority (`/path?q`, or
+ * `/` for an empty path); any other target is returned as it is. The authority is not checked.
+ */
 /** `Access-Control-Request-Headers` echoed in a preflight answer, when it is a plain list of header names. */
 export function preflightHeaders(value: string | undefined): string | undefined {
   const v = value?.trim();
   return v !== undefined && v !== '' && /^[A-Za-z0-9 \t,!#$%&'*+\-.^_`|~]+$/.test(v) ? v : undefined;
+}
+
+/** Loopback, also as an IPv4-mapped IPv6 address (`::ffff:127.0.0.1`). */
+function isLoopbackAddress(ip: string): boolean {
+  return ip === '::1' || /^(::ffff:)?127\./i.test(ip);
+}
+
+/** A parsed CIDR block: 4 or 16 address bytes and a prefix length. */
+export interface Cidr {
+  readonly bytes: readonly number[];
+  readonly prefix: number;
+}
+
+/** Address bytes of an IPv4 or IPv6 literal (`::ffff:a.b.c.d` becomes IPv4), else undefined. */
+export function ipBytes(text: string): number[] | undefined {
+  const t = text.replace(/^::ffff:(?=[0-9]+\.)/i, '');
+  if (isIpv4(t)) return t.split('.').map(Number);
+  if (!/^[0-9A-Fa-f:]+$/.test(t) || !t.includes(':')) return undefined;
+  const halves = t.split('::');
+  if (halves.length > 2) return undefined;
+  const words = (h: string): number[] | undefined => {
+    if (h === '') return [];
+    const out: number[] = [];
+    for (const w of h.split(':')) {
+      if (!/^[0-9A-Fa-f]{1,4}$/.test(w)) return undefined;
+      out.push(parseInt(w, 16));
+    }
+    return out;
+  };
+  const a = words(halves[0]!);
+  const b = halves.length === 2 ? words(halves[1]!) : [];
+  if (a === undefined || b === undefined) return undefined;
+  const fill = halves.length === 2 ? 8 - a.length - b.length : 0;
+  if (fill < (halves.length === 2 ? 1 : 0) || a.length + b.length + fill !== 8) return undefined;
+  return [...a, ...new Array<number>(fill).fill(0), ...b].flatMap((w) => [w >> 8, w & 0xff]);
+}
+
+/** `a.b.c.d/n`, `x::y/n` or a bare address (a /32 or /128), else undefined. */
+export function parseCidr(text: string): Cidr | undefined {
+  const [addr, len, extra] = text.trim().split('/');
+  if (extra !== undefined || addr === undefined) return undefined;
+  const bytes = ipBytes(addr);
+  if (bytes === undefined) return undefined;
+  const max = bytes.length * 8;
+  if (len !== undefined && !/^[0-9]{1,3}$/.test(len)) return undefined;
+  const prefix = len === undefined ? max : Number(len);
+  return prefix <= max ? { bytes, prefix } : undefined;
+}
+
+function cidrContains(c: Cidr, ip: readonly number[]): boolean {
+  if (c.bytes.length !== ip.length) return false;
+  for (let bit = 0; bit < c.prefix; bit++) {
+    const mask = 0x80 >> bit % 8;
+    if ((c.bytes[bit >> 3]! & mask) !== (ip[bit >> 3]! & mask)) return false;
+  }
+  return true;
+}
+
+/** Whether `--allow-ip`/`--deny-ip` let a client in: loopback always; else not denied, and allowed when an allow list is given. */
+export function ipAllowed(rules: SiteServerOptions['ipRules'], remote: string): boolean {
+  if (rules === undefined || isLoopbackAddress(remote)) return true;
+  const ip = ipBytes(remote);
+  if (ip === undefined) return false;
+  if (rules.deny.some((c) => cidrContains(c, ip))) return false;
+  return rules.allow.length === 0 || rules.allow.some((c) => cidrContains(c, ip));
+}
+
+/** A short device name from a `User-Agent` (`iPhone`, `iPad`, `Android`, `Windows`, `Mac`, `Linux`), or `other`. */
+export function deviceOf(userAgent: string | undefined): string {
+  const ua = userAgent ?? '';
+  for (const [needle, name] of [['iPhone', 'iPhone'], ['iPad', 'iPad'], ['Android', 'Android'], ['Windows', 'Windows'], ['Macintosh', 'Mac'], ['Linux', 'Linux']] as const) {
+    if (ua.includes(needle)) return name;
+  }
+  return 'other';
 }
 
 /** Whether `s` is a dotted-decimal IPv4 address. */
@@ -627,6 +940,51 @@ export function routingFor(o: { hostProfile?: HostProfileName | undefined; htmlH
   return o.hostProfile === undefined && o.htmlHandling === undefined ? undefined : hostProfile(o.hostProfile, o.htmlHandling);
 }
 
+/** A near miss for a 404: a file (`path`) or a `_redirects` rule (`line`), and why. */
+export interface NearMiss {
+  readonly path?: string;
+  readonly line?: number;
+  readonly why: string;
+}
+
+const utf8Order = (a: string, b: string): number => Buffer.compare(Buffer.from(a), Buffer.from(b));
+
+/**
+ * What a missing path almost matched (at most 20): files whose path differs only in ASCII letter case
+ * from the path, `<path>.html` or `<path>/index.html` (which work on a case-insensitive disk but not on a
+ * host), sorted by path; then `_redirects` rules whose source matches but whose query parameters or
+ * conditions do not, in file order.
+ */
+export function nearMisses(tree: Tree, isFile: (p: string) => boolean, vpath: string, redirects: readonly ServeRedirect[], req: RedirectRequest): NearMiss[] {
+  const lower = (s: string): string => s.replace(/[A-Z]/g, (c) => c.toLowerCase());
+  const wanted = new Set([vpath, `${vpath === '/' ? '' : vpath}.html`, `${vpath === '/' ? '' : vpath}/index.html`].map(lower));
+  const out: NearMiss[] = [];
+  const files = tree
+    .entries()
+    .map(([p]) => p)
+    .filter((p) => isFile(p) && wanted.has(lower(p)))
+    .sort(utf8Order);
+  for (const p of files) out.push({ path: p, why: 'the letter case differs (a case-insensitive disk finds it, a host does not)' });
+  for (const r of redirects) {
+    if (matchRedirect(r, vpath) !== undefined && matchRule(r, vpath, req) === undefined) {
+      out.push({ line: r.line, why: `matches the path but not its ${r.query.length > 0 ? 'query parameters' : 'conditions'}${r.query.length > 0 && r.conditions.length > 0 ? ' or conditions' : ''}` });
+    }
+  }
+  return out.slice(0, 20);
+}
+
+const escapeHtml = (s: string): string => s.replace(/[&<>"]/g, (c) => (c === '&' ? '&amp;' : c === '<' ? '&lt;' : c === '>' ? '&gt;' : '&quot;'));
+
+/** The development 404 page listing near misses. */
+export function nearMissPage(vpath: string, misses: readonly NearMiss[], mount = ''): string {
+  let out = `<!doctype html><meta charset="utf-8"><title>404 Not Found</title><h1>404 Not Found</h1>\n<p>Nothing is served at <code>${escapeHtml(vpath)}</code>. Near misses:</p>\n<ul>\n`;
+  for (const m of misses) {
+    const what = m.path !== undefined ? `<a href="${escapeHtml(mount + encodePath(m.path))}">${escapeHtml(m.path)}</a>` : `<code>_redirects:${m.line}</code>`;
+    out += `<li>${what}: ${escapeHtml(m.why)}</li>\n`;
+  }
+  return out + '</ul>\n';
+}
+
 /** A `Host` header safe to write into a page: a name, IPv4 or bracketed IPv6 address, and a port. */
 const SAFE_HOST = /^(?:[A-Za-z0-9.-]+|\[[0-9A-Fa-f:.]+\])(?::[0-9]{1,5})?$/;
 
@@ -700,6 +1058,7 @@ export function createSiteServer(site: Tree | (() => Tree), options: SiteServerO
   const base: Record<string, string> = { 'x-content-type-options': 'nosniff', 'cache-control': 'no-cache' };
   if (options.serverId) base['x-sitefile-server'] = options.serverId;
   if (options.cors) base['access-control-allow-origin'] = '*';
+  if (options.noindex) base['x-robots-tag'] = 'noindex';
   if (options.isolate !== undefined) {
     base['cross-origin-opener-policy'] = 'same-origin';
     base['cross-origin-embedder-policy'] = options.isolate;
@@ -731,15 +1090,30 @@ export function createSiteServer(site: Tree | (() => Tree), options: SiteServerO
     options.warn(`live reload: the Content-Security-Policy that _headers sets for ${served} does not allow ${what}, so open pages will not reload: ${policy}`);
   };
 
+  /** --compress: gzip output by file digest (at most 256 files), so a file is compressed once. */
+  const gzipCache = new Map<string, Uint8Array>();
+  const gzipped = (digest: string, bytes: Uint8Array): Uint8Array => {
+    let out = gzipCache.get(digest);
+    if (out === undefined) {
+      if (gzipCache.size >= 256) gzipCache.clear();
+      out = gzip(bytes);
+      gzipCache.set(digest, out);
+    }
+    return out;
+  };
+  /** Connections over --max-connections-per-ip: they get one 503. */
+  const busy = new WeakSet<object>();
   const handler = (req: http.IncomingMessage, res: http.ServerResponse): void => {
     const started = process.hrtime.bigint();
     const method = req.method ?? 'GET';
+    /** A non-loopback client of a server with client info: its address and device go into the access log. */
+    const shared = !!options.clientInfo && !isLoopbackAddress(req.socket.remoteAddress ?? '');
     const target = req.url ?? '/';
     const url = originForm(target);
     let bytes = 0;
     /** What answered, for the access log (` → /new (_redirects:3)`), when a rule did. */
     let note = '';
-    const finish = (status: number, headers: Record<string, string | number>, body: Uint8Array | string | undefined, quiet = false): void => {
+    const finish = (status: number, headers: Record<string, string | number | string[]>, body: Uint8Array | string | undefined, quiet = false): void => {
       const buf = body === undefined ? undefined : typeof body === 'string' ? Buffer.from(body) : body;
       // 103 Early Hints before an HTML page whose `Link` (from `_headers`) preloads or preconnects.
       const link = headers.link;
@@ -748,25 +1122,64 @@ export function createSiteServer(site: Tree | (() => Tree), options: SiteServerO
         const hints = earlyHints(link);
         if (hints.length > 0) res.writeEarlyHints({ link: hints });
       }
-      res.writeHead(status, { ...base, ...headers });
-      if (buf !== undefined && method !== 'HEAD' && status !== 304) {
-        bytes = buf.byteLength;
-        res.end(buf);
+      const send = buf !== undefined && method !== 'HEAD' && status !== 304 ? buf : undefined;
+      if (send !== undefined) bytes = send.byteLength;
+      const t = options.throttle;
+      if (t === undefined) {
+        res.writeHead(status, { ...base, ...headers });
+        res.end(send);
       } else {
-        res.end();
+        // --throttle: wait the latency, then send the body in 100 ms slices of the bandwidth.
+        const slice = Math.max(1, Math.floor(t.bytesPerSecond / 10));
+        setTimeout(() => {
+          res.writeHead(status, { ...base, ...headers });
+          if (send === undefined) return void res.end();
+          let at = 0;
+          const next = (): void => {
+            if (res.destroyed) return;
+            const end = Math.min(send.byteLength, at + slice);
+            res.write(send.subarray(at, end));
+            at = end;
+            if (at >= send.byteLength) res.end();
+            else setTimeout(next, 100);
+          };
+          next();
+        }, t.latencyMs);
       }
       const ms = Number((process.hrtime.bigint() - started) / 1000n) / 1000;
       if (quiet) return;
       // `servers` probes carry the server's own id; they would only clutter the access log.
       if (options.serverId !== undefined && req.headers['x-sitefile-probe'] === options.serverId) return;
-      options.log?.(`${method} ${printable(target)} ${status} ${bytes} ${ms.toFixed(1)}ms${note}`);
+      if (options.quiet) return;
+      const range = headers['content-range'];
+      options.log?.(
+        accessLogLine(options.logFormat ?? 'text', {
+          ts: new Date().toISOString(),
+          method,
+          target,
+          status,
+          bytes,
+          ms,
+          ...(range !== undefined ? { range: String(range) } : {}),
+          ...(options.logIp || shared ? { remote: req.socket.remoteAddress ?? '' } : {}),
+          ...(shared ? { device: deviceOf(req.headers['user-agent']) } : {}),
+          ...(note !== '' ? { note } : {}),
+          ...(options.logIp ? { remote: req.socket.remoteAddress ?? '' } : {}),
+        }),
+      );
     };
     const page = (status: number, html: string, extra: Record<string, string> = {}): void =>
       finish(status, { 'content-type': 'text/html; charset=utf-8', 'content-length': Buffer.byteLength(html), ...extra }, html);
 
+    if (!ipAllowed(options.ipRules, req.socket.remoteAddress ?? '')) return page(403, FORBIDDEN_PAGE);
+    if (busy.has(req.socket)) return finish(503, { 'retry-after': '1', 'content-length': 0, connection: 'close' }, undefined);
     // DNS rebinding: a page on another name must not read this server (before anything else).
     const hostHeader = req.headers.host;
     if (!hostAllowed(options.allowedHosts, hostHeader)) return page(403, FORBIDDEN_HOST_PAGE);
+    // Basic authentication covers everything, the live-reload endpoints too.
+    if (options.auth !== undefined && !options.auth.allows(req.headers.authorization)) {
+      return page(401, UNAUTHORIZED_PAGE, { 'www-authenticate': 'Basic realm="sitefile", charset="UTF-8"' });
+    }
 
     const live = options.liveReload;
     if (live && url.split(/[?#]/, 1)[0] === CONSOLE_PATH) {
@@ -836,7 +1249,7 @@ export function createSiteServer(site: Tree | (() => Tree), options: SiteServerO
     if (baseSegs.length > 0) {
       const inside = baseSegs.every((b, i) => allSegs[i] === b);
       if (inside && allSegs.length === baseSegs.length && !trailingSlash) return finish(301, { location: `${mount}/${search}`, 'content-length': 0 }, undefined);
-      if (!inside && allSegs.length === 0) return finish(302, { location: `${mount}/${search}`, 'content-length': 0 }, undefined);
+      if (!inside && allSegs.length === 0 && !options.hideBase) return finish(302, { location: `${mount}/${search}`, 'content-length': 0 }, undefined);
       if (!inside) return page(404, NOT_FOUND_PAGE);
       segs = allSegs.slice(baseSegs.length);
     }
@@ -846,7 +1259,8 @@ export function createSiteServer(site: Tree | (() => Tree), options: SiteServerO
 
     const sendFile = (status: number, served: string): void => {
       const file = tree.get(served)!;
-      const type = mimeTypeFor(served);
+      const ext = served.slice(served.lastIndexOf('/') + 1).split('.').slice(1).pop()?.replace(/[A-Z]/g, (c) => c.toLowerCase());
+      const type = (ext !== undefined ? options.mime?.get(ext) : undefined) ?? mimeTypeFor(served);
       const live = options.liveReload !== undefined && type.startsWith('text/html') && isNavigation(req.headers);
       if (live) warnCsp(served, custom['content-security-policy']);
       const prodNow = typeof options.rewriteBase === 'function' ? options.rewriteBase() : options.rewriteBase;
@@ -867,37 +1281,54 @@ export function createSiteServer(site: Tree | (() => Tree), options: SiteServerO
       }
       if (rebase) body = rewriteBaseUrls(body, rebase.from, rebase.to);
       if (live) body = injectReloadScript(body);
+      // Otherwise: a precompressed `<path>.br` / `<path>.gz` the client accepts (br first), else gzip on the fly
+      // under --compress. Range requests, live pages, rebased pages and deltas are never compressed here.
+      const ae = req.headers['accept-encoding'];
+      const plain = !deflated && !delta && !rebase && status === 200;
+      const hasBr = plain && isFile(`${served}.br`);
+      const hasGz = plain && isFile(`${served}.gz`);
+      const onTheFly = plain && !!options.compress && isCompressible(type) && body.byteLength >= 1024;
+      const negotiated = !live && (hasBr || hasGz || onTheFly);
+      let coding: 'br' | 'gzip' | undefined;
+      if (negotiated && req.headers.range === undefined) {
+        if (hasBr && acceptsEncoding(ae, 'br')) [coding, body] = ['br', tree.get(`${served}.br`)!.bytes];
+        else if (hasGz && acceptsEncoding(ae, 'gzip')) [coding, body] = ['gzip', tree.get(`${served}.gz`)!.bytes];
+        else if (onTheFly && acceptsEncoding(ae, 'gzip')) [coding, body] = ['gzip', gzipped(file.digest, body)];
+      }
       const varyOn = dictionaryVary ? 'accept-encoding, available-dictionary' : 'accept-encoding';
-      const encoding: Record<string, string> = deflated ? { 'content-encoding': 'gzip', vary: varyOn } : {};
-      const vary: Record<string, string> = !deflated && dictionaryVary ? { vary: varyOn } : {};
+      const vary: Record<string, string> = deflated || negotiated || dictionaryVary ? { vary: varyOn } : {};
+      const encoding: Record<string, string> = deflated ? { 'content-encoding': 'gzip', ...vary } : coding ? { 'content-encoding': coding, ...vary } : vary;
       if (status !== 200) return finish(status, { 'content-type': type, 'content-length': body.byteLength, ...encoding, ...custom }, body);
-      // An injected page, a gzip response and a delta are other representations of the file: they get their own ETags.
-      const etag = `"${file.digest.replace(/^sha256:/, '')}${rebase ? '-rebased' : ''}${live ? '-live' : ''}${deflated ? '-gzip' : ''}${delta ? '-dcz' : ''}"`;
+      const preview = cacheControlFor(type, options.cache);
+      const cc: Record<string, string> = preview === undefined ? {} : { 'cache-control': preview };
+      // An injected page, a rebased page, a compressed response and a delta are other representations of the
+      // file: they get their own ETags.
+      const etag = `"${file.digest.replace(/^sha256:/, '')}${rebase ? '-rebased' : ''}${live ? '-live' : ''}${deflated ? '-gzip' : coding ? `-${coding}` : ''}${delta ? '-dcz' : ''}"`;
       const modified = options.lastModified?.();
       const lm: Record<string, string> = modified === undefined ? {} : { 'last-modified': httpDate(modified) };
-      if (etagMatches(req.headers['if-none-match'], etag)) return finish(304, { ...encoding, ...custom, ...vary, etag, ...lm }, undefined);
+      if (etagMatches(req.headers['if-none-match'], etag)) return finish(304, { ...encoding, ...cc, ...custom, etag, ...lm }, undefined);
       // If-Modified-Since only counts without If-None-Match (RFC 9110 section 13.2.2).
       const ims = req.headers['if-none-match'] === undefined ? req.headers['if-modified-since'] : undefined;
       const since = ims === undefined ? undefined : parseHttpDate(ims);
-      if (modified !== undefined && since !== undefined && modified <= since) return finish(304, { ...encoding, ...custom, ...vary, etag, ...lm }, undefined);
+      if (modified !== undefined && since !== undefined && modified <= since) return finish(304, { ...encoding, ...cc, ...custom, etag, ...lm }, undefined);
       // The delta is sent whole (no byte ranges of an encoded body).
-      if (delta) return finish(200, { 'content-type': type, 'content-length': delta.byteLength, ...custom, ...vary, 'content-encoding': 'dcz', etag, ...lm }, delta);
+      if (delta) return finish(200, { 'content-type': type, 'content-length': delta.byteLength, ...cc, ...custom, ...vary, 'content-encoding': 'dcz', etag, ...lm }, delta);
       // A single byte range of a GET (`If-Range` must name this ETag); anything else gets the whole file.
       const ifRange = req.headers['if-range'] as string | undefined;
       const range = method === 'GET' && (ifRange === undefined || ifRange.trim() === etag) ? byteRange(req.headers.range, body.byteLength) : undefined;
       if (range === 'unsatisfiable') {
-        return finish(416, { ...custom, 'accept-ranges': 'bytes', 'content-range': `bytes */${body.byteLength}`, 'content-length': 0 }, undefined);
+        return finish(416, { ...custom, ...vary, 'accept-ranges': 'bytes', 'content-range': `bytes */${body.byteLength}`, 'content-length': 0 }, undefined);
       }
       if (range !== undefined) {
         const [start, end] = range;
         const part = body.subarray(start, end + 1);
         return finish(
           206,
-          { 'content-type': type, 'content-length': part.byteLength, ...custom, ...vary, etag, ...lm, 'accept-ranges': 'bytes', 'content-range': `bytes ${start}-${end}/${body.byteLength}` },
+          { 'content-type': type, 'content-length': part.byteLength, ...cc, ...encoding, ...custom, etag, ...lm, 'accept-ranges': 'bytes', 'content-range': `bytes ${start}-${end}/${body.byteLength}` },
           part,
         );
       }
-      finish(200, { 'content-type': type, 'content-length': body.byteLength, ...encoding, ...custom, ...vary, etag, ...lm, 'accept-ranges': 'bytes' }, body);
+      finish(200, { 'content-type': type, 'content-length': body.byteLength, ...encoding, ...cc, ...custom, etag, ...lm, 'accept-ranges': 'bytes' }, body);
     };
     /** The file for a path: exact, `<path>.html` (clean URLs), or `<dir>/index.html` with a trailing slash. */
     const resolve = (p: string, slash: boolean): string | undefined => {
@@ -914,6 +1345,39 @@ export function createSiteServer(site: Tree | (() => Tree), options: SiteServerO
       return Array.isArray(v) ? v.join(', ') : v;
     };
     const ruleRequest = { search, acceptLanguage: one('accept-language'), cookie: one('cookie'), country: options.country };
+    /** Answer from `target` (an http(s) URL) under the proxy policy; a refusal or a failed fetch is a 502. */
+    const proxyTo = (target: string, from: string): void => {
+      note = ` \u2192 ${redactUrl(target)} (proxy, ${from})`;
+      const headers: Record<string, string> = {};
+      for (const k of PROXY_REQUEST_HEADERS) {
+        const v = one(k);
+        if (v !== undefined) headers[k] = v;
+      }
+      const policy = options.proxy?.policy ?? { ...DEFAULT_FETCH_POLICY, network: { strict: true } };
+      fetchRemote(target, policy, undefined, { method: method === 'HEAD' ? 'HEAD' : 'GET', raw: true, headers }).then(
+        (r) => {
+          const out: Record<string, string | string[]> = {};
+          for (const [n, vs] of r.headers ?? []) if (!HOP_BY_HOP.has(n)) out[n] = vs.length === 1 ? (vs[0] as string) : [...vs];
+          const upstreamLength = r.headers?.find(([n]) => n === 'content-length')?.[1][0];
+          out['content-length'] = method === 'HEAD' && upstreamLength !== undefined ? upstreamLength : String(r.bytes.byteLength);
+          finish(r.status ?? 502, out, r.bytes);
+        },
+        (e: unknown) => {
+          const why = isSitefileError(e) ? `error[${e.code}]: ${e.detail}` : `error: ${String(e)}`;
+          note += ` ${why}`;
+          const text = `502 Bad Gateway: ${why}\n`;
+          finish(502, { 'content-type': 'text/plain; charset=utf-8', 'content-length': Buffer.byteLength(text) }, text);
+        },
+      );
+    };
+    // `--proxy` routes come first: they are what this server is asked to front.
+    for (const route of options.proxy?.routes ?? []) {
+      const inside = route.prefix === '/' || vpath === route.prefix || vpath.startsWith(`${route.prefix}/`);
+      if (!inside) continue;
+      const rest = (route.prefix === '/' ? vpath : vpath.slice(route.prefix.length)) + (trailingSlash && segs.length > 0 ? '/' : '');
+      const encoded = rest.split('/').map((p) => encodeURIComponent(p)).join('/');
+      return proxyTo(route.target.replace(/\/$/, '') + encoded + search, `--proxy ${route.prefix}`);
+    }
     /** Apply the first matching `_redirects` rule (forced ones, or the others); false when none applies. */
     const redirect = (forced: boolean): boolean => {
       for (const r of redirects) {
@@ -927,6 +1391,11 @@ export function createSiteServer(site: Tree | (() => Tree), options: SiteServerO
           const location = mounted.includes('?') || r.query.length > 0 ? mounted : mounted + search;
           note = ` \u2192 ${location} (_redirects:${r.line})`;
           finish(r.status, { location, 'content-length': 0 }, undefined);
+          return true;
+        }
+        if (r.status === 200 && /^https?:\/\//i.test(target)) {
+          // A proxy rule (#172): the request's query string goes along unless the target has one.
+          proxyTo(target.includes('?') || r.query.length > 0 ? target : target + search, `_redirects:${r.line}`);
           return true;
         }
         // 200 (rewrite), 404, 410 and 451: serve the target path's file with that status.
@@ -991,21 +1460,49 @@ export function createSiteServer(site: Tree | (() => Tree), options: SiteServerO
     }
     if (served === undefined && options.spa && isNavigation(req.headers) && !(options.spaExclude ?? []).some((g) => globMatch(g, vpath + (trailingSlash && segs.length > 0 ? '/' : '')))) {
       served = spaFallback(segs, trailingSlash, isFile, options.spaFallback);
+      if (served !== undefined) note = ` \u2192 ${encodePath(served)} (spa fallback)`;
     }
+    if (served !== undefined && note === '' && served === `${vpath}.html`) note = ` \u2192 ${encodePath(served)} (clean URL)`;
     if (served !== undefined) return sendFile(200, served);
     // The nearest 404.html: in the request's directory, then each parent up to the root (only the
     // root one for a profile whose host does not look further).
     const dirs = trailingSlash ? segs : segs.slice(0, -1);
     for (let n = profile?.notFound === 'root' ? 0 : dirs.length; n >= 0; n--) {
       const notFound = `/${dirs.slice(0, n).map((d) => d + '/').join('')}404.html`;
-      if (isFile(notFound)) return sendFile(404, notFound);
+      if (isFile(notFound)) {
+        note = ` \u2192 ${encodePath(notFound)}`;
+        return sendFile(404, notFound);
+      }
     }
     // Cloudflare Pages: a site without a 404.html is taken for a single-page app.
-    if (profile?.notFound === 'index' && isFile('/index.html')) return sendFile(200, '/index.html');
-    page(404, NOT_FOUND_PAGE, custom);
+    if (profile?.notFound === 'index' && isFile('/index.html')) {
+      note = ' \u2192 /index.html (no 404.html)';
+      return sendFile(200, '/index.html');
+    }
+    const misses = options.devNotFound ? nearMisses(tree, isFile, vpath, redirects, ruleRequest) : [];
+    page(404, misses.length === 0 ? NOT_FOUND_PAGE : nearMissPage(vpath, misses, mount), custom);
   };
 
-  const server = http.createServer(handler);
+  // HTTPS when a certificate is given (same handler; an https.Server has the http.Server API).
+  const server = options.tls
+    ? (https.createServer({ cert: Buffer.from(options.tls.cert), key: Buffer.from(options.tls.key) }, handler) as unknown as http.Server)
+    : http.createServer(handler);
+  const limit = options.maxConnectionsPerIp ?? 0;
+  if (limit > 0) {
+    const perIp = new Map<string, number>();
+    server.on('connection', (socket) => {
+      const ip = socket.remoteAddress ?? '';
+      if (!options.limitLoopback && isLoopbackAddress(ip)) return;
+      const n = (perIp.get(ip) ?? 0) + 1;
+      perIp.set(ip, n);
+      if (n > limit) busy.add(socket);
+      socket.once('close', () => {
+        const left = (perIp.get(ip) ?? 1) - 1;
+        if (left === 0) perIp.delete(ip);
+        else perIp.set(ip, left);
+      });
+    });
+  }
   server.on('clientError', (_err, socket) => {
     if (socket.writable) socket.end('HTTP/1.1 400 Bad Request\r\nconnection: close\r\ncontent-length: 0\r\n\r\n');
     else socket.destroy();
@@ -1040,7 +1537,32 @@ export function closeServer(server: http.Server): Promise<void> {
   });
 }
 
-export function formatUrl(host: string, port: number): string {
+/**
+ * The addresses other machines can reach a server bound to all interfaces at: the up, non-loopback
+ * interface addresses, IPv4 for `0.0.0.0`, IPv4 then IPv6 for `::` (IPv6 link-local `fe80::/10`
+ * left out: it needs a zone), each family sorted as text, without duplicates. Empty for any other bind.
+ */
+export function networkAddresses(bindHost: string): string[] {
+  if (bindHost !== '0.0.0.0' && bindHost !== '::') return [];
+  const v4 = new Set<string>();
+  const v6 = new Set<string>();
+  for (const list of Object.values(os.networkInterfaces())) {
+    for (const a of list ?? []) {
+      if (a.internal) continue;
+      if (a.family === 'IPv4') v4.add(a.address);
+      else if (bindHost === '::' && !/^fe[89ab]/i.test(a.address)) v6.add(a.address.toLowerCase());
+    }
+  }
+  const sorted = (xs: Set<string>): string[] => [...xs].sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
+  return [...sorted(v4), ...sorted(v6)];
+}
+
+/** {@link networkAddresses} as URLs. */
+export function networkUrls(bindHost: string, port: number, scheme: 'http' | 'https' = 'http'): string[] {
+  return networkAddresses(bindHost).map((a) => formatUrl(a, port, scheme));
+}
+
+export function formatUrl(host: string, port: number, scheme: 'http' | 'https' = 'http'): string {
   const shown = host === '0.0.0.0' || host === '::' ? '127.0.0.1' : host;
-  return `http://${shown.includes(':') ? `[${shown}]` : shown}:${port}/`;
+  return `${scheme}://${shown.includes(':') ? `[${shown}]` : shown}:${port}/`;
 }

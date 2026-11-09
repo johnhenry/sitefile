@@ -4070,6 +4070,56 @@
           ]
         },
         {
+          "name": "meta.instruction.csp.sitefile",
+          "begin": "^\\s*((?i:CSP))(?=\\s|$)",
+          "beginCaptures": {
+            "1": {
+              "name": "keyword.control.instruction.sitefile"
+            }
+          },
+          "end": "(?<=[^\\s\\\\])\\s*$|(?<=\\\\)[ \\t]+$|(?<=[^\\\\]\\\\\\\\)$",
+          "patterns": [
+            {
+              "include": "#continuation"
+            },
+            {
+              "include": "#continuation-comment"
+            },
+            {
+              "match": "(?<![^\\s])((?i:POLICY|META))(?=\\s|$)",
+              "captures": {
+                "1": {
+                  "name": "keyword.other.clause.sitefile"
+                }
+              }
+            },
+            {
+              "include": "#operands"
+            }
+          ]
+        },
+        {
+          "name": "meta.instruction.mime.sitefile",
+          "begin": "^\\s*((?i:MIME))(?=\\s|$)",
+          "beginCaptures": {
+            "1": {
+              "name": "keyword.control.instruction.sitefile"
+            }
+          },
+          "end": "(?<=[^\\s\\\\])\\s*$|(?<=\\\\)[ \\t]+$|(?<=[^\\\\]\\\\\\\\)$",
+          "patterns": [
+            {
+              "include": "#continuation"
+            },
+            {
+              "include": "#continuation-comment"
+            },
+            {
+              "include": "#operands"
+            }
+          ]
+        },
+        {
           "name": "meta.instruction.checklinks.sitefile",
           "begin": "^\\s*((?i:CHECKLINKS))(?=\\s|$)",
           "beginCaptures": {
@@ -4287,7 +4337,7 @@
               "include": "#continuation-comment"
             },
             {
-              "match": "(?<![^\\s])((?i:AS))(?:\\s+(?:((?i:directory|zip|tar|tgz|tar\\.gz|wbn|oci|car|html|mhtml|warc|epub))(?=\\s|$)|([^\\s\\\\]\\S*)))?",
+              "match": "(?<![^\\s])((?i:AS))(?:\\s+(?:((?i:directory|zip|tar|tgz|tar\\.gz|wbn|oci|car|html|mhtml|warc|swbn|wacz|epub))(?=\\s|$)|([^\\s\\\\]\\S*)))?",
               "captures": {
                 "1": {
                   "name": "keyword.other.clause.sitefile"
@@ -4315,7 +4365,21 @@
               }
             },
             {
-              "match": "(?<![^\\s])((?i:BASE|AT))(?=\\s|$)",
+              "match": "(?<![^\\s])((?i:FOR))(?:\\s+(?:((?i:netlify|cloudflare|vercel|firebase|azure|github-pages|s3))(?=\\s|$)|([^\\s\\\\]\\S*)))?",
+              "captures": {
+                "1": {
+                  "name": "keyword.other.clause.sitefile"
+                },
+                "2": {
+                  "name": "constant.language.export-host.sitefile"
+                },
+                "3": {
+                  "name": "invalid.illegal.export-host.sitefile"
+                }
+              }
+            },
+            {
+              "match": "(?<![^\\s])((?i:BASE|AT|KEY))(?=\\s|$)",
               "captures": {
                 "1": {
                   "name": "keyword.other.clause.sitefile"

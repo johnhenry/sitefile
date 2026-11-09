@@ -7,4 +7,5 @@ pub mod formats;
 pub mod incremental;
 pub mod oci;
 pub mod single_file;
+pub mod swbn;
 pub mod wbn;

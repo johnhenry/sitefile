@@ -1,0 +1,2 @@
+FROM ./site
+EXPORT / BASE https://example.com/docs/ FOR github-pages

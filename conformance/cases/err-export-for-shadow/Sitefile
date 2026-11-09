@@ -1,0 +1,4 @@
+# Cloudflare applies redirects before files; a rule a file answers first on Netlify is refused.
+FROM ./site
+REDIRECT /docs/ /guide/
+EXPORT / FOR cloudflare

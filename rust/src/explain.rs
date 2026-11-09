@@ -972,31 +972,61 @@ pub fn why(result: &BuildResult, raw: &str, context_dir: &str) -> Result<WhyRepo
     let before = w.final_of(last).get(&full).map(|n| &**n);
     let after = result.tree.get(&full).map(|n| &**n);
     if let Some(a) = after.filter(|_| !same(before, after)) {
-        let (lines, kind): (Vec<u32>, &str) = if full == join_virtual(&p.export_path, "_redirects")
-        {
-            (
-                p.redirects.iter().map(|r| r.span.line).collect(),
-                "REDIRECT",
-            )
+        let (lines, kinds): (Vec<u32>, Vec<&str>) =
+            if full == join_virtual(&p.export_path, "_redirects") {
+                p.redirects
+                    .iter()
+                    .map(|r| (r.span.line, "REDIRECT"))
+                    .unzip()
+            } else {
+                p.headers
+                    .iter()
+                    .map(|h| (h.span.line, h.instruction))
+                    .unzip()
+            };
+        let kind = if full == join_virtual(&p.export_path, "_redirects") {
+            "REDIRECT"
         } else {
-            (p.headers.iter().map(|h| h.span.line).collect(), "HEADER")
+            "HEADER"
         };
-        let mut inputs: Vec<String> = lines
-            .iter()
-            .map(|l| format!("{} {kind}", w.at(*l)))
-            .collect();
+        let site = full == join_virtual(&p.export_path, "_redirects")
+            || full == join_virtual(&p.export_path, "_headers");
+        let mut inputs: Vec<String> = if site {
+            lines
+                .iter()
+                .zip(&kinds)
+                .map(|(l, k)| format!("{} {k}", w.at(*l)))
+                .collect()
+        } else {
+            Vec::new()
+        };
+        let text = String::from_utf8_lossy(&a.bytes);
         // `/_headers` may also hold FINGERPRINT's Cache-Control lines (or only them): with cache_headers set,
-        // no HEADER sets Cache-Control, so the name in the file means they were added.
-        let fp = p.cache_headers.as_ref().filter(|_| {
-            kind == "HEADER" && String::from_utf8_lossy(&a.bytes).contains("  Cache-Control: ")
-        });
+        // no HEADER sets Cache-Control, so the name in the file means they were added. Likewise CSP's
+        // Content-Security-Policy lines; with CSP … META, a page changed at EXPORT got its <meta>.
+        let fp = p
+            .cache_headers
+            .as_ref()
+            .filter(|_| site && kind == "HEADER" && text.contains("  Cache-Control: "));
         if let Some(fp) = fp {
             inputs.push(format!("{} FINGERPRINT", w.at(fp.line)));
         }
-        let (location, instruction) = match (lines.first(), fp) {
-            (Some(l), _) => (*l, kind),
-            (None, Some(fp)) => (fp.line, "FINGERPRINT"),
-            (None, None) => (0, kind),
+        let csp = p.csp.as_ref().filter(|_| {
+            !site || (kind == "HEADER" && text.contains("  Content-Security-Policy: "))
+        });
+        if let Some(c) = csp {
+            inputs.push(if site {
+                format!("{} CSP", w.at(c.span.line))
+            } else {
+                "the page (inline scripts and styles)".into()
+            });
+        }
+        let (location, instruction) = match (site, lines.first(), fp, csp) {
+            (true, Some(l), _, _) => (*l, kinds[0]),
+            (true, None, Some(fp), _) => (fp.line, "FINGERPRINT"),
+            (_, _, _, Some(c)) => (c.span.line, "CSP"),
+            (_, Some(l), _, None) => (*l, kind),
+            _ => (0, kind),
         };
         history.push(WhyEvent {
             location: w.at(location),

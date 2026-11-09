@@ -420,7 +420,12 @@ pub fn bundle_responses(tree: &Tree) -> (Vec<Vec<u8>>, Vec<(String, usize)>) {
 }
 
 pub fn write_web_bundle(tree: &Tree, base_url: Option<&str>) -> Result<Vec<u8>> {
-    let base = validate_base_url(base_url)?;
+    write_web_bundle_at(tree, &validate_base_url(base_url)?)
+}
+
+/// [`write_web_bundle`] at a base URL the caller has already validated (`isolated-app://<id>/` for swbn).
+pub fn write_web_bundle_at(tree: &Tree, base: &str) -> Result<Vec<u8>> {
+    let base = base.to_string();
     let (entries, urls) = bundle_responses(tree);
     let count = entries.len();
 

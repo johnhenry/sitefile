@@ -30,10 +30,16 @@ path = "src/main.rs"
 #                     directly so an extra CA (FetchPolicy.ca) is added to
 #                     exactly those roots (same version as ureq 2's, one copy)
 #   wasmtime          WebAssembly plugins (fuel-limited, no imports)
+#   ring              Ed25519 signing for `EXPORT … AS swbn` (constant time; already in the
+#                     build through ureq -> rustls, same version, so it adds no crate)
 #   icu_normalizer    Unicode NFC for paths (String.prototype.normalize in
 #                     TypeScript). Already in the build through ureq -> url ->
 #                     idna -> idna_adapter, same version and features, so it
 #                     adds no crate; see docs/RUST.md, "Unicode paths"
+#   rustls            `serve --tls-cert/--tls-key` (HTTPS; node:https in
+#                     TypeScript). Already in the build through ureq, named
+#                     with exactly ureq's version and features (ring, no
+#                     aws-lc), so it adds no crate
 # The language server (src/lsp, `sitefile lsp`) adds none: LSP framing is
 # hand-rolled and messages are serde_json values (lsp-types would add types
 # for a handful of messages; no async runtime, the loop is single-threaded).
@@ -46,7 +52,9 @@ flate2 = { version = "1", default-features = false, features = ["zlib-rs"] }
 ureq = { version = "2", default-features = false, features = ["tls"] }
 webpki-roots = "0.26"
 wasmtime = { version = "29", default-features = false, features = ["cranelift", "runtime", "std"] }
+ring = { version = "0.17", default-features = false }
 icu_normalizer = { version = "2", default-features = false, features = ["compiled_data"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "logging", "std", "tls12"] }
 
 [profile.release]
 opt-level = 3

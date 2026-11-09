@@ -1,0 +1,4 @@
+# Without --lossy a rule the host cannot express is E_EXPORT naming it.
+FROM ./site
+REDIRECT /old /new STATUS 303
+EXPORT / FOR firebase

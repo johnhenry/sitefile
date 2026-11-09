@@ -1,0 +1,16 @@
+{
+  "command": "serve",
+  "args": ["--allow-hosts", "127.0.0.1", "--deny-hosts", "denied.test", "--proxy", "/p=https://10.0.0.1/base", "--proxy", "/d=https://denied.test/"],
+  "log": true,
+  "requests": [
+    { "target": "/api/users?x=1", "expect": { "status": 502, "headers": { "content-type": "text/plain; charset=utf-8" } } },
+    { "method": "HEAD", "target": "/api/users", "expect": { "status": 502, "body": "" } },
+    { "target": "/plain/a", "expect": { "status": 502 } },
+    { "target": "/f/x", "expect": { "status": 200, "body": "file\n" } },
+    { "target": "/forced", "expect": { "status": 502 } },
+    { "target": "/four/a", "expect": { "status": 404 } },
+    { "target": "/p/a/b?q=2", "expect": { "status": 502 } },
+    { "target": "/d/z", "expect": { "status": 502 } },
+    { "target": "/", "expect": { "status": 200, "body": "home\n" } }
+  ]
+}

@@ -4,7 +4,8 @@ import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { promises as fs, readFileSync } from 'node:fs';
 import path from 'node:path';
-import { keyAction, openUrl, urlsText, KEYS_HELP } from '../src/cli/serve-keys.js';
+import { keyAction, openUrl, serveUrls, urlsText, KEYS_HELP } from '../src/cli/serve-keys.js';
+import { networkUrls } from '../src/server.js';
 import { optionalOpen } from '../src/cli/index.js';
 import { encodeQr, qrTerminal } from '../src/qr.js';
 import { cliPath, runCli, tmpDir } from './helpers/cli.js';
@@ -21,12 +22,19 @@ test('keys, URLs and --open', () => {
   assert.equal(keyAction('x'.charCodeAt(0)), undefined);
   assert.equal(openUrl('http://127.0.0.1:8/', '/a/b'), 'http://127.0.0.1:8/a/b');
   assert.equal(openUrl('http://127.0.0.1:8/', ''), 'http://127.0.0.1:8/');
-  assert.equal(urlsText({ local: 'http://127.0.0.1:8/', network: undefined }), '  Local:   http://127.0.0.1:8/\n');
-  const withNet = urlsText({ local: 'http://127.0.0.1:8/', network: 'http://192.0.2.7:8/' });
-  assert.ok(withNet.startsWith('  Local:   http://127.0.0.1:8/\n  Network: http://192.0.2.7:8/\n'));
-  assert.ok(withNet.endsWith(qrTerminal(encodeQr('http://192.0.2.7:8/')!)));
+  assert.equal(urlsText({ local: 'http://127.0.0.1:8/', network: [] }), '  Local:   http://127.0.0.1:8/\n');
+  const withNet = urlsText({ local: 'https://127.0.0.1:8/', network: ['https://192.0.2.7:8/', 'https://[2001:db8::7]:8/'] });
+  assert.equal(withNet, `  Local:   https://127.0.0.1:8/\n  Network: https://192.0.2.7:8/\n  Network: https://[2001:db8::7]:8/\n${qrTerminal(encodeQr('https://192.0.2.7:8/')!)}`);
   assert.deepEqual(optionalOpen(['./site', '--open', '-p', '8080']), ['./site', '--open=', '-p', '8080']);
   assert.deepEqual(optionalOpen(['--open=/docs/', '--', '--open']), ['--open=/docs/', '--', '--open']);
+});
+
+test('u lists the start line\'s network URLs, https:// for a TLS server (johnhenry/sitefile#300)', () => {
+  assert.deepEqual(serveUrls('127.0.0.1', 8, '/docs/', 'https'), { local: 'https://127.0.0.1:8/docs/', network: [] });
+  const all = serveUrls('0.0.0.0', 8, '/', 'https');
+  assert.equal(all.local, 'https://127.0.0.1:8/');
+  assert.deepEqual(all.network, networkUrls('0.0.0.0', 8, 'https'));
+  assert.deepEqual(serveUrls('0.0.0.0', 8).network, networkUrls('0.0.0.0', 8));
 });
 
 async function waitFor(get: () => string, what: string): Promise<string> {
@@ -68,6 +76,40 @@ test('serve: --qr, --open, then o u r h q from the keyboard', async () => {
   await waitFor(() => readSync(path.join(d, 'opened')), `${url}docs/\n${url}docs/\n`);
   child.stdin.write('q');
   assert.equal(await exited, 0);
+});
+
+test('serve --tls: o and u use https:// (johnhenry/sitefile#300)', async (t) => {
+  const { createTestPki, opensslAvailable } = await import('./helpers/tls.js');
+  if (!opensslAvailable()) return t.skip('openssl is not installed');
+  const pki = createTestPki();
+  const d = await tmpDir('sitefile-keys-');
+  try {
+    await fs.mkdir(path.join(d, 'site'));
+    await fs.writeFile(path.join(d, 'site', 'index.html'), 'hi');
+    const { cert, key } = pki.issue('IP:127.0.0.1');
+    await fs.writeFile(path.join(d, 'cert.pem'), cert);
+    await fs.writeFile(path.join(d, 'key.pem'), key);
+    const browser = path.join(d, 'browser.sh');
+    await fs.writeFile(browser, `#!/bin/sh\necho "$@" >> ${d}/opened\n`, { mode: 0o755 });
+    const child = spawn(process.execPath, [cliPath, 'serve', './site', '--tls-cert', 'cert.pem', '--tls-key', 'key.pem', '-p', '127.0.0.1:0'], {
+      cwd: d,
+      env: { ...process.env, SITEFILE_HOME: path.join(d, 'home'), SITEFILE_SERVE_KEYS: '1', BROWSER: browser },
+      stdio: ['pipe', 'pipe', 'ignore'],
+    });
+    let out = '';
+    child.stdout.on('data', (c: Buffer) => (out += c.toString()));
+    const exited = new Promise<number | null>((r) => child.on('exit', (code) => r(code)));
+    const text = await waitFor(() => out, 'Press h for keys\n');
+    const url = /at (https:\/\/\S+)/.exec(text)![1]!;
+    child.stdin.write('u');
+    await waitFor(() => out, `  Local:   ${url}\n`);
+    child.stdin.write('o');
+    assert.equal(await waitFor(() => readSync(path.join(d, 'opened')), '\n'), `${url}\n`);
+    child.stdin.write('q');
+    assert.equal(await exited, 0);
+  } finally {
+    pki.dispose();
+  }
 });
 
 function readSync(p: string): string {

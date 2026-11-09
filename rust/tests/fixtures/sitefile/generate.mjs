@@ -158,6 +158,8 @@ const INSTRUCTIONS = {
     `SECURITY_TXT ${flags(['--overwrite'])}${Array.from({ length: int(5) }, () => pick(['CONTACT mailto:a@e.x', 'CONTACT tel:+1', 'CONTACT https://e.x', 'CONTACT ftp://e.x', 'CONTACT', 'EXPIRES 2099-01-01', 'EXPIRES 2099-13-01', 'EXPIRES P1Y', 'EXPIRES ${x}', 'ENCRYPTION openpgp4fpr:AB', 'ENCRYPTION http://e.x', 'POLICY https://e.x/p', 'POLICY mailto:a', 'TO /s.txt', 'BOGUS'])).join(' ')}`,
   PRECACHE: () =>
     `PRECACHE ${flags(['--overwrite', '--bogus'])}${Array.from({ length: int(3) }, () => pick(['/assets/', '/**/*.css', '/', 'assets/', '/${x}/', 'TO', 'INTO'])).join(' ')}${maybe(() => ` TO ${pick(['/m.json', '/a/', 'm.json', '${x}', ''])}`, 0.4)}${maybe(() => ` INTO ${pick(['/sw.js', '/a/', 'sw.js', ''])}`, 0.3)}`,
+  CSP: () => `CSP${maybe(() => ` ${pick(['POLICY', 'policy'])} ${pick(['"default-src \'self\'"', '"a, b"', '""', 'x', '${x}', '"script-src \'none\'; style-src *"'])}`, 0.6)}${maybe(pick([' META', ' meta', ' META x', ' POLICY']), 0.4)}`,
+  MIME: () => `MIME ${pick(['.usdz', '.ts', 'usdz', '.a/b', '.X', '${x}', '""'])} ${pick(['model/vnd.usdz+zip', 'video/mp2t', 'text', '"text/plain; charset=utf-8"', 'a/b', 'A/B', ''])}${maybe(' extra', 0.1)}`,
   CHECKLINKS: () => `CHECKLINKS ${flags(['--warn', '--external', '--overwrite', '--warn=1'])}${maybe(() => pick(['/a.html', 'x', '--', 'MANIFEST']), 0.1)}`,
   // The syntax version directive (a comment; only valid before the first instruction).
   DIRECTIVE: () => pick(['#', ' #', '\t#']) + pick([' ', '', '  ']) + pick(['sitefile', 'SITEFILE', 'SiteFile', 'sitefile-lint:', 'ſitefile']) + pick(['=1', ' = 1', '=2', '=10', '=x', '=', '=01', '=1.0', '=1 x', '= \u00a01']),
@@ -173,7 +175,7 @@ const INSTRUCTIONS = {
 const WEIGHTS = { COPY: 4, RENDER: 3, ARG: 2, LET: 2, IMPORT: 2, TRANSFORM: 2, RUN: 0.3, NOT_YET: 0.3, UNKNOWN: 0.4, DIRECTIVE: 0.3, LINT: 0.4 };
 /** Keywords mutations may splice in. */
 const WORDS = [
-  'FROM', 'STAGE', 'image', 'IMAGE', 'AS', 'TO', 'FOR', 'IN', 'WITH', 'OPTIONS', 'ARGS', 'INTEGRITY', 'SORT', 'BY', 'SCHEMA', 'DRAFTS', 'PAGE', 'FIRST', 'BASE', 'AT', 'COMPRESSION', 'scratch', 'EXPORT', 'COPY', 'SITEMAP', 'FEED', 'LINK', 'TITLE', 'REDIRECT', 'STATUS', 'HEADER', 'FINGERPRINT', 'MANIFEST', 'CANONICAL', 'PRETTY', 'PRECOMPRESS', 'MIN', 'gzip', 'ROBOTS', 'ALLOW', 'DISALLOW', 'SECURITY_TXT', 'CONTACT', 'EXPIRES', 'ENCRYPTION', 'POLICY', 'PRECACHE', 'INTO', 'CHECKLINKS', 'sitefile', 'ARG', '+',
+  'FROM', 'STAGE', 'image', 'IMAGE', 'AS', 'TO', 'FOR', 'IN', 'WITH', 'OPTIONS', 'ARGS', 'INTEGRITY', 'SORT', 'BY', 'SCHEMA', 'DRAFTS', 'PAGE', 'FIRST', 'BASE', 'AT', 'COMPRESSION', 'scratch', 'EXPORT', 'COPY', 'SITEMAP', 'FEED', 'LINK', 'TITLE', 'REDIRECT', 'STATUS', 'HEADER', 'FINGERPRINT', 'MANIFEST', 'CANONICAL', 'PRETTY', 'PRECOMPRESS', 'MIN', 'gzip', 'ROBOTS', 'ALLOW', 'DISALLOW', 'SECURITY_TXT', 'CONTACT', 'EXPIRES', 'ENCRYPTION', 'POLICY', 'PRECACHE', 'INTO', 'CSP', 'POLICY', 'META', 'MIME', 'CHECKLINKS', 'sitefile', 'ARG', '+',
   // Case mapping that differs between ASCII and Unicode rules.
   'ſtage', 'İmport', 'ſcratch', 'ﬁ', 'COPẎ', 'ΣΑΣ', 'ß', 'Expoʀt',
 ];
@@ -333,6 +335,8 @@ function validProgram() {
     () => `ROBOTS${maybe(' DISALLOW /drafts/')}${maybe(' ALLOW /')}${maybe(' SITEMAP')}`,
     () => `SECURITY_TXT CONTACT ${pick(['mailto:s@e.x', 'https://e.x/r'])} EXPIRES ${pick(['2099-01-01', '2099-01-01T00:00:00Z'])}${maybe(' POLICY https://e.x/p')}`,
     () => `PRECACHE ${maybe('--overwrite ')}${pick(['/', '/assets/', '/**/*.html /*.css'])}${maybe(' TO /sw-manifest.json')}${maybe(' INTO /sw.js', 0.2)}`,
+    () => `CSP${maybe(` POLICY "default-src 'self'; img-src *"`)}${maybe(' META')}`,
+    () => `MIME ${pick(['.usdz', '.glb', `.${v()}`])} ${pick(['model/vnd.usdz+zip', 'model/gltf-binary', 'application/octet-stream'])}`,
     () => `FINGERPRINT ${maybe('--overwrite ')}${maybe('--no-cache-headers ')}${pick(['/assets/', '/**/*.css /*.js', `/${v()}/`])}${maybe(() => ` MANIFEST ${pick(['/asset-manifest.json', `/${v()}.json`])}`)}${maybe(' INTEGRITY')}`,
     stage,
   ];

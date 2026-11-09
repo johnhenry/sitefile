@@ -3,9 +3,8 @@
 
 use super::common::{err, out};
 use crate::qr::{encode_qr, qr_terminal};
-use crate::server::format_url;
+use crate::server::{format_url, network_urls, with_scheme};
 use std::io::Read;
-use std::net::UdpSocket;
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -42,40 +41,36 @@ fn is_wildcard(h: &str) -> bool {
     h == "0.0.0.0" || h == "::"
 }
 
-/// This machine's address on the network: the local address of a UDP socket
-/// "connected" to a public address (nothing is sent), or None without a route.
-pub fn network_address(bind_host: &str) -> Option<String> {
-    let v6 = bind_host == "::";
-    let s = UdpSocket::bind(if v6 { "[::]:0" } else { "0.0.0.0:0" }).ok()?;
-    s.connect(if v6 { "[2001:db8::1]:9" } else { "192.0.2.1:9" })
-        .ok()?;
-    let ip = s.local_addr().ok()?.ip();
-    (!ip.is_unspecified()).then(|| ip.to_string())
-}
-
 pub struct Urls {
     pub local: String,
-    pub network: Option<String>,
+    pub network: Vec<String>,
 }
 
-/// The URLs to show (below `serve --base`): the local one, and the network one
-/// when bound to every interface.
-pub fn serve_urls(host: &str, port: u16, base: Option<&str>) -> Urls {
+/// The URLs to show (below `serve --base`, `https://` for a TLS server): the
+/// local one, and when bound to every interface the same network URLs as the
+/// start line (one per interface address, IPv4 first).
+pub fn serve_urls(host: &str, port: u16, base: Option<&str>, tls: bool) -> Urls {
     let path = &base.unwrap_or("/")[1..];
-    let local = format!("{}{path}", format_url(host, port));
+    let local = format!("{}{path}", with_scheme(format_url(host, port), tls));
     let network = if is_wildcard(host) {
-        network_address(host).map(|a| format!("{}{path}", format_url(&a, port)))
+        network_urls(host, port)
+            .into_iter()
+            .map(|u| format!("{}{path}", with_scheme(u, tls)))
+            .collect()
     } else {
-        None
+        Vec::new()
     };
     Urls { local, network }
 }
 
-/// `u`: the URLs, and a QR code of the network URL when there is one.
+/// `u`: the URLs, and a QR code of the first network URL when there is one.
 pub fn urls_text(urls: &Urls) -> String {
     let mut s = format!("  Local:   {}\n", urls.local);
-    if let Some(n) = &urls.network {
-        s.push_str(&format!("  Network: {n}\n{}", qr_text(n)));
+    for n in &urls.network {
+        s.push_str(&format!("  Network: {n}\n"));
+    }
+    if let Some(n) = urls.network.first() {
+        s.push_str(&qr_text(n));
     }
     s
 }
@@ -202,11 +197,12 @@ pub fn terminal(
     host: &str,
     port: u16,
     base: Option<&str>,
+    tls: bool,
     restart: Box<dyn Fn() + Send>,
 ) -> Option<Keys> {
-    let urls = serve_urls(host, port, base);
+    let urls = serve_urls(host, port, base, tls);
     if qr {
-        out(&qr_text(urls.network.as_deref().unwrap_or(&urls.local)));
+        out(&qr_text(urls.network.first().unwrap_or(&urls.local)));
     }
     if let Some(p) = open {
         open_browser(&open_url(&urls.local, p));
@@ -240,8 +236,36 @@ mod tests {
         assert_eq!(open_url("http://127.0.0.1:8/", ""), "http://127.0.0.1:8/");
         let u = Urls {
             local: "http://127.0.0.1:8/".into(),
-            network: None,
+            network: vec![],
         };
         assert_eq!(urls_text(&u), "  Local:   http://127.0.0.1:8/\n");
+        let u = Urls {
+            local: "https://127.0.0.1:8/".into(),
+            network: vec![
+                "https://192.0.2.7:8/".into(),
+                "https://[2001:db8::7]:8/".into(),
+            ],
+        };
+        assert_eq!(
+            urls_text(&u),
+            format!(
+                "  Local:   https://127.0.0.1:8/\n  Network: https://192.0.2.7:8/\n  Network: https://[2001:db8::7]:8/\n{}",
+                qr_text("https://192.0.2.7:8/")
+            )
+        );
+    }
+
+    #[test]
+    fn serve_urls_follow_scheme_and_start_line() {
+        let u = serve_urls("127.0.0.1", 8, Some("/docs/"), true);
+        assert_eq!(u.local, "https://127.0.0.1:8/docs/");
+        assert!(u.network.is_empty());
+        let u = serve_urls("0.0.0.0", 8, None, true);
+        assert_eq!(u.local, "https://127.0.0.1:8/");
+        let want: Vec<String> = network_urls("0.0.0.0", 8)
+            .into_iter()
+            .map(|x| with_scheme(x, true))
+            .collect();
+        assert_eq!(u.network, want);
     }
 }

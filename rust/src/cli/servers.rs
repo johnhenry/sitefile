@@ -56,10 +56,14 @@ pub(crate) fn received() -> Option<&'static str> {
     }
 }
 
-fn wait_for_signal() -> &'static str {
+/// [`wait_for_signal`], or `None` once `deadline` passes.
+fn wait_for_signal_until(deadline: Option<std::time::Instant>) -> Option<&'static str> {
     loop {
         if let Some(s) = received() {
-            return s;
+            return Some(s);
+        }
+        if deadline.is_some_and(|d| std::time::Instant::now() >= d) {
+            return None;
         }
         std::thread::sleep(Duration::from_millis(50));
     }
@@ -165,8 +169,12 @@ pub fn production_url(plan: &crate::planner::Plan) -> Option<String> {
 }
 
 /// The URL a server answers at: its origin and `--base`.
-fn site_url(host: &str, port: u16, base: Option<&str>) -> String {
-    format!("{}{}", format_url(host, port), &base.unwrap_or("/")[1..])
+fn site_url(host: &str, port: u16, base: Option<&str>, tls: bool) -> String {
+    format!(
+        "{}{}",
+        crate::server::with_scheme(format_url(host, port), tls),
+        &base.unwrap_or("/")[1..]
+    )
 }
 
 /// `--host-profile` and `--html-handling`, checked: (profile, handling).
@@ -205,6 +213,93 @@ fn parse_country(v: Option<&str>) -> Result<Option<String>> {
 
 /// `--allowed-host` values, validated and lowercased (the server always adds localhost names and
 /// IP addresses).
+/// serve flags for proxying (#172); a detached server has none, so its proxy rules are all refused.
+const PROXY_FLAGS: [&str; 7] = [
+    "proxy",
+    "allow-hosts",
+    "deny-hosts",
+    "allow-http",
+    "allow-private-network",
+    "connect-timeout",
+    "read-timeout",
+];
+
+/// `--proxy /prefix=url`: a path prefix (no trailing slash, except `/`) and an http(s) URL.
+pub fn parse_proxy_route(raw: &str) -> Result<(String, String)> {
+    let bad = || {
+        usage(format!(
+            "--proxy expects /prefix=http(s)://host[/path], got '{raw}'"
+        ))
+    };
+    let Some(eq) = raw.find('=').filter(|i| *i > 0) else {
+        return bad();
+    };
+    let (prefix, target) = (&raw[..eq], &raw[eq + 1..]);
+    let lower = target.to_ascii_lowercase();
+    let after = if lower.starts_with("http://") {
+        &target[7..]
+    } else if lower.starts_with("https://") {
+        &target[8..]
+    } else {
+        return bad();
+    };
+    let host_end = after.find(['/', '?', '#']).unwrap_or(after.len());
+    let host = &after[..host_end];
+    let rest = &after[host_end..];
+    if !prefix.starts_with('/')
+        || prefix
+            .chars()
+            .any(|c| c.is_whitespace() || "?#*:".contains(c))
+        || host.is_empty()
+        || host.chars().any(char::is_whitespace)
+        || !(rest.is_empty() || rest.starts_with('/'))
+        || rest.chars().any(|c| c.is_whitespace() || c == '#')
+    {
+        return bad();
+    }
+    let prefix = if prefix.len() > 1 {
+        prefix.trim_end_matches('/').to_string()
+    } else {
+        prefix.to_string()
+    };
+    Ok((prefix, target.to_string()))
+}
+
+/// The proxy settings of a foreground `serve` (see the TypeScript `proxyOption`).
+fn proxy_option(v: &Parsed) -> Result<crate::server::ServeProxy> {
+    let routes = v
+        .strs("proxy")
+        .iter()
+        .map(|r| parse_proxy_route(r))
+        .collect::<Result<Vec<_>>>()?;
+    let mut network = super::network::network_option_with(v, false)?;
+    for (_, target) in &routes {
+        if let Some((host, port)) = crate::resources::https::host_port(target) {
+            let default = if target.to_ascii_lowercase().starts_with("https:") {
+                443
+            } else {
+                80
+            };
+            let shown = if host.contains(':') {
+                format!("[{host}]")
+            } else {
+                host.clone()
+            };
+            network.allow_hosts.push(if port == default {
+                shown
+            } else {
+                format!("{shown}:{port}")
+            });
+        }
+    }
+    network.strict = true;
+    let mut policy = crate::resources::types::DEFAULT_FETCH_POLICY;
+    policy.allow_http = v.flag("allow-http");
+    policy.allow_private_network = v.flag("allow-private-network");
+    policy.network = network;
+    Ok(crate::server::ServeProxy { routes, policy })
+}
+
 fn isolate_of(v: &Parsed) -> Result<Option<String>> {
     let coep = v.str("coep");
     if coep.is_some() && !v.flag("isolate") {
@@ -217,6 +312,304 @@ fn isolate_of(v: &Parsed) -> Result<Option<String>> {
     }
     Ok(v.flag("isolate")
         .then(|| coep.unwrap_or("require-corp").to_string()))
+}
+
+/// `--max-age`, `--immutable`, `--max-age-html`, or `None` when none is given.
+fn cache_of(v: &Parsed) -> Result<Option<crate::server::CachePreview>> {
+    let secs = |flag: &str| -> Result<Option<u64>> {
+        let Some(raw) = v.str(flag) else {
+            return Ok(None);
+        };
+        match raw.parse::<u64>() {
+            Ok(n)
+                if (1..=10).contains(&raw.len())
+                    && raw.bytes().all(|b| b.is_ascii_digit())
+                    && n <= 2_147_483_647 =>
+            {
+                Ok(Some(n))
+            }
+            _ => usage(format!(
+                "--{flag} must be a number of seconds (0 to 2147483647), not '{raw}'"
+            )),
+        }
+    };
+    let max_age = secs("max-age")?;
+    let max_age_html = secs("max-age-html")?;
+    if v.flag("immutable") && max_age.is_none() {
+        return usage("--immutable needs --max-age");
+    }
+    if max_age.is_none() && max_age_html.is_none() {
+        return Ok(None);
+    }
+    Ok(Some(crate::server::CachePreview {
+        max_age,
+        immutable: v.flag("immutable"),
+        max_age_html,
+    }))
+}
+
+/// What `--auth`, `--auth-file` and `SITEFILE_SERVE_AUTH` give: the server's checker, the verifiers
+/// and the absolute htpasswd path the record keeps (never a password).
+type AuthSetup = (
+    Option<Arc<crate::serve_auth::BasicAuth>>,
+    Vec<crate::serve_auth::AuthEntry>,
+    Option<String>,
+);
+
+fn auth_of(v: &Parsed, bind_host: &str) -> Result<AuthSetup> {
+    use crate::serve_auth::{
+        make_verifier, parse_auth_pair, parse_htpasswd, AuthEntry, BasicAuth, AUTH_ITERATIONS,
+    };
+    let mut pairs = Vec::new();
+    for a in v.strs("auth") {
+        pairs.push(parse_auth_pair(&a, "--auth")?);
+    }
+    if let Ok(env) = std::env::var("SITEFILE_SERVE_AUTH") {
+        if !env.is_empty() {
+            pairs.push(parse_auth_pair(&env, "SITEFILE_SERVE_AUTH")?);
+        }
+    }
+    let entries: Vec<AuthEntry> = pairs
+        .into_iter()
+        .map(|(user, pw)| AuthEntry {
+            user,
+            verifier: make_verifier(&pw, None, AUTH_ITERATIONS),
+        })
+        .collect();
+    let auth_file = v.str("auth-file").map(str::to_string);
+    let from_file = match &auth_file {
+        Some(f) => {
+            let Ok(text) = std::fs::read_to_string(f) else {
+                return usage(format!("--auth-file: cannot read {f}"));
+            };
+            parse_htpasswd(&text, f)?
+        }
+        None => Vec::new(),
+    };
+    if entries.is_empty() && auth_file.is_none() {
+        return Ok((None, Vec::new(), None));
+    }
+    let loopback = bind_host == "localhost" || bind_host == "::1" || bind_host.starts_with("127.");
+    if !loopback {
+        err(&format!("warning: basic authentication over plain HTTP on {bind_host}: the password crosses the network in the clear\n"));
+    }
+    let abs = auth_file.map(|f| {
+        std::path::absolute(&f)
+            .map(|p| p.display().to_string())
+            .unwrap_or(f)
+    });
+    let mut all = entries.clone();
+    all.extend(from_file);
+    Ok((Some(Arc::new(BasicAuth::new(all))), entries, abs))
+}
+
+/// `--max-connections-per-ip <n>` (0 when absent: no limit).
+fn per_ip_of(v: &Parsed) -> Result<usize> {
+    let Some(raw) = v.str("max-connections-per-ip") else {
+        return Ok(0);
+    };
+    if !(1..=6).contains(&raw.len()) || !raw.bytes().all(|b| b.is_ascii_digit()) {
+        return usage(format!(
+            "--max-connections-per-ip must be a number (0 to 999999), not '{raw}'"
+        ));
+    }
+    Ok(raw.parse().unwrap_or(0))
+}
+
+/// `  Network: <url>` lines for a server bound to all interfaces (none otherwise).
+fn network_lines(host: &str, port: u16, base: Option<&str>, tls: bool) -> String {
+    crate::server::network_urls(host, port)
+        .into_iter()
+        .map(|u| {
+            format!(
+                "  Network: {}{}\n",
+                crate::server::with_scheme(u, tls),
+                &base.unwrap_or("/")[1..]
+            )
+        })
+        .collect()
+}
+
+/// `--tls-cert`, `--tls-key` (or `SITEFILE_TLS_CERT`, `SITEFILE_TLS_KEY`): the server's TLS
+/// configuration and the absolute paths the record keeps (`tlsOf` in src/cli/servers.ts).
+#[allow(clippy::type_complexity)]
+fn tls_of(v: &Parsed) -> Result<(Option<Arc<rustls::ServerConfig>>, Option<(String, String)>)> {
+    let env = |k: &str| std::env::var(k).ok().filter(|s| !s.is_empty());
+    let cert = v
+        .str("tls-cert")
+        .map(str::to_string)
+        .or_else(|| env("SITEFILE_TLS_CERT"));
+    let key = v
+        .str("tls-key")
+        .map(str::to_string)
+        .or_else(|| env("SITEFILE_TLS_KEY"));
+    let (cert, key) = match (cert, key) {
+        (None, None) => return Ok((None, None)),
+        (Some(c), Some(k)) => (c, k),
+        _ => return usage("--tls-cert and --tls-key go together"),
+    };
+    let read = |f: &str, flag: &str| -> Result<Vec<u8>> {
+        std::fs::read(f)
+            .map_err(|_| SitefileError::plain(E_USAGE, format!("--{flag}: cannot read {f}")))
+    };
+    let config = crate::server::tls_config(&read(&cert, "tls-cert")?, &read(&key, "tls-key")?)?;
+    let abs = |f: String| {
+        std::path::absolute(&f)
+            .map(|p| p.display().to_string())
+            .unwrap_or(f)
+    };
+    Ok((Some(config), Some((abs(cert), abs(key)))))
+}
+
+/// `--random-route`, `--allow-ip`, `--deny-ip`, `--stop-after` (`sharingOf` in src/cli/servers.ts).
+struct Sharing {
+    /// `--random-route`: a secret `--base` (`/<24 hex>/`).
+    random_base: Option<String>,
+    ip_rules: Option<crate::server::IpRules>,
+    noindex: bool,
+    allow_text: Vec<String>,
+    deny_text: Vec<String>,
+    stop_after: Option<(u64, String)>,
+}
+
+/// `--throttle`: the spec as given and its limits.
+fn throttle_of(v: &Parsed) -> Result<Option<(String, crate::server::Throttle)>> {
+    let Some(spec) = v.str("throttle") else {
+        return Ok(None);
+    };
+    match crate::server::parse_throttle(spec) {
+        Some(t) => Ok(Some((spec.to_string(), t))),
+        None => usage(format!(
+            "--throttle expects 3g, slow-3g or <kbit/s>[/<latency ms>], not '{spec}'"
+        )),
+    }
+}
+
+/// `--mime-file` entries, then `--mime` values, in order (`mimeOf` in src/cli/servers.ts).
+fn mime_of(v: &Parsed) -> Result<Option<Vec<(String, String)>>> {
+    let file = v.str("mime-file");
+    let flags = v.strs("mime");
+    if file.is_none() && flags.is_empty() {
+        return Ok(None);
+    }
+    let mut out = match file {
+        Some(f) => {
+            let Ok(text) = std::fs::read_to_string(f) else {
+                return usage(format!("--mime-file: cannot read {f}"));
+            };
+            crate::server::parse_mime_types(&text, f)?
+        }
+        None => Vec::new(),
+    };
+    for f in flags {
+        let Some((ext, t)) = crate::server::parse_mime_flag(&f) else {
+            return usage(format!("--mime expects ext=type/subtype, not '{f}'"));
+        };
+        match out.iter_mut().find(|(k, _)| *k == ext) {
+            Some(slot) => slot.1 = t,
+            None => out.push((ext, t)),
+        }
+    }
+    Ok(Some(out))
+}
+
+fn mime_map(pairs: &[(String, String)]) -> Arc<std::collections::HashMap<String, String>> {
+    Arc::new(pairs.iter().cloned().collect())
+}
+
+/// The start message's `  Throttle: …` line (none without --throttle).
+fn throttle_line(spec: Option<&str>) -> String {
+    match spec.and_then(crate::server::parse_throttle) {
+        Some(t) => format!(
+            "  Throttle: {} ({} kbit/s, {} ms latency)\n",
+            spec.unwrap_or(""),
+            t.bytes_per_second / 125,
+            t.latency_ms
+        ),
+        None => String::new(),
+    }
+}
+
+fn sharing_of(v: &Parsed, bind_host: &str) -> Result<Sharing> {
+    let cidrs = |flag: &str| -> Result<(Vec<String>, Vec<crate::server::Cidr>)> {
+        let text = v.strs(flag);
+        let mut parsed = Vec::new();
+        for t in &text {
+            match crate::server::parse_cidr(t) {
+                Some(c) => parsed.push(c),
+                None => return usage(format!("--{flag}: invalid address or CIDR block '{t}'")),
+            }
+        }
+        Ok((text, parsed))
+    };
+    let (allow_text, allow) = cidrs("allow-ip")?;
+    let (deny_text, deny) = cidrs("deny-ip")?;
+    if v.flag("random-route") && v.has("base") {
+        return usage("--random-route and --base both set the path prefix; use one");
+    }
+    let random_base = v
+        .flag("random-route")
+        .then(|| format!("/{}/", crate::export::exporter::random_hex(12)));
+    let stop_after = match v.str("stop-after") {
+        None => None,
+        Some(raw) => {
+            let (num, unit) = raw.split_at(raw.len().saturating_sub(1));
+            let mult = match unit {
+                "s" => 1,
+                "m" => 60,
+                "h" => 3600,
+                "d" => 86400,
+                _ => 0,
+            };
+            let n: u64 = if (1..=6).contains(&num.len()) && num.bytes().all(|b| b.is_ascii_digit())
+            {
+                num.parse().unwrap_or(0)
+            } else {
+                0
+            };
+            if mult == 0 || n == 0 {
+                return usage(format!(
+                    "--stop-after expects a duration like 90s, 30m, 2h or 1d, not '{raw}'"
+                ));
+            }
+            Some((n * mult, raw.to_string()))
+        }
+    };
+    let loopback = bind_host == "localhost" || bind_host == "::1" || bind_host.starts_with("127.");
+    let ip_rules =
+        (!allow.is_empty() || !deny.is_empty()).then_some(crate::server::IpRules { allow, deny });
+    Ok(Sharing {
+        random_base,
+        ip_rules,
+        noindex: !loopback,
+        allow_text,
+        deny_text,
+        stop_after,
+    })
+}
+
+/// `--log-format`, `--log-ip`, `--quiet`: (json, log_ip, quiet).
+fn logging_of(v: &Parsed) -> Result<(bool, bool, bool)> {
+    let format = v.str("log-format");
+    if let Some(f) = format.filter(|f| *f != "text" && *f != "json") {
+        return usage(format!("--log-format must be text or json, not '{f}'"));
+    }
+    Ok((format == Some("json"), v.flag("log-ip"), v.flag("quiet")))
+}
+
+/// Where a foreground server's log lines go: stdout, other lines wrapped as JSON objects under
+/// `--log-format json`.
+fn log_writer(json: bool) -> crate::server::LogFn {
+    Arc::new(move |l: &str| {
+        if json && !l.starts_with('{') {
+            out(&format!(
+                "{}\n",
+                crate::server::json_log_line(&now_iso(), l)
+            ));
+        } else {
+            out(&format!("{l}\n"));
+        }
+    })
 }
 
 fn allowed_hosts_of(v: &Parsed) -> Result<Vec<String>> {
@@ -248,11 +641,37 @@ const SERVE_OPTS: &[OptSpec] = &[
     flag("strict-site-files"),
     flag("keep-os-metadata"),
     strings("allowed-host"),
+    strings("proxy"),
+    strings("allow-hosts"),
+    strings("deny-hosts"),
+    flag("allow-http"),
+    flag("allow-private-network"),
+    string("connect-timeout"),
+    string("read-timeout"),
     flag("cors"),
     string("open"),
     flag("qr"),
     flag("isolate"),
     string("coep"),
+    string("max-age"),
+    flag("immutable"),
+    string("max-age-html"),
+    string("log-format"),
+    flag("log-ip"),
+    flag("quiet"),
+    strings("auth"),
+    string("auth-file"),
+    string("max-connections-per-ip"),
+    flag("random-route"),
+    strings("allow-ip"),
+    strings("deny-ip"),
+    string("stop-after"),
+    string("tls-cert"),
+    flag("compress"),
+    string("throttle"),
+    strings("mime"),
+    string("mime-file"),
+    string("tls-key"),
     flag("watch"),
     string_s("file", 'f'),
     string("target"),
@@ -300,7 +719,33 @@ pub const SERVE: Command = Command {
         "--cors            Access-Control-Allow-Origin: * on every response and OPTIONS preflights (204)",
         "--isolate         cross-origin isolation headers (COOP same-origin, COEP, CORP same-origin) on every response",
         "--coep <require-corp|credentialless>  the Cross-Origin-Embedder-Policy of --isolate (default require-corp)",
+        "--max-age <secs>  preview production caching: Cache-Control: public, max-age=<secs> on files other than HTML",
+        "--immutable       add immutable to the --max-age value (fingerprinted assets)",
+        "--max-age-html <secs>        Cache-Control: public, max-age=<secs> on HTML pages too (default: they keep no-cache)",
+        "--log-format <text|json>     access-log lines as text (default) or one JSON object per line (a stable format; docs/CLI.md)",
+        "--log-ip          add the client address to access-log lines",
+        "--quiet           no access-log lines",
+        "--auth <user:password>       require HTTP basic authentication (repeatable; or SITEFILE_SERVE_AUTH); only a hash is stored",
+        "--auth-file <htpasswd>       users from an htpasswd file ({SHA} entries, htpasswd -s)",
+        "--max-connections-per-ip <n> open connections one non-loopback client may hold (default 0: no limit; 503 over it)",
+        "--random-route    serve the site only under a random secret path (printed in the URL)",
+        "--allow-ip <cidr>            only answer clients in this block (repeatable; loopback is always allowed)",
+        "--deny-ip <cidr>             refuse clients in this block (repeatable; checked first)",
+        "--stop-after <n>[s|m|h|d]    stop the server after this long (not with --watch)",
+        "--tls-cert <pem>  serve HTTPS with this certificate chain (with --tls-key; or SITEFILE_TLS_CERT)",
+        "--tls-key <pem>   the private key of --tls-cert (or SITEFILE_TLS_KEY); read at start, never copied",
+        "--compress        gzip text, JSON, SVG, wasm ... files (1 KiB or more) on the fly (precompressed .br/.gz are always used)",
+        "--throttle <3g|slow-3g|kbit[/ms]>  limit response bandwidth and add latency (e.g. 400/400)",
+        "--mime <ext=type>            serve files with this extension as this content type (repeatable; before the built-in table)",
+        "--mime-file <mime.types>     content types from an nginx or Apache mime.types file (--mime wins)",
         "--allowed-host <name>        also answer requests for this Host (repeatable; .example.com: and subdomains; *: any)",
+        "--proxy </prefix=url>        forward GET/HEAD under /prefix to url + the rest of the path (repeatable; its host is allowed)",
+        "--allow-hosts <hosts>        hosts _redirects proxy rules (200 to a URL) may reach (repeatable; also $SITEFILE_ALLOW_HOSTS)",
+        "--deny-hosts <hosts>         hosts never proxied to; beats --allow-hosts and --proxy (also $SITEFILE_DENY_HOSTS)",
+        "--allow-http                 proxy to plain http:// URLs",
+        "--allow-private-network      proxy to loopback/private addresses (localhost:3000 needs it)",
+        "--connect-timeout <ms>       proxy connect time limit; --read-timeout <ms>: longest wait for data",
+        "--read-timeout <ms>          (see --connect-timeout)",
         "--spa             answer page navigations to missing paths with the nearest 200.html or index.html",
         "--spa-exclude <glob>         paths that never fall back to the app shell (* matches anything; repeatable)",
         "--spa-fallback <path>        the file every --spa fallback serves, e.g. /app.html (implies --spa)",
@@ -352,8 +797,19 @@ fn run_serve(v: &Parsed) -> Result<i32> {
     let bind = parse_publish(v.str("publish"))?;
     let allowed_hosts = allowed_hosts_of(v)?;
     let isolate = isolate_of(v)?;
+    let cache = cache_of(v)?;
+    let (log_json, log_ip, quiet) = logging_of(v)?;
+    let (auth, auth_entries, auth_file) = auth_of(v, &bind.host)?;
+    let per_ip = per_ip_of(v)?;
+    let sharing = sharing_of(v, &bind.host)?;
+    let (tls, tls_paths) = tls_of(v)?;
+    let throttle = throttle_of(v)?;
+    let mime = mime_of(v)?;
     let (spa, spa_exclude, spa_fallback) = spa_options(v)?;
-    let base = parse_base(v.str("base"))?;
+    let base = match &sharing.random_base {
+        Some(b) => Some(b.clone()),
+        None => parse_base(v.str("base"))?,
+    };
     let rewrite_base = parse_rewrite_base(v.str("rewrite-base"))?;
     let (host_profile, html_handling) = profile_options(v)?;
     let profile = crate::server::routing_for(host_profile.as_deref(), html_handling.as_deref());
@@ -391,11 +847,11 @@ fn run_serve(v: &Parsed) -> Result<i32> {
         let modified = served_last_modified(&store, &source);
         let n = tree.len();
         catch_signals();
-        let log: crate::server::LogFn = Arc::new(|l: &str| out(&format!("{l}\n")));
         let shared: crate::server::SharedTree = Arc::new(std::sync::RwLock::new(Arc::new(tree)));
         let server = listen_shared(
             shared.clone(),
             SiteServerOptions {
+                log: Some(log_writer(log_json)),
                 spa,
                 spa_exclude,
                 spa_fallback,
@@ -406,25 +862,56 @@ fn run_serve(v: &Parsed) -> Result<i32> {
                     .clone()
                     .map(|b| -> crate::server::BaseFn { Arc::new(move || Some(b.clone())) }),
                 profile,
+                dev_not_found: !is_wildcard(&bind.host),
                 country: country.clone(),
-                log: Some(log),
                 server_id: None,
                 live_reload: None,
                 last_modified: Some(Arc::new(move || modified)),
                 warn: None,
                 allowed_hosts: Some(allowed_hosts.clone()),
+                proxy: Some(proxy_option(v)?),
                 cors: v.flag("cors"),
                 isolate: isolate.clone(),
+                cache: cache.clone(),
+                log_json,
+                log_ip,
+                quiet,
+                auth: auth.clone(),
+                max_connections_per_ip: per_ip,
+                limit_loopback: false,
+                hide_base: sharing.random_base.is_some(),
+                ip_rules: sharing.ip_rules.clone(),
+                noindex: sharing.noindex,
+                client_info: true,
+                tls: tls.clone(),
+                compress: v.flag("compress"),
+                gzip_cache: Default::default(),
+                throttle: throttle.as_ref().map(|t| t.1),
+                mime: mime.as_deref().map(mime_map),
                 content: site.content,
                 ..Default::default()
             },
             &bind.host,
             bind.port,
         )?;
-        out(&format!(
-            "Serving {label} ({n} files) at {}  (Ctrl-C to stop)\n",
-            site_url(&server.host, server.port, base.as_deref())
-        ));
+        if log_json {
+            out(&format!(
+                "{}\n",
+                crate::server::started_log_line(
+                    &now_iso(),
+                    &label,
+                    n,
+                    &site_url(&server.host, server.port, base.as_deref(), tls.is_some())
+                )
+            ));
+        } else {
+            out(&format!(
+                "Serving {label} ({n} files) at {}  (Ctrl-C to stop)\n{}{}",
+                site_url(&server.host, server.port, base.as_deref(), tls.is_some()),
+                network_lines(&server.host, server.port, base.as_deref(), tls.is_some()),
+                throttle_line(throttle.as_ref().map(|t| t.0.as_str()))
+            ));
+        }
         let restart: Box<dyn Fn() + Send> = {
             let (source, label, shared) = (source.clone(), label.clone(), shared.clone());
             Box::new(move || {
@@ -467,14 +954,25 @@ fn run_serve(v: &Parsed) -> Result<i32> {
             &server.host,
             server.port,
             base.as_deref(),
+            tls.is_some(),
             restart,
         );
+        let deadline = sharing
+            .stop_after
+            .as_ref()
+            .map(|(secs, _)| std::time::Instant::now() + Duration::from_secs(*secs));
         loop {
             if received().is_some()
                 || keys
                     .as_ref()
                     .is_some_and(|k| k.quit.load(std::sync::atomic::Ordering::SeqCst))
             {
+                break;
+            }
+            if deadline.is_some_and(|d| std::time::Instant::now() >= d) {
+                if let Some((_, text)) = &sharing.stop_after {
+                    out(&format!("Stopping: --stop-after {text} reached\n"));
+                }
                 break;
             }
             std::thread::sleep(Duration::from_millis(50));
@@ -486,6 +984,13 @@ fn run_serve(v: &Parsed) -> Result<i32> {
 
     if v.has("open") || v.flag("qr") {
         return usage("--open and --qr are for a server in the foreground, not -d");
+    }
+    for f in PROXY_FLAGS {
+        if v.has(f) {
+            return usage(format!(
+                "--{f} is for a server in the foreground (or --watch), not -d"
+            ));
+        }
     }
     let reg = ServerRegistry::open(Some(store))?;
     let up = serve_detached_with(
@@ -506,6 +1011,28 @@ fn run_serve(v: &Parsed) -> Result<i32> {
             allowed_hosts,
             cors: v.flag("cors"),
             isolate,
+            cache,
+            log_format: log_json.then(|| "json".to_string()),
+            log_ip,
+            quiet,
+            auth: auth_entries,
+            auth_file,
+            max_connections_per_ip: per_ip,
+            hide_base: sharing.random_base.is_some(),
+            allow_ip: (!sharing.allow_text.is_empty()).then(|| sharing.allow_text.clone()),
+            deny_ip: (!sharing.deny_text.is_empty()).then(|| sharing.deny_text.clone()),
+            tls_cert: tls_paths.as_ref().map(|p| p.0.clone()),
+            tls_key: tls_paths.as_ref().map(|p| p.1.clone()),
+            compress: v.flag("compress"),
+            throttle: throttle.as_ref().map(|t| t.0.clone()),
+            mime: mime.as_ref().map(|m| {
+                m.iter()
+                    .map(|(k, t)| (k.clone(), Value::String(t.clone())))
+                    .collect()
+            }),
+            expires: sharing.stop_after.as_ref().map(|(secs, _)| {
+                crate::store::iso_of_time(std::time::SystemTime::now() + Duration::from_secs(*secs))
+            }),
             country,
             strict_site_files,
             project: None,
@@ -514,10 +1041,12 @@ fn run_serve(v: &Parsed) -> Result<i32> {
         &warn,
     )?;
     out(&format!(
-        "Started {} ({}) serving {label} at {}\n",
+        "Started {} ({}) serving {label} at {}\n{}{}",
         up.name,
         up.id,
-        site_url(&up.host, up.port, up.base.as_deref())
+        site_url(&up.host, up.port, up.base.as_deref(), up.tls_cert.is_some()),
+        network_lines(&up.host, up.port, up.base.as_deref(), up.tls_cert.is_some()),
+        throttle_line(up.throttle.as_deref())
     ));
     Ok(0)
 }
@@ -532,8 +1061,20 @@ fn serve_watch(v: &Parsed) -> Result<i32> {
         return usage("--name needs -d (only detached servers are tracked)");
     }
     let bind = parse_publish(v.str("publish"))?;
+    let proxy = proxy_option(v)?;
     let allowed_hosts = allowed_hosts_of(v)?;
     let isolate = isolate_of(v)?;
+    let cache = cache_of(v)?;
+    let (log_json, log_ip, quiet) = logging_of(v)?;
+    let (auth, _, _) = auth_of(v, &bind.host)?;
+    let per_ip = per_ip_of(v)?;
+    if v.has("stop-after") {
+        return usage("--stop-after does not apply to --watch");
+    }
+    let sharing = sharing_of(v, &bind.host)?;
+    let (tls, _) = tls_of(v)?;
+    let throttle = throttle_of(v)?;
+    let mime = mime_of(v)?;
     let context = v.positionals.first().cloned().unwrap_or_else(|| ".".into());
     let file = v.str("file").filter(|s| !s.is_empty()).map(str::to_string);
     let arg_files = v.strs("build-arg-file");
@@ -551,7 +1092,10 @@ fn serve_watch(v: &Parsed) -> Result<i32> {
         other => return usage(format!("--reload expects full or morph, got '{other}'")),
     };
     let (spa, spa_exclude, spa_fallback) = spa_options(v)?;
-    let base_flag = parse_base(v.str("base"))?;
+    let base_flag = match &sharing.random_base {
+        Some(b) => Some(b.clone()),
+        None => parse_base(v.str("base"))?,
+    };
     // `--base`, else the path of the last good build's EXPORT BASE URL.
     let base: Arc<RwLock<Option<String>>> = Arc::new(RwLock::new(base_flag.clone()));
     let rewrite_flag = parse_rewrite_base(v.str("rewrite-base"))?;
@@ -724,8 +1268,8 @@ fn serve_watch(v: &Parsed) -> Result<i32> {
     let keys: std::cell::RefCell<Option<super::serve_keys::Keys>> = std::cell::RefCell::new(None);
     let rebuild = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let mut on_started = || -> Result<()> {
-        let log: crate::server::LogFn = Arc::new(|l: &str| out(&format!("{l}\n")));
         let opts = SiteServerOptions {
+            log: Some(log_writer(log_json)),
             spa,
             spa_exclude: spa_exclude.clone(),
             spa_fallback: spa_fallback.clone(),
@@ -738,8 +1282,8 @@ fn serve_watch(v: &Parsed) -> Result<i32> {
                 move || rb.read().ok().and_then(|b| b.clone())
             })),
             profile,
+            dev_not_found: !is_wildcard(&bind.host),
             country: country.clone(),
-            log: Some(log),
             server_id: None,
             live_reload: Some(live.clone()),
             last_modified: Some(Arc::new({
@@ -748,20 +1292,48 @@ fn serve_watch(v: &Parsed) -> Result<i32> {
             })),
             warn: Some(Arc::new(|m: &str| err(&format!("warning: {m}\n")))),
             allowed_hosts: Some(allowed_hosts.clone()),
+            proxy: Some(proxy.clone()),
             cors: v.flag("cors"),
             isolate: isolate.clone(),
+            cache: cache.clone(),
+            log_json,
+            log_ip,
+            quiet,
+            auth: auth.clone(),
+            max_connections_per_ip: per_ip,
+            limit_loopback: false,
+            hide_base: sharing.random_base.is_some(),
+            ip_rules: sharing.ip_rules.clone(),
+            noindex: sharing.noindex,
+            client_info: true,
+            tls: tls.clone(),
+            compress: v.flag("compress"),
+            gzip_cache: Default::default(),
+            throttle: throttle.as_ref().map(|t| t.1),
+            mime: mime.as_deref().map(mime_map),
             content: None,
         };
         let s = listen_shared(current.clone(), opts, &bind.host, bind.port)?;
         let n = current.read().map(|t| t.len()).unwrap_or(0);
-        out(&format!(
-            "Serving {context} ({n} files) at {}  (Ctrl-C to stop)\n",
-            site_url(
-                &s.host,
-                s.port,
-                base.read().ok().and_then(|b| b.clone()).as_deref()
-            )
-        ));
+        let current_base = base.read().ok().and_then(|b| b.clone());
+        if log_json {
+            out(&format!(
+                "{}\n",
+                crate::server::started_log_line(
+                    &now_iso(),
+                    &context,
+                    n,
+                    &site_url(&s.host, s.port, current_base.as_deref(), tls.is_some())
+                )
+            ));
+        } else {
+            out(&format!(
+                "Serving {context} ({n} files) at {}  (Ctrl-C to stop)\n{}{}",
+                site_url(&s.host, s.port, current_base.as_deref(), tls.is_some()),
+                network_lines(&s.host, s.port, current_base.as_deref(), tls.is_some()),
+                throttle_line(throttle.as_ref().map(|t| t.0.as_str()))
+            ));
+        }
         let rebuild = rebuild.clone();
         let shown_base = base.read().ok().and_then(|b| b.clone());
         *keys.borrow_mut() = super::serve_keys::terminal(
@@ -770,6 +1342,7 @@ fn serve_watch(v: &Parsed) -> Result<i32> {
             &s.host,
             s.port,
             shown_base.as_deref(),
+            tls.is_some(),
             Box::new(move || rebuild.store(true, std::sync::atomic::Ordering::SeqCst)),
         );
         server = Some(s);
@@ -803,9 +1376,31 @@ fn serve_watch(v: &Parsed) -> Result<i32> {
     Ok(code)
 }
 
+/// A detached server's TLS configuration, from the PEM files its record names (read at every start).
+fn worker_tls(state: &ServerState) -> Result<Option<Arc<rustls::ServerConfig>>> {
+    let (Some(c), Some(k)) = (&state.tls_cert, &state.tls_key) else {
+        return Ok(None);
+    };
+    let read = |f: &String| {
+        std::fs::read(f).map_err(|e| SitefileError::plain(E_SERVER, format!("{f}: {e}")))
+    };
+    Ok(Some(crate::server::tls_config(&read(c)?, &read(k)?)?))
+}
+
+/// A detached server's checker: its verifiers and its htpasswd file, read again at every start.
+fn worker_auth(state: &ServerState) -> Result<Option<Arc<crate::serve_auth::BasicAuth>>> {
+    let mut all = state.auth.clone();
+    if let Some(f) = &state.auth_file {
+        let text = std::fs::read_to_string(f)
+            .map_err(|e| SitefileError::plain(E_SERVER, format!("--auth-file {f}: {e}")))?;
+        all.extend(crate::serve_auth::parse_htpasswd(&text, f)?);
+    }
+    Ok((!all.is_empty() || state.auth_file.is_some())
+        .then(|| Arc::new(crate::serve_auth::BasicAuth::new(all))))
+}
+
 /// `sitefile __serve-worker <id>`: the detached server process.
 pub fn serve_worker(id: &str) -> i32 {
-    let stamp = |m: &str| out(&format!("{} {m}\n", now_iso()));
     let reg = match ServerRegistry::open(None) {
         Ok(r) => r,
         Err(e) => {
@@ -824,8 +1419,46 @@ pub fn serve_worker(id: &str) -> i32 {
             return 1;
         }
     };
+    // `--log-format json`: every line is a JSON object.
+    let json = state.log_format.as_deref() == Some("json");
+    let stamp = move |m: &str| {
+        let ts = now_iso();
+        if json {
+            let line = if m.starts_with('{') {
+                m.to_string()
+            } else {
+                crate::server::json_log_line(&ts, m)
+            };
+            out(&format!("{line}\n"));
+        } else {
+            out(&format!("{ts} {m}\n"));
+        }
+    };
     catch_signals();
+    // --stop-after: the record's expiry.
+    let left_ms = state
+        .expires
+        .as_deref()
+        .and_then(super::common::parse_iso)
+        .map(|ms| {
+            ms - std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_millis() as i64)
+                .unwrap_or(0)
+        });
+    let deadline = left_ms
+        .filter(|l| *l > 0)
+        .map(|l| std::time::Instant::now() + Duration::from_millis(l as u64));
     let started = (|| -> Result<crate::server::ListeningServer> {
+        if left_ms.is_some_and(|l| l <= 0) {
+            return Err(SitefileError::plain(
+                E_SERVER,
+                format!(
+                    "server expired at {} (--stop-after)",
+                    state.expires.as_deref().unwrap_or("")
+                ),
+            ));
+        }
         let warn = |m: &str| stamp(&format!("warning: {m}"));
         let site = load_served_site(
             &reg.store,
@@ -850,7 +1483,7 @@ pub fn serve_worker(id: &str) -> i32 {
         }
         let modified = served_last_modified(&reg.store, &state.source);
         let n = tree.len();
-        let log: crate::server::LogFn = Arc::new(|l: &str| out(&format!("{} {l}\n", now_iso())));
+        let log: crate::server::LogFn = Arc::new(stamp);
         let server = listen(
             Arc::new(tree),
             SiteServerOptions {
@@ -878,6 +1511,44 @@ pub fn serve_worker(id: &str) -> i32 {
                 allowed_hosts: Some(state.allowed_hosts.clone()),
                 cors: state.cors,
                 isolate: state.isolate.clone(),
+                cache: state.cache.clone(),
+                log_json: json,
+                log_ip: state.log_ip,
+                quiet: state.quiet,
+                auth: worker_auth(&state)?,
+                max_connections_per_ip: state.max_connections_per_ip,
+                limit_loopback: false,
+                hide_base: state.hide_base,
+                ip_rules: (state.allow_ip.is_some() || state.deny_ip.is_some()).then(|| {
+                    let parse = |v: &Option<Vec<String>>| -> Vec<crate::server::Cidr> {
+                        v.iter()
+                            .flatten()
+                            .filter_map(|t| crate::server::parse_cidr(t))
+                            .collect()
+                    };
+                    crate::server::IpRules {
+                        allow: parse(&state.allow_ip),
+                        deny: parse(&state.deny_ip),
+                    }
+                }),
+                noindex: !(state.bind.host == "localhost"
+                    || state.bind.host == "::1"
+                    || state.bind.host.starts_with("127.")),
+                client_info: true,
+                tls: worker_tls(&state)?,
+                compress: state.compress,
+                gzip_cache: Default::default(),
+                throttle: state
+                    .throttle
+                    .as_deref()
+                    .and_then(crate::server::parse_throttle),
+                mime: state.mime.as_ref().map(|m| {
+                    Arc::new(
+                        m.iter()
+                            .filter_map(|(k, v)| v.as_str().map(|t| (k.clone(), t.to_string())))
+                            .collect(),
+                    )
+                }),
                 content: site.content,
                 ..Default::default()
             },
@@ -892,17 +1563,30 @@ pub fn serve_worker(id: &str) -> i32 {
             s.ready = true;
             s.error = None;
         })?;
-        stamp(&format!(
-            "serving {} ({n} files) at {}",
-            state.image,
-            site_url(&host, port, state.base.as_deref())
-        ));
+        if json {
+            stamp(&crate::server::started_log_line(
+                &now_iso(),
+                &state.image,
+                n,
+                &site_url(&host, port, state.base.as_deref(), state.tls_cert.is_some()),
+            ));
+        } else {
+            stamp(&format!(
+                "serving {} ({n} files) at {}",
+                state.image,
+                site_url(&host, port, state.base.as_deref(), state.tls_cert.is_some())
+            ));
+        }
         Ok(server)
     })();
     match started {
         Ok(server) => {
-            let sig = wait_for_signal();
-            stamp(&format!("received {sig}, shutting down"));
+            match wait_for_signal_until(deadline) {
+                Some(sig) if json => stamp(&crate::server::stopped_log_line(&now_iso(), sig)),
+                Some(sig) => stamp(&format!("received {sig}, shutting down")),
+                None if json => stamp(&crate::server::stopped_log_line(&now_iso(), "expired")),
+                None => stamp("--stop-after reached, shutting down"),
+            }
             let (tx, rx) = std::sync::mpsc::channel();
             std::thread::spawn(move || {
                 server.close();
@@ -914,7 +1598,15 @@ pub fn serve_worker(id: &str) -> i32 {
         }
         Err(e) => {
             let message = format!("error[{}]: {}", e.code, e.message());
-            err(&format!("{} {message}\n", now_iso()));
+            let ts = now_iso();
+            if json {
+                err(&format!(
+                    "{}\n",
+                    crate::server::json_log_line(&ts, &message)
+                ));
+            } else {
+                err(&format!("{ts} {message}\n"));
+            }
             let _ = reg.update(id, |s| {
                 s.pid = 0;
                 s.ready = false;
@@ -955,13 +1647,32 @@ fn run_ps(v: &Parsed) -> Result<i32> {
                 let mut m = Map::new();
                 if let Ok(Value::Object(st)) = serde_json::to_value(&s.state) {
                     for (k, val) in st {
-                        if k != "image" {
+                        // Credentials never leave the record: a server that needs them shows auth: true.
+                        if k != "image" && k != "auth" {
                             m.insert(k, val);
                         }
                     }
                 }
                 m.insert("status".into(), Value::String(s.status.into()));
                 m.insert("url".into(), Value::String(s.url.clone()));
+                // A server bound to all interfaces also lists the URLs other machines use.
+                let net = if s.status == "running" {
+                    crate::server::network_urls(&s.state.host, s.state.port)
+                        .into_iter()
+                        .map(|u| crate::server::with_scheme(u, s.state.tls_cert.is_some()))
+                        .collect()
+                } else {
+                    Vec::new()
+                };
+                if !net.is_empty() {
+                    m.insert(
+                        "networkUrls".into(),
+                        Value::Array(net.into_iter().map(Value::String).collect()),
+                    );
+                }
+                if !s.state.auth.is_empty() || s.state.auth_file.is_some() {
+                    m.insert("auth".into(), Value::Bool(true));
+                }
                 m.insert("site".into(), Value::String(s.state.image.clone()));
                 Value::Object(m)
             })
@@ -1071,13 +1782,13 @@ fn run_rm(v: &Parsed) -> Result<i32> {
     })
 }
 
-const LOGS_OPTS: &[OptSpec] = &[flag_s("follow", 'f'), string_s("tail", 'n')];
+const LOGS_OPTS: &[OptSpec] = &[flag_s("follow", 'f'), string_s("tail", 'n'), flag("json")];
 pub const LOGS: Command = Command {
     name: "logs",
     summary: "show a server's access log",
-    usage: "server logs [-f] [-n lines] <name|id>",
+    usage: "server logs [-f] [-n lines] [--json] <name|id>",
     description: "Print the log of a detached server: one line per request (\"METHOD /path STATUS BYTES MSms\").",
-    flags: &["-f, --follow    keep printing new lines until Ctrl-C", "-n, --tail <n>  only the last n lines"],
+    flags: &["-f, --follow    keep printing new lines until Ctrl-C", "-n, --tail <n>  only the last n lines", "--json          one JSON object per line (text lines of older servers are converted)"],
     options: LOGS_OPTS,
     run: run_logs,
 };
@@ -1111,8 +1822,31 @@ fn run_logs(v: &Parsed) -> Result<i32> {
         }
         text = tail_lines(&text, n as usize);
     }
-    out(&text);
+    let json = v.flag("json");
+    let mut carry = String::new();
+    // Write log bytes; with --json, whole lines only, each converted.
+    let mut emit = |chunk: &str| {
+        if !json {
+            out(chunk);
+            return;
+        }
+        carry.push_str(chunk);
+        let Some(last) = carry.rfind('\n') else {
+            return;
+        };
+        let whole: String = carry[..last]
+            .split('\n')
+            .map(|l| format!("{}\n", crate::server::log_line_as_json(l)))
+            .collect();
+        carry = carry[last + 1..].to_string();
+        out(&whole);
+    };
+    emit(&text);
     if !v.flag("follow") {
+        drop(emit);
+        if json && !carry.is_empty() {
+            out(&format!("{}\n", crate::server::log_line_as_json(&carry)));
+        }
         return Ok(0);
     }
     catch_signals();
@@ -1130,10 +1864,7 @@ fn run_logs(v: &Parsed) -> Result<i32> {
             let mut buf = vec![0u8; (size - pos) as usize];
             if f.seek(SeekFrom::Start(pos)).is_ok() && f.read_exact(&mut buf).is_ok() {
                 pos = size;
-                use std::io::Write;
-                let mut o = std::io::stdout().lock();
-                let _ = o.write_all(&buf);
-                let _ = o.flush();
+                emit(&String::from_utf8_lossy(&buf));
             }
         }
     }
@@ -1156,11 +1887,12 @@ fn run_restart(v: &Parsed) -> Result<i32> {
     let s = reg.find(&v.positionals[0])?;
     let up = restart_detached(&reg, &s, grace_of(v)?, None)?;
     out(&format!(
-        "Restarted {} ({}) serving {} at {}\n",
+        "Restarted {} ({}) serving {} at {}\n{}",
         up.name,
         up.id,
         up.image,
-        site_url(&up.host, up.port, up.base.as_deref())
+        site_url(&up.host, up.port, up.base.as_deref(), up.tls_cert.is_some()),
+        network_lines(&up.host, up.port, up.base.as_deref(), up.tls_cert.is_some())
     ));
     Ok(0)
 }

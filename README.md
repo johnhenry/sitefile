@@ -87,11 +87,13 @@ no runtime dependencies.
 | `FEED <import> BASE <url> LINK <path> [TO <dest>] [TITLE <text>]` | yes; an Atom `/feed.xml` from Markdown posts (`title` and `date` required) |
 | `ROBOTS [ALLOW\|DISALLOW <path>]… [SITEMAP] [TO <dest>]`, `SECURITY_TXT CONTACT <uri>… EXPIRES <date> [ENCRYPTION <uri>]… [POLICY <uri>]…` | yes; `/robots.txt` (with the SITEMAP URLs) and an RFC 9116 `/.well-known/security.txt` (Expires required; warns when near) |
 | `REDIRECT <from> <to> [STATUS 301\|302\|303\|307\|308]`, `HEADER <pattern> <Name>: <value>` | yes; `/_redirects` and `/_headers` for Netlify / Cloudflare Pages (and `sitefile serve`); a `wbn` export also bakes HEADER values into each response and exact-path REDIRECTs into 3xx responses (splats stay in `/_redirects`) |
+| `CSP [POLICY <policy>] [META]` | yes; a strict Content-Security-Policy per page in `/_headers` (or a `<meta>`), with the SHA-256 of each inline script and style instead of `'unsafe-inline'` |
+| `MIME <.ext> <type/subtype>` | yes; a custom Content-Type (`.usdz`, `.ts` as MPEG-TS) as a `/_headers` rule, which also types the files in a Web Bundle export |
 | `CHECKLINKS [--warn] [--external]` | yes; fails (or warns) on links to files that do not exist, with file and line; `--external` requests http(s) links under the network policy |
 | `FINGERPRINT [--overwrite] [--no-cache-headers] <pattern>… [MANIFEST <dest>] [INTEGRITY]` | yes; renames assets to `name.<hash>.ext` and rewrites the HTML and CSS that reference them, plus a JSON manifest, `Cache-Control` lines in `/_headers` and (INTEGRITY) SRI attributes |
 | `PRECOMPRESS [--overwrite] [gzip] <pattern>… [MIN <bytes>]` | yes; deterministic `.gz` sidecars of text files for hosts that serve them in place of the file (nginx `gzip_static`, Caddy `precompressed`); `br` and `zstd` are not supported yet |
 | `PRECACHE [--overwrite] <pattern>… [TO <dest>] [INTO <service-worker>]` | yes; a Workbox-style `[{url, revision}]` precache manifest (fingerprinted files get `revision: null`), or injected at `self.__WB_MANIFEST` |
-| `EXPORT <path> [AS directory\|zip\|tar\|tgz\|wbn\|oci\|car\|html\|mhtml\|warc\|epub] [BASE <https-url>] [AT <root>] [COMPRESSION gzip\|none]` | yes; archives are deterministic, `wbn` is an unsigned Web Bundle (needs `BASE` or `--base-url`; `COMPRESSION gzip` gzips it, default `none`), `oci` is a single-layer OCI image of the files (under `AT`, default `/srv/www`; `COMPRESSION` sets its layer, default `gzip`), `car` is an IPFS CARv1 file whose root CID matches kubo's `ipfs add -r --cid-version=1`, `html` is `index.html` with its assets inlined as `data:` URIs, `mhtml` the same page and assets as one MHTML file, `warc` a WARC/1.1 web archive of every file at `BASE` (also imported and served), `epub` an EPUB 3 book of the XHTML pages |
+| `EXPORT <path> [AS directory\|zip\|tar\|tgz\|wbn\|oci\|car\|html\|mhtml\|warc\|swbn\|wacz\|epub] [BASE <https-url>] [AT <root>] [COMPRESSION gzip\|none] [KEY <secret-id>] [FOR <host>]` | yes; `FOR netlify\|cloudflare\|vercel\|firebase\|azure\|github-pages\|s3` writes REDIRECT and HEADER as that host reads them (a rule it cannot express is an error, a warning with `--lossy`); archives are deterministic, `wbn` is an unsigned Web Bundle (needs `BASE` or `--base-url`; `COMPRESSION gzip` gzips it, default `none`), `oci` is a single-layer OCI image of the files (under `AT`, default `/srv/www`; `COMPRESSION` sets its layer, default `gzip`), `car` is an IPFS CARv1 file whose root CID matches kubo's `ipfs add -r --cid-version=1`, `html` is `index.html` with its assets inlined as `data:` URIs, `mhtml` the same page and assets as one MHTML file, `warc` a WARC/1.1 web archive of every file at `BASE` (also imported and served), `swbn` a Signed Web Bundle for an Isolated Web App, signed with the Ed25519 key in `--secret` `KEY`, `wacz` that WARC as a WACZ package for ReplayWeb.page, `epub` an EPUB 3 book of the XHTML pages |
 
 Templates can also live in the Sitefile itself (see `examples/inline/`):
 
@@ -445,6 +447,10 @@ tools are code, and run only when you name them on the command line.
   ([docs/PLUGINS.md](docs/PLUGINS.md#what-sitefile-trusts-as-is)). JavaScript
   plugins say whether they are deterministic with `export const cache =
   true|false`; one that says neither is cached with a warning.
+- **Sharing a server with `--auth`** keeps people who lack the password out
+  (basic authentication on every request, passwords stored only as PBKDF2
+  verifiers). It does not hide the traffic: over plain HTTP on a LAN the
+  password and the pages travel in the clear, so use it on networks you trust.
 - **No silent overwrites.** Writing different content to an existing path fails
   unless `--overwrite` is given. Two output paths that differ only in case
   (`/A.html`, `/a.html`) always fail (`E_PATH_COLLISION`), and every path is
@@ -462,6 +468,11 @@ tools are code, and run only when you name them on the command line.
   ([docs/LANGUAGE.md](docs/LANGUAGE.md#vendoring-sitefile-vendor)).
 - **`sitefile serve` listens on `127.0.0.1`**, GET/HEAD only, no directory
   listings, unless `-p` names another address.
+- **`serve` proxies only where you allow it.** A `_redirects` proxy rule (200
+  to a URL) in a site you serve reaches only hosts in `--allow-hosts`; others
+  get a `502` naming the flag. `--proxy /api=url` is allowed by being written.
+  Both follow the build fetch policy above and never forward cookies or
+  `Authorization` ([docs/CLI.md](docs/CLI.md#site-servers)).
 
 **What is still yours:**
 

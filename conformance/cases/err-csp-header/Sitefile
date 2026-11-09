@@ -1,0 +1,4 @@
+FROM scratch
+CSP
+HEADER /* Content-Security-Policy: default-src *
+EXPORT /

@@ -1,0 +1,7 @@
+# CSP: per-page policies with the hashes of inline scripts and styles, in /_headers after the HEADER lines.
+STAGE pages
+COPY ./public/ /www/
+CSP POLICY "default-src 'none'; img-src 'self'; STYLE-SRC 'self' https://fonts.example.com"
+FROM pages
+HEADER /* X-Frame-Options: DENY
+EXPORT /www

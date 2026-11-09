@@ -39,15 +39,17 @@ sitefile why <path> [context] [--json] [--target stage]
 | `--allow-plugin name` | allow the JavaScript `PLUGIN name` to run; repeatable. A JS `PLUGIN` that is not allowed fails with `E_UNSUPPORTED` at its line, naming the flag to add, before any import is fetched or any plugin process starts. A name that matches no `PLUGIN` is a warning. WebAssembly plugins need no flag. `validate` never runs plugins; `inspect` builds in memory, so it needs the flag like `build`. |
 | `--allow-plugins` | allow every JavaScript `PLUGIN` in the Sitefile. Use it only for a Sitefile you trust as much as its plugin code. |
 | `--no-cache` | do not read or write the TRANSFORM result cache for this build |
+| `--strict-paths` | fail with `E_PATH_PORTABLE` (listing every problem) instead of warning when an exported path cannot be written on Windows, or a file or folder starts with `_` and there is no `/.nojekyll` (GitHub Pages). See [LANGUAGE.md](LANGUAGE.md#portable-paths). |
 | `--keep-os-metadata` | keep OS metadata files in archives imported `AS tree`. By default `__MACOSX/` (anywhere in the path), AppleDouble `._*` files, `.DS_Store`, Finder's `Icon\r`, and `Thumbs.db` and `desktop.ini` (any case) are dropped, with one warning per import: `IMPORT s: skipped 6 OS metadata files (...); --keep-os-metadata keeps them`. Build-context directories are not filtered (use `.sitefileignore`). |
 | `--strict-pins` | fail with `E_UNPINNED`, before fetching anything, when a remote `IMPORT` has neither `INTEGRITY` nor a `Sitefile.lock` entry, or a registry `FROM image` or the `BASE` image is neither `@sha256:`-pinned nor locked. `validate --strict-pins` and `graph --strict-pins` check the same without building (they read `Sitefile.lock`); with `--provenance` the pins are recorded. Conflicts with `--update-lock`. See [LANGUAGE.md](LANGUAGE.md#remote-sources-and-the-lockfile). |
+| `--lossy` | with `EXPORT … FOR <host>`, leave out (with a warning) the REDIRECT and HEADER rules the host cannot express, instead of failing with `E_EXPORT`. See [LANGUAGE.md](LANGUAGE.md#host-files-export--for-host). |
 | `--cache-from <ref>` | `build` only, repeatable: also look up TRANSFORM results in this [registry cache](#registry-cache) (first match wins) |
 | `--cache-to <ref>` | `build` only, once: after a successful build, push the TRANSFORM results it used to this [registry cache](#registry-cache) |
 | `--plugin-timeout ms` | per-call time limit for TRANSFORM plugins and tools (default 60000) |
 | `--plugin-memory MiB` | memory limit for each plugin: a JavaScript plugin's heap (`node --max-old-space-size`), a wasm plugin's linear memory (default 1024). A plugin that passes it fails with `E_PLUGIN` |
 | `--node path` | the Node binary JavaScript plugins run on: an absolute path, at least Node 26 (default `$SITEFILE_NODE`, else the Node running the TypeScript CLI or `node` on `PATH` for the Rust binary; [PLUGINS.md](PLUGINS.md#which-node-runs-plugins)) |
 | `--lint-disable rule[,rule…]` | `validate` only, repeatable: turn [lint rules](LANGUAGE.md#lint-rules-sitefile-validate) off for this run (`all` turns every rule off). An unknown rule id is a usage error. |
-| `--secret id=<id>,env=<VAR>` / `--secret id=<id>,src=<file>` | a build secret for `IMPORT … SECRET <id> AS HEADER <Name>` / `AS BEARER` (repeatable; also on `vendor` and `outdated`). Sent only to that import's origin and redacted (`***`) from every message; see [LANGUAGE.md](LANGUAGE.md#build-secrets---secret-import--secret). |
+| `--secret id=<id>,env=<VAR>` / `--secret id=<id>,src=<file>` | a build secret for `IMPORT … SECRET <id> AS HEADER <Name>` / `AS BEARER`, or the signing key of `EXPORT … AS swbn KEY <id>` (repeatable; also on `vendor` and `outdated`). Sent only to that import's origin and redacted (`***`) from every message; see [LANGUAGE.md](LANGUAGE.md#build-secrets---secret-import--secret). |
 
 `validate` also prints **lint warnings** (`warning: Sitefile:4: [render-escape] RENDER writes /index.html without
 --escape=html, …`), after the planner's warnings and before the result line; they never change the exit code.
@@ -1137,7 +1139,7 @@ the site behaves the same locally. The format comes from the file name (`netlify
   Anything else is listed on stderr, one `warning: <file>: <entry>: <reason>` per entry, and left out
   rather than half translated. Examples: a `:name` in a target that the source does not capture,
   conditions other than language, country and cookie, `:placeholders` in header patterns, regular
-  expressions, proxying to another host (johnhenry/sitefile#172), statuses other than 200, 301, 302,
+  expressions, statuses other than 200, 301, 302,
   303, 307, 308, 404, 410 and 451, and settings with no `_redirects` form. The exit code is 0 either way.
 - Catch-all rules (a 404 page, an SPA fallback) are written after every other rule, since the first
   matching rule wins and they would shadow the rest. Consecutive header blocks for the same pattern are
@@ -1148,8 +1150,8 @@ the site behaves the same locally. The format comes from the file name (`netlify
 | File | Translated | Listed as unsupported |
 | --- | --- | --- |
 | `netlify.toml` | `[[redirects]]` `from` (with `:placeholders` and a trailing `/*`), `to`, `status` (default 301; also 410 and 451), `force` (`!`), `query` (`name=value` or `name=:placeholder` fields), `conditions` `Language`, `Country`, `Cookie` (`Key=a,b`); `[[headers]]` `for` with `[headers.values]` (a list of values is joined with `, `) | `conditions` on `Role` or other keys, `headers` and `signed` (proxy options); `functions`, `edge_functions`, `plugins` |
-| `vercel.json` | `redirects` (`permanent`: 308, `false`: 307, or `statusCode`), `rewrites` (200), `headers`. A `source` of literal and `:name` segments (`:name` in a header source is refused), ending in `/:name*` or `/(.*)` for everything below, becomes the same path, with `/*` for that end, and `:name*`, `:name` or `$1` in the destination becomes `:splat` | `has`/`missing`, optional or repeated parameters (`:x?`, `:x+`), regular expressions, rewrites to another host, `cleanUrls`, `trailingSlash` |
-| `firebase.json` | `hosting` (one site): `redirects` (`type`, default 301), `rewrites` to a path (200), `headers`. A `source`/`glob` of literal and `:name` segments, ending in `/**` or `/:name*` for everything below (`/*`, with `:name` becoming `:splat` in the destination), or `**`; header sources take literal segments and `/**` only | `regex`, other globs, `function`/`run`/`dynamicLinks` rewrites, `cleanUrls`, `trailingSlash`, `i18n`, several sites |
+| `vercel.json` | `redirects` (`permanent`: 308, `false`: 307, or `statusCode`), `rewrites` (200; one to a URL becomes a proxy rule), `headers`. A `source` of literal and `:name` segments (`:name` in a header source is refused), ending in `/:name*` or `/(.*)` for everything below, becomes the same path, with `/*` for that end, and `:name*`, `:name` or `$1` in the destination becomes `:splat` | `has`/`missing`, optional or repeated parameters (`:x?`, `:x+`), regular expressions, `cleanUrls`, `trailingSlash` |
+| `firebase.json` | `hosting` (one site): `redirects` (`type`, default 301), `rewrites` (200; one to a URL becomes a proxy rule), `headers`. A `source`/`glob` of literal and `:name` segments, ending in `/**` or `/:name*` for everything below (`/*`, with `:name` becoming `:splat` in the destination), or `**`; header sources take literal segments and `/**` only | `regex`, other globs, `function`/`run`/`dynamicLinks` rewrites, `cleanUrls`, `trailingSlash`, `i18n`, several sites |
 | `staticwebapp.config.json` | `routes` (exact or trailing `/*`) with `redirect` (`statusCode`, default 302), `rewrite` (200), `headers`; `navigationFallback` (`/* <rewrite> 200`); `responseOverrides.404` with a `rewrite` (`/* <page> 404`); `globalHeaders` (`/*`) | `allowedRoles`, `methods`, other route patterns, `navigationFallback.exclude`, other overrides, `mimeTypes` (johnhenry/sitefile#220) |
 | `wrangler.toml` / `wrangler.json` | `[assets] not_found_handling = "single-page-application"` (`/* /index.html 200`); `404-page` and `none` need nothing | `html_handling` other than `auto-trailing-slash` (johnhenry/sitefile#192), `run_worker_first` |
 | `.htaccess` | `Redirect [status] /path URL` (the path and everything below it: `/path` and `/path/*` → `URL/:splat`), `RedirectPermanent`, `RedirectTemp`, `RedirectMatch` for `^/path$` and `^/prefix/(.*)$` with `$1`, `ErrorDocument 404 /page`, `DirectoryIndex index.html`, `Header [always] set Name value` (as `/*`), directives inside `<IfModule>` | `gone`/410 (Apache names no page to serve, which a 410 rule in `_redirects` needs), other `RedirectMatch` patterns, other `ErrorDocument`s, `Header` other than `set`, `AddType`, `RewriteRule` and every other directive, `<Files>`, `<Directory>` and other sections |
@@ -1165,7 +1167,7 @@ sitefile serve --watch [-p [host:]port] [--spa] [build options] [context]   # se
 sitefile servers [-a] [--json]                   # also: sitefile server ls
 sitefile server stop [--time secs] <name|id>...
 sitefile server rm [-f] <name|id>...
-sitefile server logs [-f] [-n lines] <name|id>
+sitefile server logs [-f] [-n lines] [--json] <name|id>
 sitefile server restart <name|id>
 ```
 
@@ -1207,6 +1209,11 @@ on disk after the server started answers `500` for the entries that changed (`se
 - Binds `127.0.0.1` and a free port unless `-p` is given. `-p 8080`, `-p 127.0.0.1:8080`, `-p [::1]:8080`.
   **`0.0.0.0` (or `::`) is bound only when you write it in `-p`** (a warning is printed). A port in use is
   `error[E_SERVER]`.
+- **Network URLs.** Bound to `0.0.0.0` or `::`, `serve` (foreground, `-d`, `--watch`) and `server restart` print a
+  `  Network: http://<address>:<port>/` line after the URL for each address other machines can use: the up,
+  non-loopback interface addresses, IPv4 (each sorted as text) and, for `::`, then IPv6 (in brackets; link-local
+  `fe80::/10` left out, it needs a zone). `servers --json` adds `networkUrls` (the same list) to a running server
+  bound to all interfaces. The default bind stays `127.0.0.1`; sharing is always explicit.
 - **`--cors`** adds `Access-Control-Allow-Origin: *` to every response (files, `304`, `404`, redirects, errors;
   a `_headers` value for the path wins) and answers `OPTIONS` on any path with `204`,
   `Access-Control-Allow-Methods: GET, HEAD`, the request's `Access-Control-Request-Headers` echoed as
@@ -1217,6 +1224,67 @@ on disk after the server started answers `500` for the entries that changed (`se
   `Cross-Origin-Embedder-Policy: require-corp` (`--coep credentialless` sends `credentialless`, which lets
   cross-origin resources without CORP load without credentials) and `Cross-Origin-Resource-Policy:
   same-origin`. A `_headers` value for the path wins. Stored in the server record (`isolate`, the COEP value).
+- **Production cache preview.** `cache-control: no-cache` (with the ETag) is right for previews but hides caching
+  bugs. `--max-age <secs>` sends `Cache-Control: public, max-age=<secs>` on file responses (`200`, `206`, `304`)
+  other than HTML, `--immutable` adds `, immutable` to it (fingerprinted assets), and `--max-age-html <secs>` gives
+  HTML pages `public, max-age=<secs>` too (without it they keep `no-cache`, the common production practice).
+  `404` pages keep `no-cache`, and a `_headers` `Cache-Control` for the path wins. This previews the headers a
+  host would send; it is not a CDN. Stored in the server record (`cache`: `maxAge`, `immutable`, `maxAgeHtml`).
+- **Basic authentication (for sharing).** `--auth user:password` (repeatable; `SITEFILE_SERVE_AUTH=user:password`
+  keeps it out of shell history and `ps`) and `--auth-file <htpasswd>` (`user:{SHA}…` lines as `htpasswd -s`
+  writes them; bcrypt, `$apr1$`, crypt and plain-text entries are refused, bcrypt support is a follow-up) make every
+  request, the live-reload endpoints included, need `Authorization: Basic`; otherwise the answer is `401` with
+  `WWW-Authenticate: Basic realm="sitefile", charset="UTF-8"` (and the server-id header, so `servers` still
+  detects it). Passwords are compared in constant time and never stored: the record keeps a PBKDF2-SHA256
+  verifier per `--auth` user (`auth`) and the htpasswd path (`authFile`, read at every start); `servers --json`
+  shows `auth: true`, never the entries. Logs never contain the `Authorization` header. On a non-loopback bind a
+  warning says that basic auth over plain HTTP sends the password in the clear. `_headers` cannot set
+  `www-authenticate`.
+- **`--max-connections-per-ip <n>`** caps the connections one non-loopback client may hold open (default `0`, no
+  limit; loopback clients are never limited). A connection over the cap gets one `503` with `Retry-After: 1` (and
+  the usual access-log line), then it is closed; the count drops as connections close. Stored in the server record
+  (`maxConnectionsPerIp`), so `servers --json` shows it.
+- **Sharing a server** (on a LAN with `-p 0.0.0.0:<port>`, or through a tunnel). Besides `--auth`,
+  `--max-connections-per-ip` and the Host allow-list:
+  - `--random-route` is a secret `--base`: the site is served only under `/<24 hex>/` (printed in the URL and kept
+    in the record as `base`, so `server restart` keeps the link). Unlike `--base`, `/` does not redirect to it:
+    every path outside it is a plain `404`, never the site's `404.html` (`hideBase` in the record). It cannot be
+    combined with `--base`.
+  - `--allow-ip <cidr>` / `--deny-ip <cidr>` (repeatable; `192.168.0.0/16`, `fd00::/8` or one address) are checked
+    before anything else: a client in a deny block, or outside every allow block when there are some, gets `403`.
+    Loopback clients are always allowed (the `servers` probe is one). Kept in the record (`allowIp`, `denyIp`).
+  - `--stop-after <n>s|m|h|d` stops the server after that long (foreground: `Stopping: --stop-after 30m
+    reached`; detached: the record's `expires` time, shown by `servers --json`; a server restarted after it
+    fails with `server expired at …`). Not with `--watch`.
+  - On a non-loopback bind every response carries `X-Robots-Tag: noindex`.
+  - Access-log lines of non-loopback clients end with the client address and a device name from `User-Agent`
+    (`iPhone`, `iPad`, `Android`, `Windows`, `Mac`, `Linux` or `other`); in JSON, `remote` and `device`.
+- **HTTPS.** `--tls-cert <pem> --tls-key <pem>` (or `SITEFILE_TLS_CERT` / `SITEFILE_TLS_KEY`) serve HTTPS: a phone
+  on the LAN then gets a secure context (service workers, `crypto.subtle`, clipboard, camera). The printed URLs,
+  `servers` and the log say `https://`. The files are read at start and the record keeps only their absolute paths
+  (`tlsCert`, `tlsKey`), so `server restart` and detached servers read them again; the key is never logged or
+  copied into the store. sitefile does not create or install a CA: trusting a root certificate is a system change
+  for you to make, e.g. with mkcert (`mkcert -install && mkcert 192.168.1.20 localhost`, then
+  `--tls-cert 192.168.1.20+1.pem --tls-key 192.168.1.20+1-key.pem`). HTTP/2 is not offered (both servers speak
+  HTTP/1.1 over TLS). The Rust server uses rustls, already in its build for HTTPS imports.
+- **Compression.** When the site has `<path>.br` or `<path>.gz` next to `<path>` and the request's
+  `Accept-Encoding` accepts it (listed or `*` with a q-value above 0; br is preferred), that file is sent with
+  `Content-Encoding`, the original's `Content-Type` and `Vary: Accept-Encoding`; the `.br`/`.gz` files stay servable
+  by their own names. `--compress` also gzips compressible files (`text/*`, JSON, XML, SVG, JavaScript, wasm,
+  `+json`/`+xml`) of 1 KiB or more on the fly when no variant exists, with the shared deflate encoder of both
+  implementations, cached by file digest. Each encoding has its own ETag (`"<digest>-br"`, `"<digest>-gzip"`), so
+  `If-None-Match` matches per encoding. Range requests and live-reload pages are served identity. `_headers` cannot
+  set `content-encoding`. There is no on-the-fly brotli. Stored in the server record (`compress`).
+- **`--throttle <3g|slow-3g|kbit[/ms]>`** slows every response down like a mobile network (for a phone on the
+  LAN, where browser devtools throttling does not reach): it waits the latency, then sends the body in 100 ms
+  slices of the bandwidth. `3g` is 1600 kbit/s and 150 ms, `slow-3g` 400 kbit/s and 400 ms (Chrome DevTools'
+  presets); `400/400` gives both numbers. The start message shows it (`  Throttle: 3g (1600 kbit/s, 150 ms
+  latency)`), and the record keeps it (`throttle`). The live-reload stream is not throttled.
+- **Custom content types.** `--mime <ext=type>` (repeatable; `.usdz=model/vnd.usdz+zip`, `ts=video/mp2t`; a leading
+  `.` is dropped, the extension is case-insensitive, the type is sent as written) and `--mime-file <mime.types>` (an
+  nginx `types { type ext ...; }` or Apache `type ext ...` file; `#` comments) are checked before the built-in
+  table; a `--mime` value wins over the file. The Sitefile instruction `MIME` (it writes `_headers` rules) is the
+  way to ship types with a site. Stored in the server record (`mime`, extension → type).
 - **Host allow-list (DNS rebinding).** A request whose `Host` names something other than `localhost`, a
   `*.localhost` name or an IP address (any IPv4 or bracketed IPv6 literal, so the bind address and, on
   `0.0.0.0`, every interface address work) gets `403` with a page naming `--allowed-host`, before anything
@@ -1229,10 +1297,27 @@ on disk after the server started answers `500` for the entries that changed (`se
   checks only when `allowedHosts` is given.
 - Foreground by default: prints the URL and one access-log line per request (`GET /path 200 1234 1.2ms`); Ctrl-C
   stops it. Foreground servers are not listed by `servers`; `--name` needs `-d`.
+- **Access log formats.** Text (the default) is `METHOD target STATUS BYTES MSms`, the target as received with
+  bytes outside printable ASCII as `%xx`, and ` <client address>` at the end with `--log-ip`. `--quiet` drops the
+  request lines. `--log-format json` writes **one JSON object per line**, a stable contract (field order fixed):
+  - request: `{"type":"request","ts":"2026-11-08T21:30:00.123Z","method":"GET","path":"/a","query":"x=1","status":200,"bytes":1234,"ms":1.2,"encoding":"identity","range":null}`
+    plus `"remote":"127.0.0.1"` with `--log-ip`. `path` and `query` split the target at the first `?` (dropped);
+    `ms` has one decimal; `range` is the `Content-Range` of a `206`/`416`, else `null`; `encoding` is the
+    `Content-Encoding` sent (`identity` until compression lands).
+  - `{"type":"started","ts","site","files","url"}` when the server listens (instead of the `Serving …` line),
+    `{"type":"stopped","ts","signal"}` when a detached server shuts down.
+  - any other line: `{"type":"warning"|"error"|"message","ts","message"}` (`warning: …` and `error…` lines get those
+    types).
+  Under `--watch` the access log, browser console lines and the start line are JSON; build output (`Built …`,
+  errors on stderr) is not part of the log and stays text. The format is stored in the server record
+  (`logFormat: "json"`, `logIp`, `quiet`), so a detached server writes it to its log file. `server logs --json`
+  prints any server's log as JSON, converting the text lines of servers started without it (`<time> GET … 200 …`
+  becomes a request object with `range: null`).
 - **In a terminal** (a foreground `serve` or `serve --watch` whose stdin is a terminal), single keys act
   at once (`Press h for keys` is printed under the URL): `o` opens the site in the browser (at the
   `--open` path, if one was given), `u` prints the URLs (`  Local:   …`, and with `-p 0.0.0.0:…` or `-p
-  [::]:…` also `  Network: …`, this machine's address on its default route, with a QR code of it), `r`
+  [::]:…` also a `  Network: …` line per interface address, the same list as the start line, with a QR
+  code of the first; `https://` under `--tls-cert`), `r`
   rebuilds (`--watch`, as if a file had changed) or re-reads a served directory (an image or archive file
   is read only at start: `Nothing to re-read: …`), `c` clears the screen, `q` (or Ctrl-C, Ctrl-D) quits,
   and `h` lists the keys. Reading keys puts the terminal in raw mode for the session; it is restored on
@@ -1243,7 +1328,7 @@ on disk after the server started answers `500` for the entries that changed (`se
   with the URL as its only argument and no shell, else `open` (macOS), `rundll32
   url.dll,FileProtocolHandler` (Windows, TypeScript CLI) or `xdg-open`. A browser that fails to start is a
   warning. `--qr` prints a QR code (byte mode, error correction M, in half-block characters with a quiet
-  zone) of the network URL when bound to every interface, else of the local URL, under the URL line. Both
+  zone) of the first network URL when bound to every interface, else of the local URL, under the URL line. Both
   are for a foreground server: with `-d` they are a usage error.
 - Behaviour: `GET` and `HEAD` only (`405` with `Allow` otherwise); `/` and `/dir/` serve `index.html`; clean
   URLs: `/about` serves `/about.html` when there is no file `/about`, and `/about/` redirects (`301`, query kept) to
@@ -1333,6 +1418,14 @@ on disk after the server started answers `500` for the entries that changed (`se
   `--html-handling` without a profile redirects with 307. These are the hosts' defaults (Vercel and Firebase
   without `cleanUrls`/`trailingSlash`); their own config files (`vercel.json`, `firebase.json`, ...) are not
   read yet. Kept in the server record as `hostProfile` and `htmlHandling`.
+- **Development 404s.** A foreground or `--watch` server (not `-d`, and not one bound to `0.0.0.0`/`::`) answers
+  a miss that no `404.html` covers with a page listing near misses: files whose path differs only in letter
+  case from the path, `<path>.html` or `<path>/index.html` (they work on a case-insensitive disk such as
+  macOS's, not on a host), and `_redirects` rules whose source matches but whose query parameters or
+  conditions do not. Without near misses it is the plain page.
+- **What answered** is noted at the end of the access-log line: `→ /about.html (clean URL)`,
+  `→ /app/index.html (spa fallback)`, `→ /docs/404.html`, `→ /index.html (no 404.html)` (Cloudflare
+  profile), and `→ <target> (_redirects:3)` for a rule. Index files and exact paths get no note.
 - **`_redirects` and `_headers`** at the site root (the Netlify / Cloudflare Pages files, which `REDIRECT` and
   `HEADER` write; see LANGUAGE.md "Site files") are read once at start and never served themselves.
   - `_redirects`: one `from [name=value...] to [status[!]] [Key=values...]` per line (`#` comments), as on
@@ -1348,14 +1441,15 @@ on disk after the server started answers `500` for the entries that changed (`se
     `--country`, since there is no geolocation locally; without the flag it never matches). Statuses `301`
     (the default), `302`, `303`, `307`, `308` redirect with `Location` (the request's query string is kept
     unless the target has one or the rule matches query parameters); `200` serves the target path's file
-    instead (a rewrite, e.g. `/app/* /app/index.html 200`); `404`, `410` and `451` serve it with that status.
+    instead (a rewrite, e.g. `/app/* /app/index.html 200`), or, with an `http(s)://` target, **proxies** to it
+    (see Proxying below); `404`, `410` and `451` serve it with that status.
     Like Netlify, a rule applies only when no file answers the path, unless its status ends in `!` (`301!`),
     which is checked first. The first matching rule wins. The access log notes the rule that answered:
     `GET /old 301 0 0.3ms → /new (_redirects:3)` (the target, or the file a rewrite served).
   - **Every line `serve` ignores is a warning** at start (and after a rebuild that changes them under
     `--watch`), with the file, line and reason: `warning: _redirects:4: ignored: '*' is only supported as the
     last segment of the source`. Ignored are `Role=` and other conditions, `*` anywhere but the end, statuses
-    other than the ones above, `200`/`404`/`410`/`451` to a URL (proxying), targets with characters outside
+    other than the ones above, `404`/`410`/`451` to a URL, targets with characters outside
     printable ASCII, malformed placeholders and query parameters, and, in `_headers`, the lines listed below.
     `--strict-site-files` makes them an error (`E_VALIDATION`; under `--watch` the rebuild fails and the last
     good one keeps being served). `validate` (and the language server) warns about a `REDIRECT` or `HEADER`
@@ -1366,9 +1460,37 @@ on disk after the server started answers `500` for the entries that changed (`se
     lines. Every matching block applies, in file order; a header set by several blocks gets its values joined
     with `, `. They are added to file, `206`, `304`, `404` and `416` responses (not to redirects) and can replace
     `cache-control` and the other defaults; `content-length`, `etag`, `location`, `connection`,
+    `keep-alive`, `transfer-encoding`, `accept-ranges`, `content-range`, `last-modified` and `www-authenticate` cannot be set. Lines with an invalid name or a control character in
+    the value are ignored, as are `! Name` detach lines and patterns that are not paths.
     `keep-alive`, `transfer-encoding`, `accept-ranges`, `content-range` and `last-modified` cannot be set. Lines with an invalid name or a control character in
     the value are ignored, as are `! Name` detach lines, patterns that are not paths and header lines before
     the first pattern (each with a warning).
+- **Proxying** (as Netlify and Cloudflare Pages do): a `_redirects` rule with status `200` (or `200!`) and an
+  `http(s)://` target, `/api/* https://api.example.com/:splat 200`, forwards the request there and answers
+  with the upstream's response. `--proxy /api=http://localhost:3000` does the same for a dev backend without
+  a `_redirects` file: every request for `/api` or below goes to the URL plus the rest of its path (and its
+  query string), before any file or rule (repeatable; the longest match is not chosen, the first `--proxy`
+  that matches is).
+  - **Off unless allowed.** A proxy rule comes from the site, which may not be yours (an image, an archive),
+    and proxying makes `serve` a network client. So a `_redirects` proxy rule only reaches hosts allowed by
+    `--allow-hosts` (or `$SITEFILE_ALLOW_HOSTS`): any other host is a `502` whose body names the flag to add,
+    `502 Bad Gateway: error[E_HOST_BLOCKED]: refusing to connect to api.example.com: … add --allow-hosts
+    api.example.com`. A `--proxy` route's host is allowed by being written; `--deny-hosts` beats both.
+  - **The build fetch policy applies** (docs above, "Network"): `https:` only unless `--allow-http`, public
+    addresses only unless `--allow-private-network` (so `--proxy /api=http://localhost:3000` needs both),
+    every hop checked, `--connect-timeout`/`--read-timeout` and the 30 s total, responses up to 50 MiB
+    (buffered), `$SITEFILE_PROXY` as the upstream proxy. A refusal, timeout or connection error is a `502`
+    with `error[CODE]: …` in its body and in the access log (`GET /api/x 502 … → https://… (proxy,
+    _redirects:3) error[E_FETCH_TIMEOUT]: …`).
+  - Only `GET` and `HEAD` (as everywhere in `serve`). The upstream gets `Accept`, `Accept-Language`,
+    `Range`, `If-None-Match` and `If-Modified-Since`, never `Cookie` or `Authorization` (they belong to this
+    server's origin). Its status and headers come back as they are, except hop-by-hop headers (`Connection`,
+    `Transfer-Encoding`, …) and `Content-Length` (recomputed); a redirect is passed on, not followed.
+    `_headers`, live reload and the SPA fallback do not apply to proxied responses, nor do `--compress` and
+    dictionary deltas (the upstream's encoding is passed on). `--auth` does apply: a proxied path needs the
+    credentials like any other (`401` without them, and nothing is fetched), and they are not forwarded.
+  - A server started with `-d` (or `sitefile up`) has no proxy settings, so its proxy rules all answer `502`;
+    `--proxy` and the other proxy flags are a usage error with `-d`.
 - `-d` detaches. A server is tracked by `$SITEFILE_HOME/servers/<id>.json` (`id`, `name`, `image`, `source`, `spa`,
   `country` and `strictSiteFiles` when given, requested `bind`, `host`, `port`, `pid`, `started`, `logFile`, `ready`, and `project` for servers `up` started) and `<id>.log`. `serve -d` writes the
   state, spawns a detached `node serve-worker.js <id>` with stdout/stderr on the log, and waits until the worker

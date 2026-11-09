@@ -132,12 +132,12 @@ Options:
                                a file for zip, tar, tgz, wbn (*.wbn.gz: a gzipped bundle), car, html, mhtml, epub
   -t, --tag <name[:tag]>       also store the build as a local image (build only, repeatable);
                                with -t and no -o nothing is written to the context
-      --format <fmt>           directory | zip | tar | tgz (alias tar.gz) | wbn | oci | car | html | mhtml | warc | epub
+      --format <fmt>           directory | zip | tar | tgz (alias tar.gz) | wbn | oci | car | html | mhtml | warc | swbn | wacz | epub
                                (build only).
                                oci writes an OCI archive for -o *.tar (e.g. site.oci.tar), else an
                                OCI image layout directory.
                                Default: the --out extension (.zip .tar .tar.gz .tgz .wbn .wbn.gz .oci.tar .car .mhtml
-                               .warc .warc.gz .epub),
+                               .warc .warc.gz .swbn .wacz .epub),
                                else the Sitefile's EXPORT ... AS <fmt>
       --oci-root <path>        directory inside an oci image layer (default /srv/www; overrides EXPORT ... AT)
       --compression <c>        gzip or none (build only; overrides EXPORT ... COMPRESSION): the oci site layer
@@ -158,7 +158,7 @@ Options:
       --base <image>           build the oci image on <image> (runnable; overrides EXPORT ... AS oci BASE);
                                a bare name means Docker Hub. Pin it: nginx:alpine@sha256:...
       --insecure-registry <h>  allow plain http to registry host[:port] (repeatable; localhost always may)
-      --base-url <url>         https URL ending in '/' the files are mounted at (wbn, mhtml, warc);
+      --base-url <url>         https URL ending in '/' the files are mounted at (wbn, mhtml, warc, wacz);
                                overrides EXPORT ... BASE
       --build-arg <NAME=value> set an ARG (repeatable); --build-arg NAME reads $NAME
       --secret id=<id>,env=<VAR> | id=<id>,src=<file>
@@ -192,6 +192,10 @@ Options:
       --update-lock            re-record unpinned URLs whose content changed
       --strict-pins            fail when a remote IMPORT has no INTEGRITY and no lockfile entry, or the
                                BASE image is neither @sha256:-pinned nor locked (build, validate, inspect)
+      --lossy                  with EXPORT ... FOR <host>: leave out, with a warning, REDIRECT and HEADER
+                               rules the host cannot express (default: an error)
+      --strict-paths           fail (E_PATH_PORTABLE) instead of warning when an exported path cannot be
+                               written on Windows, or starts with '_' and there is no /.nojekyll
       --lint-disable <rules>   turn lint rules off (validate; comma-separated rule ids, or all; repeatable)
       --no-lockfile            do not read or write Sitefile.lock
       --vendor-dir <dir>       read remote imports and BASE blobs from this vendor directory (relative
@@ -261,6 +265,8 @@ const BUILD_OPTS: &[OptSpec] = &[
     flag("frozen-lockfile"),
     flag("update-lock"),
     flag("strict-pins"),
+    flag("lossy"),
+    flag("strict-paths"),
     strings("lint-disable"),
     flag("no-lockfile"),
     string("vendor-dir"),
@@ -948,6 +954,8 @@ fn run_build_command(
     options.frozen_lockfile = o.flag("frozen-lockfile");
     options.update_lock = o.flag("update-lock");
     options.strict_pins = o.flag("strict-pins");
+    options.lossy = o.flag("lossy");
+    options.strict_paths = o.flag("strict-paths");
     let warning: Callback = Arc::new(|m: &str| err(&format!("warning: {m}\n")));
     options.on_warning = Some(warning);
     options.memo = memo;
@@ -1101,6 +1109,10 @@ fn run_build_command(
                     r.root_cid
                         .as_deref()
                         .map(|c| format!(", root {c}"))
+                        .or_else(|| r
+                            .web_bundle_id
+                            .as_deref()
+                            .map(|i| format!(", web bundle id {i}")))
                         .unwrap_or_default()
                 ),
             };

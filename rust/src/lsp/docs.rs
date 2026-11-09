@@ -73,6 +73,11 @@ const INSTRUCTIONS: &[(&str, &str, &str)] = &[
         "Adds a response header for paths matching the pattern (`*` matches anything) to `/_headers`, written at EXPORT; one block per pattern, in source order.",
     ),
     (
+        "MIME",
+        "MIME <.ext> <type/subtype>",
+        "Sets the `Content-Type` of the files with that extension: adds `/*<.ext>` with `Content-Type: <type/subtype>` to `/_headers` (in source order with HEADER), which `serve`, Netlify, Cloudflare Pages and a Web Bundle export use. No parameters; written in lowercase.",
+    ),
+    (
         "FINGERPRINT",
         "FINGERPRINT [--overwrite] [--no-cache-headers] <pattern>… [MANIFEST <dest>] [INTEGRITY]",
         "Renames the files matching the patterns (`*`, `?`, `**`; `/assets/` means everything below it) to `name.<hash>.ext` (10 hex digits of the SHA-256 of the content) and rewrites the references to them in every HTML and CSS file of the stage. HTML pages keep their names. A CSS file is hashed after its own references are rewritten. EXPORT adds `Cache-Control: public, max-age=31536000, immutable` for the renamed files and `no-cache` for the pages to `/_headers`.",
@@ -103,13 +108,18 @@ const INSTRUCTIONS: &[(&str, &str, &str)] = &[
         "Writes a Workbox-style precache manifest, `[{url, revision}]`, of the matching files below the EXPORT path (default `/sw-manifest.json`); `revision` is 10 hex digits of the SHA-256, or null for a fingerprinted file. `INTO` replaces `self.__WB_MANIFEST` in a service worker of the stage with it.",
     ),
     (
+        "CSP",
+        "CSP [POLICY <policy>] [META]",
+        "At EXPORT, gives every exported page a Content-Security-Policy that allows its inline `<script>` and `<style>` elements by SHA-256 hash (no `'unsafe-inline'`), in `/_headers` after the HEADER lines (`/a/` and `/a/index.html`, `/b.html` and `/b`), or with `META` as a `<meta>` after `<head>`. Default base policy: `default-src 'self'; base-uri 'self'; object-src 'none'`.",
+    ),
+    (
         "CHECKLINKS",
         "CHECKLINKS [--warn] [--external]",
         "Checks every reference in the stage's HTML and CSS files at this point: a link to a file that is not there (and that no REDIRECT covers) fails the build with `E_BROKEN_LINK`, listing each with its file and line. Clean URLs (`/about` → `/about.html`) and directory indexes count as found.",
     ),
     (
         "EXPORT",
-        "EXPORT <path> [AS directory|zip|tar|tgz|wbn|oci|car|html|mhtml|warc|epub] [BASE <url>] [AT <root>] [COMPRESSION gzip|none]",
+        "EXPORT <path> [AS directory|zip|tar|tgz|wbn|oci|car|html|mhtml|warc|swbn|wacz|epub] [BASE <url>] [AT <root>] [COMPRESSION gzip|none] [KEY <secret-id>]",
         "Exports `<path>` of the last stage. Exactly one, and the last instruction. The CLI's `--out`, `--format` and `--base-url` override it.",
     ),
 ];
@@ -190,11 +200,15 @@ const CLAUSES: &[(&str, &str, &str)] = &[
     ("SECURITY_TXT", "TO", "`TO <dest>`: the file (default `/.well-known/security.txt`)."),
     ("PRECACHE", "TO", "`TO <dest>`: the manifest file (default `/sw-manifest.json`; with only INTO, none is written)."),
     ("PRECACHE", "INTO", "`INTO <service-worker>`: a file of the stage whose first `self.__WB_MANIFEST` becomes the manifest (Workbox `injectManifest`)."),
+    ("CSP", "POLICY", "`POLICY <policy>`: the base policy (quoted; directives separated by `;`, no commas); the hashes are added to its `script-src` and `style-src`."),
+    ("CSP", "META", "`META`: a `<meta http-equiv=\"Content-Security-Policy\">` in each page instead of `/_headers` lines (cannot set `frame-ancestors`)."),
     ("REDIRECT", "STATUS", "`STATUS 301|302|303|307|308`: the redirect's status (default 301)."),
-    ("EXPORT", "AS", "`AS format`: directory (default), zip, tar, tgz (alias tar.gz), wbn, oci, car (an IPFS CARv1 file; its root CID is the one `ipfs add -r --hidden --cid-version=1` prints), html (index.html with its assets inlined as data: URIs), mhtml (index.html and its assets as one MHTML file), warc (a web archive of every file at BASE) or epub (an EPUB 3 book of the XHTML pages)."),
+    ("EXPORT", "AS", "`AS format`: directory (default), zip, tar, tgz (alias tar.gz), wbn, oci, car (an IPFS CARv1 file; its root CID is the one `ipfs add -r --hidden --cid-version=1` prints), html (index.html with its assets inlined as data: URIs), mhtml (index.html and its assets as one MHTML file), warc (a web archive of every file at BASE), swbn (a Signed Web Bundle for an Isolated Web App; needs KEY), wacz (that archive packaged with a page list and index for ReplayWeb.page) or epub (an EPUB 3 book of the XHTML pages)."),
     ("EXPORT", "BASE", "`BASE <url>`: for wbn, the https URL the files are mounted at; for oci, a container image to build on."),
     ("EXPORT", "AT", "`AT <root>` (oci only): the directory the files occupy in the image (default /srv/www)."),
     ("EXPORT", "COMPRESSION", "`COMPRESSION gzip|none` (oci, wbn and warc only): how the oci site layer is stored, whether the wbn is gzipped, or whether each warc record is."),
+    ("EXPORT", "KEY", "`KEY <secret-id>` (swbn only): the build secret (`--secret id=<id>,src=key.pem`) holding the Ed25519 private key (PEM, PKCS #8) that signs the bundle."),
+    ("EXPORT", "FOR", "`FOR <host>`: write the REDIRECT and HEADER rules as that host reads them: netlify (`_redirects`, `_headers`), cloudflare, vercel (Build Output API v3), firebase, azure (staticwebapp.config.json), github-pages (.nojekyll, CNAME) or s3. A rule the host cannot express is an error (a warning with --lossy)."),
 ];
 
 const FLAGS: &[(&str, &str)] = &[
@@ -277,6 +291,8 @@ const EXPORT_FORMATS: &[(&str, &str)] = &[
     ("html", "`index.html` as one file, every asset it references inlined as a `data:` URI."),
     ("mhtml", "`index.html` and its assets as one MHTML (multipart/related) file; `BASE` sets the parts' URLs."),
     ("warc", "A WARC/1.1 web archive of every file at `BASE`; `COMPRESSION gzip` gzips each record."),
+    ("swbn", "A Signed Web Bundle for an Isolated Web App at `isolated-app://<id>/`; needs `KEY <secret-id>`."),
+    ("wacz", "A WACZ 1.1.1 package (the gzipped WARC, a CDXJ index and a page list) that ReplayWeb.page opens; needs `BASE`."),
     ("epub", "An EPUB 3 book: the site's XHTML pages in path order (index first), a navigation document, `mimetype` stored first."),
 ];
 
@@ -441,6 +457,7 @@ mod tests {
                 &crate::language::parser::SECURITY_TXT_CLAUSES[..],
             ),
             ("PRECACHE", &crate::language::parser::PRECACHE_CLAUSES[..]),
+            ("CSP", &crate::language::parser::CSP_CLAUSES[..]),
         ] {
             for c in clauses {
                 assert!(clause(kw, c).is_some(), "{kw} {c}");
