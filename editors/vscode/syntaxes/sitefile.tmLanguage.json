@@ -4070,6 +4070,35 @@
           ]
         },
         {
+          "name": "meta.instruction.csp.sitefile",
+          "begin": "^\\s*((?i:CSP))(?=\\s|$)",
+          "beginCaptures": {
+            "1": {
+              "name": "keyword.control.instruction.sitefile"
+            }
+          },
+          "end": "(?<=[^\\s\\\\])\\s*$|(?<=\\\\)[ \\t]+$|(?<=[^\\\\]\\\\\\\\)$",
+          "patterns": [
+            {
+              "include": "#continuation"
+            },
+            {
+              "include": "#continuation-comment"
+            },
+            {
+              "match": "(?<![^\\s])((?i:POLICY|META))(?=\\s|$)",
+              "captures": {
+                "1": {
+                  "name": "keyword.other.clause.sitefile"
+                }
+              }
+            },
+            {
+              "include": "#operands"
+            }
+          ]
+        },
+        {
           "name": "meta.instruction.checklinks.sitefile",
           "begin": "^\\s*((?i:CHECKLINKS))(?=\\s|$)",
           "beginCaptures": {
