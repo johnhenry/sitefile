@@ -28,6 +28,8 @@ export interface Reference {
   readonly line: number;
   /** Written as CSS (a CSS file, a <style> element or a `style` attribute), so CSS escapes apply. */
   readonly css: boolean;
+  /** For a URL in an HTML attribute (not CSS): the lower-case element and attribute names, `img src`. */
+  readonly element?: string;
 }
 
 const isWs = (c: string | undefined): boolean => c === ' ' || c === '\t' || c === '\n' || c === '\r' || c === '\f';
@@ -150,11 +152,11 @@ function lineIndex(text: string): (pos: number) => number {
   };
 }
 
-type Push = (start: number, end: number, url: string, css: boolean) => void;
+type Push = (start: number, end: number, url: string, css: boolean, element?: string) => void;
 
 function collector(text: string, out: Reference[]): Push {
   const lineAt = lineIndex(text);
-  return (start, end, url, css) => out.push({ start, end, raw: text.slice(start, end), url, line: lineAt(start), css });
+  return (start, end, url, css, element) => out.push({ start, end, raw: text.slice(start, end), url, line: lineAt(start), css, ...(element !== undefined ? { element } : {}) });
 }
 
 // ---------------------------------------------------------------- CSS
@@ -315,13 +317,13 @@ export function scanHtml(text: string): Reference[] {
       return;
     }
     if (name === 'srcset' || name === 'imagesrcset') {
-      for (const [a, b] of srcsetUrls(value)) push(start + a, start + b, decodeHtmlText(value.slice(a, b)), false);
+      for (const [a, b] of srcsetUrls(value)) push(start + a, start + b, decodeHtmlText(value.slice(a, b)), false, `${tag} ${name}`);
       return;
     }
     const url = name === 'src' || name === 'poster' || name === 'xlink:href' || (name === 'href' && tag !== 'base') || (name === 'data' && tag === 'object');
     if (!url) return;
     const [a, b] = trimWs(value);
-    push(start + a, start + b, trimmed(decodeHtmlText(value.slice(a, b))), false);
+    push(start + a, start + b, trimmed(decodeHtmlText(value.slice(a, b))), false, `${tag} ${name}`);
   };
   let i = 0;
   while (i < n) {

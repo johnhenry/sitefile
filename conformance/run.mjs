@@ -137,6 +137,8 @@ function cases() {
     ex('blog', { suffix: ':wbn', out: 'site.wbn', args: ['--base-url', 'https://blog.example/'], compare: 'bytes' }),
     ex('blog', { suffix: ':wbn-gzip', out: 'site.wbn.gz', args: ['--base-url', 'https://blog.example/'], compare: 'bytes' }),
     ex('blog', { suffix: ':tar-bytes', out: 'site.tar', compare: 'bytes' }),
+    ex('blog', { suffix: ':car-bytes', out: 'site.car', compare: 'bytes' }),
+    ex('data', { suffix: ':car-format', out: 'site-car', args: ['--format', 'car'], compare: 'bytes' }),
     // Attestations (--provenance, --sbom): OCI 1.1 referrers of an unchanged image.
     ex('hello', { suffix: ':oci-attest-bytes', out: 'site.oci.tar', args: ['--provenance', '--sbom', '--build-arg', 'TITLE=Attested', '--build-arg', 'API_TOKEN=hunter2'], compare: 'bytes' }),
     ex('blog', { suffix: ':oci-attest-id', out: 'site.oci.tar', args: ['--sbom', '--provenance'], compare: 'oci' }),
