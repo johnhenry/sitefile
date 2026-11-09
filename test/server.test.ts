@@ -4,7 +4,7 @@ import http from 'node:http';
 import net from 'node:net';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
-import { byteRange, closeServer, createSiteServer, earlyHints, httpDate, parseHttpDate, listen, LiveReload, normalizeBase, originForm, RELOAD_SCRIPT, safeSegments } from '../src/server.js';
+import { byteRange, closeServer, createSiteServer, earlyHints, httpDate, parseHttpDate, listen, LiveReload, normalizeBase, normalizeProductionUrl, rewriteBaseUrls, originForm, RELOAD_SCRIPT, safeSegments } from '../src/server.js';
 import { makeFile, Tree } from '../src/tree.js';
 import { siteFileWarnings } from '../src/serve-rules.js';
 import { makeSite, runCli, tmpDir } from './helpers/cli.js';
@@ -481,7 +481,7 @@ test('run: bad -p values, unknown images, registries, port in use, foreground --
 
 // ---------------------------------------------------------------- 404.html, clean URLs, _redirects, _headers
 
-async function withTree(files: Record<string, string>, opts: { spa?: boolean; spaExclude?: string[]; spaFallback?: string; base?: string }, fn: (port: number) => Promise<void>): Promise<void> {
+async function withTree(files: Record<string, string>, opts: { spa?: boolean; spaExclude?: string[]; spaFallback?: string; base?: string; rewriteBase?: string }, fn: (port: number) => Promise<void>): Promise<void> {
   const t = Tree.fromFiles(Object.entries(files).map(([p, c]) => [p, makeFile(enc(c), 't')] as const));
   const s = createSiteServer(t, opts);
   const { port } = await listen(s, '127.0.0.1', 0);
@@ -739,6 +739,26 @@ test('serve --base: the site under a path prefix; / redirects there, outside is 
     assert.equal(r.status, 404);
     assert.match(r.body, /404 Not Found/, 'outside the base: the built-in page');
     assert.equal((await req(port, '/repository/')).status, 404);
+  });
+});
+
+// johnhenry/sitefile#196
+test('serve --rewrite-base: the production URL becomes the local origin in HTML, CSS and XML', async () => {
+  assert.equal(normalizeProductionUrl('https://example.com/blog/?x#y'), 'https://example.com/blog');
+  assert.equal(normalizeProductionUrl('https://example.com'), 'https://example.com');
+  assert.equal(normalizeProductionUrl('/blog'), undefined);
+  const enc2 = (x: string): string => Buffer.from(rewriteBaseUrls(enc(x), 'https://e.x/b', 'http://h:1')).toString();
+  assert.equal(enc2('https://e.x/b/a https://e.x/bc https://e.x/b https://e.x/b.x https://e.x/b?q'), 'http://h:1/a https://e.x/bc http://h:1 https://e.x/b.x http://h:1?q');
+  const files = { '/index.html': '<a href="https://e.x/b/about">x</a>', '/a.css': 'url(https://e.x/b/i.png)', '/feed.xml': '<id>https://e.x/b/</id>', '/t.txt': 'https://e.x/b/' };
+  await withTree(files, { rewriteBase: 'https://e.x/b' }, async (port) => {
+    let r = await req(port, '/');
+    assert.equal(r.body, `<a href="http://127.0.0.1:${port}/about">x</a>`);
+    assert.match(String(r.headers.etag), /-rebased"$/);
+    assert.equal((await req(port, '/a.css')).body, `url(http://127.0.0.1:${port}/i.png)`);
+    assert.equal((await req(port, '/feed.xml')).body, `<id>http://127.0.0.1:${port}/</id>`);
+    assert.equal((await req(port, '/t.txt')).body, 'https://e.x/b/', 'other types are left alone');
+    r = await req(port, '/', 'GET', { host: 'evil"><script>' });
+    assert.equal(r.body, files['/index.html'], 'an unsafe Host is never written into a page');
   });
 });
 

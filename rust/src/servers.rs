@@ -93,6 +93,13 @@ pub struct ServerState {
     /// `--base`: the path prefix the site is served under, `/repo/` (absent: `/`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub base: Option<String>,
+    /// `--rewrite-base`: the production URL replaced by the local one in HTML, CSS and XML.
+    #[serde(
+        default,
+        rename = "rewriteBase",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub rewrite_base: Option<String>,
     /// `--keep-os-metadata`: serve a directory's or archive's OS metadata files too.
     #[serde(
         default,
@@ -902,6 +909,8 @@ pub struct DetachedServe {
     pub spa_fallback: Option<String>,
     /// `--base` (normalized; `None` for `/`).
     pub base: Option<String>,
+    /// `--rewrite-base` (normalized).
+    pub rewrite_base: Option<String>,
     /// `--keep-os-metadata`.
     pub keep_os_metadata: bool,
     /// `--country`.
@@ -926,6 +935,7 @@ impl DetachedServe {
             spa_exclude: Vec::new(),
             spa_fallback: None,
             base: None,
+            rewrite_base: None,
             keep_os_metadata: false,
             country: None,
             strict_site_files: false,
@@ -980,6 +990,7 @@ pub fn serve_detached_with(
         spa_exclude: serve.spa_exclude.clone(),
         spa_fallback: serve.spa_fallback.clone(),
         base: serve.base.clone(),
+        rewrite_base: serve.rewrite_base.clone(),
         keep_os_metadata: serve.keep_os_metadata,
         country: serve.country.clone(),
         strict_site_files: serve.strict_site_files,
@@ -1194,6 +1205,7 @@ mod tests {
             spa_exclude: Vec::new(),
             spa_fallback: None,
             base: None,
+            rewrite_base: None,
             keep_os_metadata: false,
             country: None,
             strict_site_files: false,

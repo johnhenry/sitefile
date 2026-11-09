@@ -1,0 +1,51 @@
+{
+  "command": "serve",
+  "args": [
+    "--rewrite-base",
+    "https://example.com/blog/",
+    "--base",
+    "/repo/"
+  ],
+  "requests": [
+    {
+      "target": "/repo/",
+      "headers": {
+        "host": "localhost:8000"
+      },
+      "expect": {
+        "status": 200,
+        "body": "<a href=\"http://localhost:8000/repo/about\">a</a> <a href=\"https://example.com/blogroll\">b</a> <a href=\"http://localhost:8000/repo\">c</a>\n"
+      }
+    },
+    {
+      "target": "/repo/style.css",
+      "headers": {
+        "host": "localhost:8000"
+      },
+      "expect": {
+        "status": 200,
+        "body": "body { background: url(http://localhost:8000/repo/bg.png); }\n"
+      }
+    },
+    {
+      "target": "/repo/sitemap.xml",
+      "headers": {
+        "host": "localhost:8000"
+      },
+      "expect": {
+        "status": 200,
+        "body": "<urlset><url><loc>http://localhost:8000/repo/</loc></url></urlset>\n"
+      }
+    },
+    {
+      "target": "/repo/notes.txt",
+      "headers": {
+        "host": "localhost:8000"
+      },
+      "expect": {
+        "status": 200,
+        "body": "see https://example.com/blog/x\n"
+      }
+    }
+  ]
+}

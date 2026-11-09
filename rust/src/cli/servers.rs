@@ -130,6 +130,40 @@ pub fn export_base_path(export_base: Option<&str>) -> Option<String> {
     crate::server::normalize_base(b).filter(|p| p != "/")
 }
 
+/// `--rewrite-base <url>`: the production URL, normalized.
+fn parse_rewrite_base(v: Option<&str>) -> Result<Option<String>> {
+    let Some(raw) = v else { return Ok(None) };
+    match crate::server::normalize_production_url(raw) {
+        Some(u) => Ok(Some(u)),
+        None => usage(format!(
+            "--rewrite-base expects the production URL such as https://example.com/, got '{raw}'"
+        )),
+    }
+}
+
+/// A build's production URL (`serve --watch`): its EXPORT BASE when that is an http(s) URL, else
+/// the first SITEMAP or FEED BASE (port of `productionUrl`).
+pub fn production_url(plan: &crate::planner::Plan) -> Option<String> {
+    if let Some(b) = plan.export_base.as_deref() {
+        let lower = b.get(..8).unwrap_or(b).to_ascii_lowercase();
+        if lower.starts_with("http://") || lower.starts_with("https://") {
+            return crate::server::normalize_production_url(b);
+        }
+    }
+    for st in &plan.stages {
+        for op in &st.operations {
+            match op {
+                crate::planner::Operation::Sitemap { base, .. }
+                | crate::planner::Operation::Feed { base, .. } => {
+                    return crate::server::normalize_production_url(base)
+                }
+                _ => {}
+            }
+        }
+    }
+    None
+}
+
 /// The URL a server answers at: its origin and `--base`.
 fn site_url(host: &str, port: u16, base: Option<&str>) -> String {
     format!("{}{}", format_url(host, port), &base.unwrap_or("/")[1..])
@@ -158,6 +192,8 @@ const SERVE_OPTS: &[OptSpec] = &[
     strings("spa-exclude"),
     string("spa-fallback"),
     string("base"),
+    string("rewrite-base"),
+    flag("no-rewrite-base"),
     string("country"),
     flag("strict-site-files"),
     flag("keep-os-metadata"),
@@ -193,6 +229,7 @@ const WATCH_ONLY: &[&str] = &[
     "no-overlay",
     "navigate-to-changed",
     "reload",
+    "no-rewrite-base",
 ];
 pub const SERVE: Command = Command {
     name: "serve",
@@ -207,6 +244,8 @@ pub const SERVE: Command = Command {
         "--spa-exclude <glob>         paths that never fall back to the app shell (* matches anything; repeatable)",
         "--spa-fallback <path>        the file every --spa fallback serves, e.g. /app.html (implies --spa)",
         "--base <path>     serve the site under this path, e.g. /repo/ for a GitHub Pages project site (--watch: default the EXPORT BASE URL's path)",
+        "--rewrite-base <url>         replace this production URL with the local one in served HTML, CSS and XML (--watch: on by default, from EXPORT/SITEMAP/FEED BASE)",
+        "--no-rewrite-base            --watch: leave production URLs as they are",
         "--country <code>  the country _redirects Country= conditions match (there is no geolocation locally)",
         "--strict-site-files  refuse to serve when a _redirects or _headers line would be ignored",
         "--keep-os-metadata  serve __MACOSX, ._*, Thumbs.db and desktop.ini of a directory or archive (default: skipped)",
@@ -248,6 +287,7 @@ fn run_serve(v: &Parsed) -> Result<i32> {
     let bind = parse_publish(v.str("publish"))?;
     let (spa, spa_exclude, spa_fallback) = spa_options(v)?;
     let base = parse_base(v.str("base"))?;
+    let rewrite_base = parse_rewrite_base(v.str("rewrite-base"))?;
     let country = parse_country(v.str("country"))?;
     let strict_site_files = v.flag("strict-site-files");
     let name = v.str("name");
@@ -288,6 +328,7 @@ fn run_serve(v: &Parsed) -> Result<i32> {
                 spa_exclude,
                 spa_fallback,
                 base: base.clone().map(|b| -> crate::server::BaseFn { Arc::new(move || Some(b.clone())) }),
+                rewrite_base: rewrite_base.clone().map(|b| -> crate::server::BaseFn { Arc::new(move || Some(b.clone())) }),
                 country: country.clone(),
                 log: Some(log),
                 server_id: None,
@@ -321,6 +362,7 @@ fn run_serve(v: &Parsed) -> Result<i32> {
             spa_exclude,
             spa_fallback,
             base,
+            rewrite_base,
             keep_os_metadata,
             country,
             strict_site_files,
@@ -368,6 +410,17 @@ fn serve_watch(v: &Parsed) -> Result<i32> {
     let base_flag = parse_base(v.str("base"))?;
     // `--base`, else the path of the last good build's EXPORT BASE URL.
     let base: Arc<RwLock<Option<String>>> = Arc::new(RwLock::new(base_flag.clone()));
+    let rewrite_flag = parse_rewrite_base(v.str("rewrite-base"))?;
+    let no_rewrite = v.flag("no-rewrite-base");
+    if no_rewrite && rewrite_flag.is_some() {
+        return usage("--rewrite-base and --no-rewrite-base cannot be combined");
+    }
+    // `--rewrite-base`, else (unless --no-rewrite-base) the last good build's production URL.
+    let rewrite_base: Arc<RwLock<Option<String>>> = Arc::new(RwLock::new(if no_rewrite {
+        None
+    } else {
+        rewrite_flag.clone()
+    }));
     let country = parse_country(v.str("country"))?;
     let strict_site_files = v.flag("strict-site-files");
     // The site-file warnings last printed: a rebuild repeats them only when they change.
@@ -464,7 +517,7 @@ fn serve_watch(v: &Parsed) -> Result<i32> {
                 Err(e) => failed(&e),
             };
         }
-        let attempt = || -> Result<(Tree, Option<String>)> {
+        let attempt = || -> Result<(Tree, Option<String>, Option<String>)> {
             let mut options = BuildOptions {
                 context_dir: context.clone(),
                 sitefile: file.clone(),
@@ -486,10 +539,11 @@ fn serve_watch(v: &Parsed) -> Result<i32> {
             let warning: Callback = Arc::new(|m: &str| err(&format!("warning: {m}\n")));
             options.on_warning = Some(warning);
             let r = build(&options)?;
-            Ok((r.output, r.plan.export_base))
+            let prod = production_url(&r.plan);
+            Ok((r.output, r.plan.export_base, prod))
         };
         match attempt() {
-            Ok((tree, export_base)) => {
+            Ok((tree, export_base, prod)) => {
                 let n = tree.len();
                 out(&format!(
                     "Built {n} file{} ({})\n",
@@ -502,6 +556,11 @@ fn serve_watch(v: &Parsed) -> Result<i32> {
                 if base_flag.is_none() {
                     if let Ok(mut b) = base.write() {
                         *b = export_base_path(export_base.as_deref());
+                    }
+                }
+                if !no_rewrite && rewrite_flag.is_none() {
+                    if let Ok(mut b) = rewrite_base.write() {
+                        *b = prod;
                     }
                 }
                 swap(tree);
@@ -522,6 +581,10 @@ fn serve_watch(v: &Parsed) -> Result<i32> {
             base: Some(Arc::new({
                 let base = base.clone();
                 move || base.read().ok().and_then(|b| b.clone())
+            })),
+            rewrite_base: Some(Arc::new({
+                let rb = rewrite_base.clone();
+                move || rb.read().ok().and_then(|b| b.clone())
             })),
             country: country.clone(),
             log: Some(log),
@@ -612,6 +675,7 @@ pub fn serve_worker(id: &str) -> i32 {
                 spa_exclude: state.spa_exclude.clone(),
                 spa_fallback: state.spa_fallback.clone(),
                 base: state.base.clone().map(|b| -> crate::server::BaseFn { Arc::new(move || Some(b.clone())) }),
+                rewrite_base: state.rewrite_base.clone().map(|b| -> crate::server::BaseFn { Arc::new(move || Some(b.clone())) }),
                 country: state.country.clone(),
                 log: Some(log),
                 server_id: Some(id.to_string()),

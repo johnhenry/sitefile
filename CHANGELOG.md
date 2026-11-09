@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- **`serve --rewrite-base <url>`** (johnhenry/sitefile#196): the production
+  URL in served HTML, CSS and XML becomes the local origin (and `--base`), so
+  a preview with absolute self-links stays local. On by default in
+  `serve --watch` (from EXPORT, SITEMAP or FEED BASE; `--no-rewrite-base`
+  turns it off); never applied to exports. Both implementations.
 - **`serve --base /repo/`** (johnhenry/sitefile#195): serves the site under
   a path prefix (GitHub Pages project sites): `/` redirects to it, `/repo`
   gets its slash, everything else is 404, and the server's redirects and

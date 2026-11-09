@@ -39,6 +39,11 @@ export interface SiteServerOptions {
    * redirects to it, `/repo` gets its slash, everything else is 404. Normalized by {@link normalizeBase}.
    */
   readonly base?: string | (() => string | undefined);
+  /**
+   * `--rewrite-base`: the production URL ({@link normalizeProductionUrl}) that HTML, CSS and XML
+   * responses have replaced by this server's origin and `--base`, so absolute self-links stay local.
+   */
+  readonly rewriteBase?: string | (() => string | undefined);
   /** `--country`: what `_redirects` `Country=` conditions match (there is no geolocation locally). */
   readonly country?: string;
   /**
@@ -505,6 +510,45 @@ export function spaFallback(segs: readonly string[], trailingSlash: boolean, isF
   return undefined;
 }
 
+/** A `Host` header safe to write into a page: a name, IPv4 or bracketed IPv6 address, and a port. */
+const SAFE_HOST = /^(?:[A-Za-z0-9.-]+|\[[0-9A-Fa-f:.]+\])(?::[0-9]{1,5})?$/;
+
+/** Types `--rewrite-base` rewrites: HTML, CSS and any XML (feeds, sitemaps, SVG). */
+export function isRebasedType(type: string): boolean {
+  return type.startsWith('text/html') || type.startsWith('text/css') || type.split(';', 1)[0]!.includes('xml');
+}
+
+/**
+ * A production URL for `--rewrite-base`: `scheme://host[/path]` without a trailing slash, query or
+ * fragment (`https://example.com/blog/` → `https://example.com/blog`), or undefined when it is not an
+ * http(s) URL with a host.
+ */
+export function normalizeProductionUrl(raw: string): string | undefined {
+  const m = /^(https?:\/\/[^/?#\s]+)(\/[^?#\s]*)?$/i.exec(raw.replace(/[?#].*$/, ''));
+  if (!m) return undefined;
+  return m[1]! + (m[2] ?? '').replace(/\/+$/, '');
+}
+
+/**
+ * `body` with every `from` (a production URL) replaced by `to` (the local origin and base), where
+ * the next byte cannot continue a host or path segment (a letter, digit, `.`, `-`, `_`, `~`, `:` or `%`),
+ * so `https://example.com` does not match `https://example.com.evil` and `/blog` not `/blogroll`.
+ */
+export function rewriteBaseUrls(body: Uint8Array, from: string, to: string): Uint8Array {
+  const text = Buffer.from(body.buffer, body.byteOffset, body.byteLength).toString('latin1');
+  let out = '';
+  let i = 0;
+  for (;;) {
+    const at = text.indexOf(from, i);
+    if (at === -1) break;
+    const next = text[at + from.length];
+    out += text.slice(i, at) + (next !== undefined && /[A-Za-z0-9._~:%-]/.test(next) ? from : to);
+    i = at + from.length;
+  }
+  if (i === 0) return body;
+  return Buffer.from(out + text.slice(i), 'latin1');
+}
+
 /**
  * A `--base` value as `/a/b/` (segments percent-encoded like encodeURIComponent, NFC), `/` for none, or undefined when it is not a
  * safe absolute path. The path of a URL (`https://user.github.io/repo/`) is taken as well.
@@ -667,9 +711,12 @@ export function createSiteServer(site: Tree | (() => Tree), options: SiteServerO
       const type = mimeTypeFor(served);
       const live = options.liveReload !== undefined && type.startsWith('text/html') && isNavigation(req.headers);
       if (live) warnCsp(served, custom['content-security-policy']);
+      const prodNow = typeof options.rewriteBase === 'function' ? options.rewriteBase() : options.rewriteBase;
+      const host = req.headers.host;
+      const rebase = prodNow !== undefined && isRebasedType(type) && host !== undefined && SAFE_HOST.test(host) ? { from: prodNow, to: `http://${host}${mount}` } : undefined;
       // A deflated zip entry goes to a gzip client as is, wrapped in a gzip header and trailer (not for a
       // range request: ranges are served from the identity body).
-      const deflated = !live && req.headers.range === undefined && acceptsGzip(req.headers['accept-encoding']) ? options.content?.deflated?.(served) : undefined;
+      const deflated = !live && !rebase && req.headers.range === undefined && acceptsGzip(req.headers['accept-encoding']) ? options.content?.deflated?.(served) : undefined;
       let body: Uint8Array;
       try {
         body = deflated ? gzipMember(deflated.deflate, deflated.crc, deflated.size) : (options.content?.read(served) ?? file.bytes);
@@ -677,11 +724,12 @@ export function createSiteServer(site: Tree | (() => Tree), options: SiteServerO
         options.log?.(`error: ${e instanceof SitefileError ? e.message : String(e)}`);
         return page(500, ERROR_PAGE);
       }
+      if (rebase) body = rewriteBaseUrls(body, rebase.from, rebase.to);
       if (live) body = injectReloadScript(body);
       const encoding: Record<string, string> = deflated ? { 'content-encoding': 'gzip', vary: 'accept-encoding' } : {};
       if (status !== 200) return finish(status, { 'content-type': type, 'content-length': body.byteLength, ...encoding, ...custom }, body);
       // An injected page and a gzip response are other representations of the file: they get their own ETags.
-      const etag = `"${file.digest.replace(/^sha256:/, '')}${live ? '-live' : ''}${deflated ? '-gzip' : ''}"`;
+      const etag = `"${file.digest.replace(/^sha256:/, '')}${rebase ? '-rebased' : ''}${live ? '-live' : ''}${deflated ? '-gzip' : ''}"`;
       const modified = options.lastModified?.();
       const lm: Record<string, string> = modified === undefined ? {} : { 'last-modified': httpDate(modified) };
       if (etagMatches(req.headers['if-none-match'], etag)) return finish(304, { ...encoding, ...custom, etag, ...lm }, undefined);
