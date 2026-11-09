@@ -40,24 +40,28 @@ pub mod resources;
 
 // Outputs, store and servers
 pub mod cache_limit;
+pub mod canonical;
 pub mod checklinks;
 pub mod export;
 pub mod fingerprint;
 pub mod integrity;
 pub mod links;
 pub mod mime_data;
+pub mod precompress;
 pub mod refs;
 pub mod server;
 pub mod servers;
 pub mod servers_file;
 pub mod site;
 pub mod store;
+pub mod toml;
 
 // Build, plugins, registry and CLI
 pub mod base_image;
 pub mod cli;
 pub mod executor;
 pub mod explain;
+pub mod host_config;
 pub mod hosts;
 pub mod memo;
 pub mod outdated;

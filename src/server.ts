@@ -1,15 +1,22 @@
 import http from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { SitefileError } from './errors.js';
-import { headersFor, matchRedirect, parseHeaderRules, parseRedirectRules } from './serve-rules.js';
+import { globMatch, headersFor, isRewriteStatus, matchRule, parseHeaderRules, parseRedirectRules, substituteTarget } from './serve-rules.js';
 import type { Tree } from './tree.js';
 import { nfc } from './paths.js';
 import { mimeTypeFor } from './wbn.js';
 import { RELOAD_CLIENT } from './reload-client.js';
 
 export interface SiteServerOptions {
-  /** Fall back to `/index.html` for unknown extension-less paths (single-page apps). */
+  /**
+   * Single-page apps: answer a page navigation ({@link isNavigation}) for a path nothing else answers
+   * with the nearest app shell ({@link spaFallback}). Never for subresources (scripts, images, `fetch()`).
+   */
   readonly spa?: boolean;
+  /** `--spa-exclude`: request paths (`*` matches any characters) that never fall back. */
+  readonly spaExclude?: readonly string[];
+  /** `--spa-fallback`: the one file every fallback serves, instead of the nearest `200.html` or `index.html`. */
+  readonly spaFallback?: string;
   /** One access-log line per request: `METHOD /path STATUS BYTES MSms`. */
   readonly log?: (line: string) => void;
   /** Sent as `x-sitefile-server` so `servers` can tell its own servers from a reused port. */
@@ -27,6 +34,53 @@ export interface SiteServerOptions {
   readonly lastModified?: () => number | undefined;
   /** Problems a person should know about (without the `warning: ` prefix), e.g. a CSP that blocks live reload. */
   readonly warn?: (message: string) => void;
+  /**
+   * `--base /repo/`: serve the site under this path prefix (a GitHub Pages project site); `/`
+   * redirects to it, `/repo` gets its slash, everything else is 404. Normalized by {@link normalizeBase}.
+   */
+  readonly base?: string | (() => string | undefined);
+  /** `--country`: what `_redirects` `Country=` conditions match (there is no geolocation locally). */
+  readonly country?: string;
+  /**
+   * DNS-rebinding guard: when set, a request whose `Host` is not `localhost`, a `*.localhost` name,
+   * an IP address or a name this list allows gets `403` ({@link hostAllowed}). `*` allows every
+   * host; unset: no check (the CLI always sets it).
+   */
+  readonly allowedHosts?: readonly string[];
+  /** `--cors`: `Access-Control-Allow-Origin: *` on every response (`_headers` still wins) and `OPTIONS` preflights answered with `204`. */
+  readonly cors?: boolean;
+  /**
+   * Where file contents come from when the tree holds only digests (a zip served in place,
+   * `openZipFile`): `read` returns a file's bytes (undefined: use the node's), `deflated` a
+   * deflated file's raw deflate stream, sent as `content-encoding: gzip` to clients that accept it.
+   */
+  readonly content?: SiteContent;
+}
+
+/** Contents read on demand ({@link SiteServerOptions.content}). */
+export interface SiteContent {
+  read(path: string): Uint8Array | undefined;
+  deflated?(path: string): { readonly deflate: Uint8Array; readonly crc: number; readonly size: number } | undefined;
+}
+
+/** Whether an `accept-encoding` header accepts gzip (`gzip` or `x-gzip` with a non-zero q). */
+export function acceptsGzip(header: string | undefined): boolean {
+  if (header === undefined) return false;
+  return header.split(',').some((part) => {
+    const [name, ...params] = part.trim().split(';');
+    if (name?.trim().toLowerCase() !== 'gzip' && name?.trim().toLowerCase() !== 'x-gzip') return false;
+    const q = params.map((x) => x.trim()).find((x) => x.toLowerCase().startsWith('q='));
+    return q === undefined || Number(q.slice(2)) > 0;
+  });
+}
+
+/** A gzip member around a raw deflate stream: fixed header (no name, mtime 0, OS unknown), CRC-32 and size. */
+export function gzipMember(deflate: Uint8Array, crc: number, size: number): Uint8Array {
+  const head = Buffer.from([0x1f, 0x8b, 8, 0, 0, 0, 0, 0, 0, 0xff]);
+  const tail = Buffer.alloc(8);
+  tail.writeUInt32LE(crc >>> 0, 0);
+  tail.writeUInt32LE(size % 2 ** 32, 4);
+  return Buffer.concat([head, deflate, tail]);
 }
 
 /** Reserved for the live-reload event stream while `serve --watch` runs. */
@@ -317,6 +371,9 @@ export function injectReloadScript(html: Uint8Array): Uint8Array {
 
 const NOT_FOUND_PAGE = '<!doctype html><meta charset="utf-8"><title>404 Not Found</title><h1>404 Not Found</h1>\n';
 const BAD_REQUEST_PAGE = '<!doctype html><meta charset="utf-8"><title>400 Bad Request</title><h1>400 Bad Request</h1>\n';
+const FORBIDDEN_HOST_PAGE =
+  '<!doctype html><meta charset="utf-8"><title>403 Forbidden</title><h1>403 Forbidden</h1><p>This server answers requests for localhost and IP addresses only. To allow another host name, restart it with <code>--allowed-host &lt;name&gt;</code>.</p>\n';
+const ERROR_PAGE = '<!doctype html><meta charset="utf-8"><title>500 Internal Server Error</title><h1>500 Internal Server Error</h1>\n';
 const METHOD_PAGE = '<!doctype html><meta charset="utf-8"><title>405 Method Not Allowed</title><h1>405 Method Not Allowed</h1>\n';
 
 /** Decode a request path into safe segments, or undefined when it is malformed or unsafe. */
@@ -344,6 +401,47 @@ export function safeSegments(rawPath: string): string[] | undefined {
  * section 3.2.2, sent by proxies and some clients) loses its scheme and authority (`/path?q`, or
  * `/` for an empty path); any other target is returned as it is. The authority is not checked.
  */
+/** `Access-Control-Request-Headers` echoed in a preflight answer, when it is a plain list of header names. */
+export function preflightHeaders(value: string | undefined): string | undefined {
+  const v = value?.trim();
+  return v !== undefined && v !== '' && /^[A-Za-z0-9 \t,!#$%&'*+\-.^_`|~]+$/.test(v) ? v : undefined;
+}
+
+/** Whether `s` is a dotted-decimal IPv4 address. */
+function isIpv4(s: string): boolean {
+  const parts = s.split('.');
+  return parts.length === 4 && parts.every((p) => /^[0-9]{1,3}$/.test(p) && Number(p) <= 255);
+}
+
+/**
+ * The DNS-rebinding guard of {@link SiteServerOptions.allowedHosts}: whether a `Host` header value
+ * may be answered. Always allowed: no list, `*` in the list, no `Host`, an IP address (a rebinding
+ * attack needs a name), `localhost` and `*.localhost`. Otherwise the name (ASCII lowercase, without
+ * port and trailing dot) must equal an entry, or end with an entry that starts with `.` (or equal
+ * it without the dot).
+ */
+export function hostAllowed(allowed: readonly string[] | undefined, host: string | undefined): boolean {
+  if (allowed === undefined || allowed.includes('*') || host === undefined) return true;
+  const h = host.trim();
+  if (h === '') return true;
+  if (h.startsWith('[')) {
+    const close = h.indexOf(']');
+    return close > 1 && /^[0-9A-Fa-f:.]+$/.test(h.slice(1, close)) && /^(:[0-9]*)?$/.test(h.slice(close + 1));
+  }
+  const m = /^(.*?)(:[0-9]*)?$/.exec(h)!;
+  let name = m[1]!.replace(/[A-Z]/g, (c) => c.toLowerCase());
+  if (name.endsWith('.')) name = name.slice(0, -1);
+  if (isIpv4(name) || name === 'localhost' || name.endsWith('.localhost')) return true;
+  return allowed.some((e) => (e.startsWith('.') ? name === e.slice(1) || name.endsWith(e) : name === e));
+}
+
+/** An `--allowed-host` value, lowercased: `*`, or a host name (letters, digits, `-`, `.`; a leading `.` for subdomains). */
+export function parseAllowedHost(value: string): string | undefined {
+  const v = value.trim().replace(/[A-Z]/g, (c) => c.toLowerCase());
+  if (v === '*') return v;
+  return /^\.?[a-z0-9-]+(\.[a-z0-9-]+)*\.?$/.test(v) ? v.replace(/\.$/, '') : undefined;
+}
+
 export function originForm(target: string): string {
   const m = /^https?:\/\/[^/?#]*/i.exec(target);
   if (!m) return target;
@@ -443,6 +541,38 @@ function etagMatches(header: string | undefined, etag: string): boolean {
   return header.split(',').some((t) => t.trim().replace(/^W\//, '') === etag);
 }
 
+/**
+ * The app shell a `--spa` navigation to a missing path gets: `fallback` when given (`--spa-fallback`),
+ * else the `200.html` (Surge) or `index.html` of the request's directory or the closest parent that
+ * has one, so `/admin/users/5` gets `/admin/index.html` before `/index.html`. Undefined when none exists.
+ */
+export function spaFallback(segs: readonly string[], trailingSlash: boolean, isFile: (p: string) => boolean, fallback?: string): string | undefined {
+  if (fallback !== undefined) return isFile(fallback) ? fallback : undefined;
+  const dirs = trailingSlash ? segs : segs.slice(0, -1);
+  for (let n = dirs.length; n >= 0; n--) {
+    const dir = `/${dirs.slice(0, n).map((d) => d + '/').join('')}`;
+    for (const name of ['200.html', 'index.html']) if (isFile(dir + name)) return dir + name;
+  }
+  return undefined;
+}
+
+/**
+ * A `--base` value as `/a/b/` (segments percent-encoded like encodeURIComponent, NFC), `/` for none, or undefined when it is not a
+ * safe absolute path. The path of a URL (`https://user.github.io/repo/`) is taken as well.
+ */
+export function normalizeBase(raw: string): string | undefined {
+  const m = /^https?:\/\/[^/?#]*(\/[^?#]*)?/i.exec(raw);
+  const p = m ? (m[1] ?? '/') : raw;
+  const segs = safeSegments(p.startsWith('/') ? p : '/' + p);
+  if (!segs) return undefined;
+  return segs.length === 0 ? '/' : `/${segs.map(encodeURIComponent).join('/')}/`;
+}
+
+/** A tree path with each segment percent-encoded like encodeURIComponent. */
+function encodePath(p: string): string {
+  return p.split('/').map(encodeURIComponent).join('/');
+}
+
 function printable(s: string): string {
   return s.replace(/[^\x21-\x7e]/g, (c) => `%${c.charCodeAt(0).toString(16).padStart(2, '0')}`).slice(0, 512);
 }
@@ -459,6 +589,7 @@ export function createSiteServer(site: Tree | (() => Tree), options: SiteServerO
   const current = typeof site === 'function' ? site : (): Tree => site;
   const base: Record<string, string> = { 'x-content-type-options': 'nosniff', 'cache-control': 'no-cache' };
   if (options.serverId) base['x-sitefile-server'] = options.serverId;
+  if (options.cors) base['access-control-allow-origin'] = '*';
   // `_redirects` / `_headers` are parsed once per tree (a watched server gets a new tree per rebuild).
   let rulesTree: Tree | undefined;
   let rules: { redirects: ReturnType<typeof parseRedirectRules>; headers: ReturnType<typeof parseHeaderRules> } = { redirects: [], headers: [] };
@@ -466,7 +597,7 @@ export function createSiteServer(site: Tree | (() => Tree), options: SiteServerO
     if (t !== rulesTree) {
       const text = (p: string): string => {
         const f = t.get(p);
-        return f ? new TextDecoder().decode(f.bytes) : '';
+        return f ? new TextDecoder().decode(options.content?.read(p) ?? f.bytes) : '';
       };
       rules = { redirects: parseRedirectRules(text('/_redirects')), headers: parseHeaderRules(text('/_headers')) };
       rulesTree = t;
@@ -491,6 +622,8 @@ export function createSiteServer(site: Tree | (() => Tree), options: SiteServerO
     const target = req.url ?? '/';
     const url = originForm(target);
     let bytes = 0;
+    /** What answered, for the access log (` → /new (_redirects:3)`), when a rule did. */
+    let note = '';
     const finish = (status: number, headers: Record<string, string | number>, body: Uint8Array | string | undefined, quiet = false): void => {
       const buf = body === undefined ? undefined : typeof body === 'string' ? Buffer.from(body) : body;
       // 103 Early Hints before an HTML page whose `Link` (from `_headers`) preloads or preconnects.
@@ -511,10 +644,14 @@ export function createSiteServer(site: Tree | (() => Tree), options: SiteServerO
       if (quiet) return;
       // `servers` probes carry the server's own id; they would only clutter the access log.
       if (options.serverId !== undefined && req.headers['x-sitefile-probe'] === options.serverId) return;
-      options.log?.(`${method} ${printable(target)} ${status} ${bytes} ${ms.toFixed(1)}ms`);
+      options.log?.(`${method} ${printable(target)} ${status} ${bytes} ${ms.toFixed(1)}ms${note}`);
     };
     const page = (status: number, html: string, extra: Record<string, string> = {}): void =>
       finish(status, { 'content-type': 'text/html; charset=utf-8', 'content-length': Buffer.byteLength(html), ...extra }, html);
+
+    // DNS rebinding: a page on another name must not read this server (before anything else).
+    const hostHeader = req.headers.host;
+    if (!hostAllowed(options.allowedHosts, hostHeader)) return page(403, FORBIDDEN_HOST_PAGE);
 
     const live = options.liveReload;
     if (live && url.split(/[?#]/, 1)[0] === CONSOLE_PATH) {
@@ -542,7 +679,16 @@ export function createSiteServer(site: Tree | (() => Tree), options: SiteServerO
       });
       return;
     }
-    if (method !== 'GET' && method !== 'HEAD') return page(405, METHOD_PAGE, { allow: 'GET, HEAD' });
+    if (options.cors && method === 'OPTIONS') {
+      // A CORS preflight: any path, nothing is looked up.
+      const allowHeaders = preflightHeaders(req.headers['access-control-request-headers']);
+      return finish(
+        204,
+        { 'access-control-allow-methods': 'GET, HEAD', ...(allowHeaders !== undefined ? { 'access-control-allow-headers': allowHeaders } : {}), 'access-control-max-age': '600' },
+        undefined,
+      );
+    }
+    if (method !== 'GET' && method !== 'HEAD') return page(405, METHOD_PAGE, { allow: options.cors ? 'GET, HEAD, OPTIONS' : 'GET, HEAD' });
     const tree = current();
     const { redirects, headers: headerRules } = rulesFor(tree);
     const isFile = (p: string): boolean => tree.isFile(p) && p !== '/_redirects' && p !== '/_headers';
@@ -561,9 +707,22 @@ export function createSiteServer(site: Tree | (() => Tree), options: SiteServerO
       return finish(200, { 'content-type': 'text/javascript; charset=utf-8', 'content-length': Buffer.byteLength(js) }, js, true);
     }
     const search = q === -1 ? '' : url.slice(q, hash === -1 || hash < q ? undefined : hash);
-    const segs = safeSegments(rawPath);
-    if (!segs) return page(400, BAD_REQUEST_PAGE);
+    const allSegs = safeSegments(rawPath);
+    if (!allSegs) return page(400, BAD_REQUEST_PAGE);
     const trailingSlash = rawPath.endsWith('/');
+    // `--base`: the site lives under `mount`; requests outside it are 404 (or redirected into it).
+    const baseNow = typeof options.base === 'function' ? options.base() : options.base;
+    const baseSegs = baseNow === undefined ? [] : (safeSegments(baseNow) ?? []);
+    /** The `--base` prefix of generated `Location`s (`''` without one), percent-encoded. */
+    const mount = baseSegs.length === 0 ? '' : '/' + baseSegs.map(encodeURIComponent).join('/');
+    let segs = allSegs;
+    if (baseSegs.length > 0) {
+      const inside = baseSegs.every((b, i) => allSegs[i] === b);
+      if (inside && allSegs.length === baseSegs.length && !trailingSlash) return finish(301, { location: `${mount}/${search}`, 'content-length': 0 }, undefined);
+      if (!inside && allSegs.length === 0) return finish(302, { location: `${mount}/${search}`, 'content-length': 0 }, undefined);
+      if (!inside) return page(404, NOT_FOUND_PAGE);
+      segs = allSegs.slice(baseSegs.length);
+    }
     const vpath = '/' + segs.join('/');
     // `_headers` patterns match the request path (with its trailing slash).
     const custom = headersFor(headerRules, vpath + (trailingSlash && segs.length > 0 ? '/' : ''));
@@ -573,17 +732,28 @@ export function createSiteServer(site: Tree | (() => Tree), options: SiteServerO
       const type = mimeTypeFor(served);
       const live = options.liveReload !== undefined && type.startsWith('text/html') && isNavigation(req.headers);
       if (live) warnCsp(served, custom['content-security-policy']);
-      const body = live ? injectReloadScript(file.bytes) : file.bytes;
-      if (status !== 200) return finish(status, { 'content-type': type, 'content-length': body.byteLength, ...custom }, body);
-      // An injected page is a different representation of the file: give it its own ETag.
-      const etag = `"${file.digest.replace(/^sha256:/, '')}${live ? '-live' : ''}"`;
+      // A deflated zip entry goes to a gzip client as is, wrapped in a gzip header and trailer (not for a
+      // range request: ranges are served from the identity body).
+      const deflated = !live && req.headers.range === undefined && acceptsGzip(req.headers['accept-encoding']) ? options.content?.deflated?.(served) : undefined;
+      let body: Uint8Array;
+      try {
+        body = deflated ? gzipMember(deflated.deflate, deflated.crc, deflated.size) : (options.content?.read(served) ?? file.bytes);
+      } catch (e) {
+        options.log?.(`error: ${e instanceof SitefileError ? e.message : String(e)}`);
+        return page(500, ERROR_PAGE);
+      }
+      if (live) body = injectReloadScript(body);
+      const encoding: Record<string, string> = deflated ? { 'content-encoding': 'gzip', vary: 'accept-encoding' } : {};
+      if (status !== 200) return finish(status, { 'content-type': type, 'content-length': body.byteLength, ...encoding, ...custom }, body);
+      // An injected page and a gzip response are other representations of the file: they get their own ETags.
+      const etag = `"${file.digest.replace(/^sha256:/, '')}${live ? '-live' : ''}${deflated ? '-gzip' : ''}"`;
       const modified = options.lastModified?.();
       const lm: Record<string, string> = modified === undefined ? {} : { 'last-modified': httpDate(modified) };
-      if (etagMatches(req.headers['if-none-match'], etag)) return finish(304, { ...custom, etag, ...lm }, undefined);
+      if (etagMatches(req.headers['if-none-match'], etag)) return finish(304, { ...encoding, ...custom, etag, ...lm }, undefined);
       // If-Modified-Since only counts without If-None-Match (RFC 9110 section 13.2.2).
       const ims = req.headers['if-none-match'] === undefined ? req.headers['if-modified-since'] : undefined;
       const since = ims === undefined ? undefined : parseHttpDate(ims);
-      if (modified !== undefined && since !== undefined && modified <= since) return finish(304, { ...custom, etag, ...lm }, undefined);
+      if (modified !== undefined && since !== undefined && modified <= since) return finish(304, { ...encoding, ...custom, etag, ...lm }, undefined);
       // A single byte range of a GET (`If-Range` must name this ETag); anything else gets the whole file.
       const ifRange = req.headers['if-range'] as string | undefined;
       const range = method === 'GET' && (ifRange === undefined || ifRange.trim() === etag) ? byteRange(req.headers.range, body.byteLength) : undefined;
@@ -599,7 +769,7 @@ export function createSiteServer(site: Tree | (() => Tree), options: SiteServerO
           part,
         );
       }
-      finish(200, { 'content-type': type, 'content-length': body.byteLength, ...custom, etag, ...lm, 'accept-ranges': 'bytes' }, body);
+      finish(200, { 'content-type': type, 'content-length': body.byteLength, ...encoding, ...custom, etag, ...lm, 'accept-ranges': 'bytes' }, body);
     };
     /** The file for a path: exact, `<path>.html` (clean URLs), or `<dir>/index.html` with a trailing slash. */
     const resolve = (p: string, slash: boolean): string | undefined => {
@@ -611,23 +781,33 @@ export function createSiteServer(site: Tree | (() => Tree), options: SiteServerO
       }
       return undefined;
     };
+    const one = (k: string): string | undefined => {
+      const v = req.headers[k];
+      return Array.isArray(v) ? v.join(', ') : v;
+    };
+    const ruleRequest = { search, acceptLanguage: one('accept-language'), cookie: one('cookie'), country: options.country };
     /** Apply the first matching `_redirects` rule (forced ones, or the others); false when none applies. */
     const redirect = (forced: boolean): boolean => {
       for (const r of redirects) {
         if (r.force !== forced) continue;
-        const rest = matchRedirect(r, vpath);
-        if (rest === undefined) continue;
-        const target = r.splat ? r.to.split(':splat').join(rest.split('/').map(encodeURIComponent).join('/')) : r.to;
-        if (r.status !== 200 && r.status !== 404) {
-          finish(r.status, { location: target.includes('?') ? target : target + search, 'content-length': 0 }, undefined);
+        const caps = matchRule(r, vpath, ruleRequest);
+        if (caps === undefined) continue;
+        const target = substituteTarget(r.to, caps);
+        if (!isRewriteStatus(r.status)) {
+          // A rule that matches query parameters passes on only what its target names.
+          const mounted = target.startsWith('/') ? mount + target : target;
+          const location = mounted.includes('?') || r.query.length > 0 ? mounted : mounted + search;
+          note = ` \u2192 ${location} (_redirects:${r.line})`;
+          finish(r.status, { location, 'content-length': 0 }, undefined);
           return true;
         }
-        // 200 (rewrite) and 404: serve the target path's file with that status.
+        // 200 (rewrite), 404, 410 and 451: serve the target path's file with that status.
         const tq = target.indexOf('?');
         const tpath = tq === -1 ? target : target.slice(0, tq);
         const tsegs = safeSegments(tpath);
         const served = tsegs ? resolve('/' + tsegs.join('/'), tpath.endsWith('/')) : undefined;
         if (served === undefined) continue;
+        note = ` \u2192 ${encodePath(served)} (_redirects:${r.line})`;
         sendFile(r.status, served);
         return true;
       }
@@ -637,19 +817,26 @@ export function createSiteServer(site: Tree | (() => Tree), options: SiteServerO
     if (redirect(true)) return;
     let served = resolve(vpath, trailingSlash);
     if (served === undefined && !trailingSlash && tree.isDirectory(vpath)) {
-      const location = '/' + segs.map(encodeURIComponent).join('/') + '/' + search;
+      const location = mount + '/' + segs.map(encodeURIComponent).join('/') + '/' + search;
       return finish(301, { location, 'content-length': 0 }, undefined);
     }
     if (served === undefined && redirect(false)) return;
     // `/about/` when only `/about.html` answers: redirect to the clean URL `/about` (relative links in the
     // page then resolve as they do at `/about`). `_redirects` rules for the path come first.
     if (served === undefined && trailingSlash && segs.length > 0 && isFile(`${vpath}.html`)) {
-      const location = '/' + segs.map(encodeURIComponent).join('/') + search;
+      const location = mount + '/' + segs.map(encodeURIComponent).join('/') + search;
       return finish(301, { location, 'content-length': 0 }, undefined);
     }
-    if (served === undefined && options.spa && !/\.[^/.]+$/.test(segs[segs.length - 1] ?? '') && isFile('/index.html')) served = '/index.html';
+    if (served === undefined && options.spa && isNavigation(req.headers) && !(options.spaExclude ?? []).some((g) => globMatch(g, vpath + (trailingSlash && segs.length > 0 ? '/' : '')))) {
+      served = spaFallback(segs, trailingSlash, isFile, options.spaFallback);
+    }
     if (served !== undefined) return sendFile(200, served);
-    if (isFile('/404.html')) return sendFile(404, '/404.html');
+    // The nearest 404.html: in the request's directory, then each parent up to the root.
+    const dirs = trailingSlash ? segs : segs.slice(0, -1);
+    for (let n = dirs.length; n >= 0; n--) {
+      const notFound = `/${dirs.slice(0, n).map((d) => d + '/').join('')}404.html`;
+      if (isFile(notFound)) return sendFile(404, notFound);
+    }
     page(404, NOT_FOUND_PAGE, custom);
   };
 

@@ -128,7 +128,14 @@ fn run_up(v: &Parsed) -> Result<i32> {
             name: Some(s.name.clone()),
             bind,
             spa: s.spa,
+            spa_exclude: Vec::new(),
+            spa_fallback: None,
+            base: None,
             keep_os_metadata: false,
+            allowed_hosts: Vec::new(),
+            cors: false,
+            country: None,
+            strict_site_files: false,
             project: Some(project.clone()),
         });
     }

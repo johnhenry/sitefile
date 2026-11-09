@@ -1,0 +1,1 @@
+{"redirects":[{"source":"/p/:id/edit","destination":"/q/:id"},{"source":"/a/:x/:rest*","destination":"/b/:x/:rest*"},{"source":"/c/:x?","destination":"/d"}],"headers":[{"source":"/u/:id","headers":[{"key":"X","value":"1"}]}]}

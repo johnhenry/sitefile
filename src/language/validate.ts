@@ -53,6 +53,10 @@ export function operandsOf(ins: Instruction): Operand[] {
       return [ins.pattern, ins.name, ...ins.value];
     case 'FINGERPRINT':
       return [...ins.patterns, ...(ins.manifest ? [ins.manifest] : [])];
+    case 'CANONICAL':
+      return [ins.base];
+    case 'PRECOMPRESS':
+      return [...ins.patterns, ...(ins.min ? [ins.min] : [])];
     case 'CHECKLINKS':
       return [];
     case 'EXPORT':
@@ -275,6 +279,8 @@ export function validate(instructions: readonly Instruction[], file: string): Pr
       case 'REDIRECT':
       case 'HEADER':
       case 'FINGERPRINT':
+      case 'CANONICAL':
+      case 'PRECOMPRESS':
       case 'CHECKLINKS':
         break;
       case 'EXPORT':

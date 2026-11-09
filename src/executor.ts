@@ -46,8 +46,10 @@ import { checkSchema, compileSchema } from './schema.js';
 import { groupBy, paginate } from './pages.js';
 import { parseYaml } from './yaml.js';
 import { brokenLinks, reportBrokenLinks } from './checklinks.js';
+import { canonical } from './canonical.js';
 import { composeRenames, fingerprint, type Fingerprinted } from './fingerprint.js';
-import { atomXml, cacheHeaderRules, headersFile, pageUrl, parseFeedDate, redirectsFile, sitemapXml, type FeedEntry, type HeaderRule } from './site.js';
+import { precompress } from './precompress.js';
+import { atomXml, cacheHeaderRules, headersFile, pageUrl, parseFeedDate, redirectsFile, sitemapFiles, type FeedEntry, type HeaderRule } from './site.js';
 
 export interface BuildOptions {
   /** Build context directory; local paths resolve from here. */
@@ -664,6 +666,8 @@ export interface ExportTarget {
   readonly ociRoot?: string;
   /** oci: site layer encoding (overrides EXPORT ... COMPRESSION; default gzip). */
   readonly ociCompression?: OciCompression;
+  /** oci: split the site's files over this many layers (`--oci-layers`, default 1). */
+  readonly ociLayers?: number;
   /** wbn: `gzip` wraps the bundle in gzip (overrides EXPORT ... COMPRESSION; default none). */
   readonly wbnCompression?: OciCompression;
   /** Extra OCI config labels. */
@@ -722,6 +726,7 @@ async function exportBuild(
     const img = buildOciImage(result.output, {
       root: options.ociRoot ?? result.plan.exportRoot,
       compression: options.ociCompression ?? sitefileCompression(result.plan, 'oci'),
+      ...(options.ociLayers !== undefined ? { layers: options.ociLayers } : {}),
       platform: options.platform,
       epoch: sourceDateEpoch(),
       base: result.base,
@@ -1734,6 +1739,8 @@ async function executeOp(
   if (!memo) {
     if (op.kind === 'SITEMAP') return { tree: sitemap(op, tree, env), key: '' };
     if (op.kind === 'FINGERPRINT') return { ...fingerprintOp(op, tree, env), key: '' };
+    if (op.kind === 'CANONICAL') return { tree: canonicalOp(op, tree, env), key: '' };
+    if (op.kind === 'PRECOMPRESS') return { tree: precompressOp(op, tree, env), key: '' };
     if (op.kind === 'CHECKLINKS') {
       await checkLinks(op, tree, env, env.warn);
       return { tree, key: '' };
@@ -1741,7 +1748,7 @@ async function executeOp(
     return { tree: tree.withFiles((await produce(op, tree, recording(env), '', '')).files, policy, op.span), key: '' };
   }
   const opId = memoKey('op', env.envKey, valueKey(op));
-  if (op.kind === 'SITEMAP' || op.kind === 'FINGERPRINT' || op.kind === 'CHECKLINKS') {
+  if (op.kind === 'SITEMAP' || op.kind === 'FINGERPRINT' || op.kind === 'CANONICAL' || op.kind === 'PRECOMPRESS' || op.kind === 'CHECKLINKS') {
     // Reads the whole tree: only the chain key can say it is unchanged.
     const key = memoKey('chain', prevKey, opId);
     if (op.kind === 'CHECKLINKS') {
@@ -1766,6 +1773,28 @@ async function executeOp(
       const out = fingerprintOp(op, tree, { ...env, warn: (m) => (warnings.push(m), env.warn(m)) });
       memo.set(key, { ...out, warnings });
       return { ...out, key, memo: 'miss' };
+    }
+    if (op.kind === 'CANONICAL') {
+      const hit = memo.get<{ tree: Tree; warnings: readonly string[] }>(key);
+      if (hit) {
+        hit.warnings.forEach(env.warn);
+        return { tree: hit.tree, key, memo: 'hit' };
+      }
+      const warnings: string[] = [];
+      const out = canonicalOp(op, tree, { ...env, warn: (m) => (warnings.push(m), env.warn(m)) });
+      memo.set(key, { tree: out, warnings });
+      return { tree: out, key, memo: 'miss' };
+    }
+    if (op.kind === 'PRECOMPRESS') {
+      const hit = memo.get<{ tree: Tree; warnings: readonly string[] }>(key);
+      if (hit) {
+        hit.warnings.forEach(env.warn);
+        return { tree: hit.tree, key, memo: 'hit' };
+      }
+      const warnings: string[] = [];
+      const out = precompressOp(op, tree, { ...env, warn: (m) => (warnings.push(m), env.warn(m)) });
+      memo.set(key, { tree: out, warnings });
+      return { tree: out, key, memo: 'miss' };
     }
     const hit = memo.get<Tree>(key);
     if (hit) return { tree: hit, key, memo: 'hit' };
@@ -1793,9 +1822,18 @@ function fingerprintOp(op: Extract<Operation, { kind: 'FINGERPRINT' }>, tree: Tr
   return fingerprint(tree, op, `${env.label}:${op.span.line} FINGERPRINT`, env.warn);
 }
 
+function canonicalOp(op: Extract<Operation, { kind: 'CANONICAL' }>, tree: Tree, env: Pick<ExecEnv, 'label' | 'warn'>): Tree {
+  return canonical(tree, op, `${env.label}:${op.span.line} CANONICAL`, env.warn);
+}
+
+function precompressOp(op: Extract<Operation, { kind: 'PRECOMPRESS' }>, tree: Tree, env: Pick<ExecEnv, 'label' | 'warn'>): Tree {
+  return precompress(tree, op, `${env.label}:${op.span.line} PRECOMPRESS`, env.warn);
+}
+
 function sitemap(op: Extract<Operation, { kind: 'SITEMAP' }>, tree: Tree, env: ExecEnv): Tree {
   const origin = `${env.label}:${op.span.line} SITEMAP`;
-  return tree.withFiles([[op.dest, makeFile(new TextEncoder().encode(sitemapXml(tree, op.base)), origin)]], op.overwrite ? 'overwrite' : 'error', op.span);
+  const files = sitemapFiles(tree, op.base, op.dest).map(([p, xml]) => [p, makeFile(new TextEncoder().encode(xml), origin)] as const);
+  return tree.withFiles(files, op.overwrite ? 'overwrite' : 'error', op.span);
 }
 
 /** Check a plugin file (sandbox, own folder, integrity) and start its process. */
@@ -2414,7 +2452,7 @@ function feedFiles(op: Extract<Operation, { kind: 'FEED' }>, env: ExecEnv): File
  * The files an operation (other than SITEMAP, FINGERPRINT and CHECKLINKS) adds; `opId` is its memo identity
  * ('' without a memo), `treeKey` the key of the input tree (a RENDER with `${file …}` reads it).
  */
-async function produce(op: Exclude<Operation, { kind: 'SITEMAP' | 'FINGERPRINT' | 'CHECKLINKS' }>, tree: Tree, env: RecEnv, opId: string, treeKey: string): Promise<Produced> {
+async function produce(op: Exclude<Operation, { kind: 'SITEMAP' | 'FINGERPRINT' | 'CANONICAL' | 'PRECOMPRESS' | 'CHECKLINKS' }>, tree: Tree, env: RecEnv, opId: string, treeKey: string): Promise<Produced> {
   if (op.kind === 'TRANSFORM') return produceTransform(op, env, opId);
   // A feed reads its list and what its LINK names.
   if (op.kind === 'FEED') {

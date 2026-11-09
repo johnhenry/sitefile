@@ -11,8 +11,9 @@ use crate::error::{ErrorCode::*, Result, SitefileError};
 use crate::executor::{build, BuildOptions, Callback, LockfileSetting};
 use crate::server::{format_url, listen, listen_shared, LiveReload, SiteServerOptions};
 use crate::servers::{
-    is_running, load_served_tree_with, resolve_source, restart_detached, serve_detached_with,
-    served_last_modified, DetachedServe, ServedTreeOptions, ServerRegistry, ServerState,
+    check_site_files, is_running, load_served_site, resolve_source, restart_detached,
+    serve_detached_with, served_last_modified, DetachedServe, ServedTreeOptions, ServerRegistry,
+    ServerState,
 };
 pub use crate::servers::{parse_publish, stop_server};
 use crate::store::{now_iso, Store};
@@ -70,14 +71,113 @@ fn is_wildcard(h: &str) -> bool {
     h == "0.0.0.0" || h == "::"
 }
 
+/// `--spa`, `--spa-exclude` and `--spa-fallback` (which implies `--spa`): (spa, exclude, fallback).
+fn spa_options(v: &Parsed) -> Result<(bool, Vec<String>, Option<String>)> {
+    let exclude = v.strs("spa-exclude");
+    if let Some(g) = exclude.iter().find(|g| !g.starts_with('/')) {
+        return usage(format!(
+            "--spa-exclude expects a path pattern starting with '/', got '{g}'"
+        ));
+    }
+    let fallback = match v.str("spa-fallback") {
+        None => None,
+        Some(raw) => {
+            match crate::server::safe_segments(&format!("/{}", raw.trim_start_matches('/')))
+                .filter(|s| !s.is_empty())
+            {
+                Some(segs) => Some(format!("/{}", segs.join("/"))),
+                None => {
+                    return usage(format!(
+                        "--spa-fallback expects a file of the site such as /200.html, got '{raw}'"
+                    ))
+                }
+            }
+        }
+    };
+    let spa = v.flag("spa") || fallback.is_some();
+    if !spa && !exclude.is_empty() {
+        return usage("--spa-exclude needs --spa");
+    }
+    Ok((spa, exclude, fallback))
+}
+
+/// A warning when `--spa-fallback` names a file the site does not have.
+fn warn_spa_fallback(tree: &Tree, fallback: Option<&str>, warn: &dyn Fn(&str)) {
+    if let Some(f) = fallback.filter(|f| !tree.is_file(f)) {
+        warn(&format!(
+            "--spa-fallback {f} is not a file of the site, so navigations to missing paths get 404"
+        ));
+    }
+}
+
+/// `--base`: the path prefix to serve under (`/repo/`), or `None` for `/`.
+fn parse_base(v: Option<&str>) -> Result<Option<String>> {
+    let Some(raw) = v else { return Ok(None) };
+    match crate::server::normalize_base(raw) {
+        None => usage(format!("--base expects a path such as /repo/, got '{raw}'")),
+        Some(b) if b == "/" => Ok(None),
+        Some(b) => Ok(Some(b)),
+    }
+}
+
+/// The path of an EXPORT BASE that is an http(s) URL (`https://user.github.io/repo/` → `/repo/`).
+pub fn export_base_path(export_base: Option<&str>) -> Option<String> {
+    let b = export_base?;
+    let lower = b.get(..8).unwrap_or(b).to_ascii_lowercase();
+    if !(lower.starts_with("http://") || lower.starts_with("https://")) {
+        return None;
+    }
+    crate::server::normalize_base(b).filter(|p| p != "/")
+}
+
+/// The URL a server answers at: its origin and `--base`.
+fn site_url(host: &str, port: u16, base: Option<&str>) -> String {
+    format!("{}{}", format_url(host, port), &base.unwrap_or("/")[1..])
+}
+
+/// `--country`: an ISO 3166-1 alpha-2 code (any case).
+fn parse_country(v: Option<&str>) -> Result<Option<String>> {
+    match v {
+        None => Ok(None),
+        Some(c) if c.len() == 2 && c.bytes().all(|b| b.is_ascii_alphabetic()) => {
+            Ok(Some(c.to_string()))
+        }
+        Some(c) => usage(format!(
+            "--country expects a two-letter country code such as nz, got '{c}'"
+        )),
+    }
+}
+
 // ------------------------------------------------------------ serve
+
+/// `--allowed-host` values, validated and lowercased (the server always adds localhost names and
+/// IP addresses).
+fn allowed_hosts_of(v: &Parsed) -> Result<Vec<String>> {
+    let mut out: Vec<String> = Vec::new();
+    for raw in v.strs("allowed-host") {
+        let Some(h) = crate::server::parse_allowed_host(&raw) else {
+            return usage(format!("--allowed-host: invalid host name '{raw}'"));
+        };
+        if !out.contains(&h) {
+            out.push(h);
+        }
+    }
+    Ok(out)
+}
 
 const SERVE_OPTS: &[OptSpec] = &[
     string("name"),
     string_s("publish", 'p'),
     flag_s("detach", 'd'),
     flag("spa"),
+    strings("spa-exclude"),
+    string("spa-fallback"),
+    string("base"),
+    string("country"),
+    flag("strict-site-files"),
     flag("keep-os-metadata"),
+    strings("allowed-host"),
+    flag("cors"),
     flag("watch"),
     string_s("file", 'f'),
     string("target"),
@@ -121,6 +221,14 @@ pub const SERVE: Command = Command {
         "-p, --publish <[host:]port>  address to bind (default 127.0.0.1, a free port)",
         "-d, --detach      run in the background and print the server ID",
         "--spa             serve /index.html for unknown paths without a file extension",
+        "--cors            Access-Control-Allow-Origin: * on every response and OPTIONS preflights (204)",
+        "--allowed-host <name>        also answer requests for this Host (repeatable; .example.com: and subdomains; *: any)",
+        "--spa             answer page navigations to missing paths with the nearest 200.html or index.html",
+        "--spa-exclude <glob>         paths that never fall back to the app shell (* matches anything; repeatable)",
+        "--spa-fallback <path>        the file every --spa fallback serves, e.g. /app.html (implies --spa)",
+        "--base <path>     serve the site under this path, e.g. /repo/ for a GitHub Pages project site (--watch: default the EXPORT BASE URL's path)",
+        "--country <code>  the country _redirects Country= conditions match (there is no geolocation locally)",
+        "--strict-site-files  refuse to serve when a _redirects or _headers line would be ignored",
         "--keep-os-metadata  serve __MACOSX, ._*, Thumbs.db and desktop.ini of a directory or archive (default: skipped)",
         "--watch           build the context, serve it, rebuild on change and live-reload pages (foreground only)",
         "-f, --file <path>            Sitefile path (--watch; default <context>/Sitefile)",
@@ -158,6 +266,11 @@ fn run_serve(v: &Parsed) -> Result<i32> {
         "an image reference, ./directory or archive file",
     )?;
     let bind = parse_publish(v.str("publish"))?;
+    let allowed_hosts = allowed_hosts_of(v)?;
+    let (spa, spa_exclude, spa_fallback) = spa_options(v)?;
+    let base = parse_base(v.str("base"))?;
+    let country = parse_country(v.str("country"))?;
+    let strict_site_files = v.flag("strict-site-files");
     let name = v.str("name");
     if name.is_some() && !v.flag("detach") {
         return usage("--name needs -d (only detached servers are tracked)");
@@ -174,7 +287,7 @@ fn run_serve(v: &Parsed) -> Result<i32> {
     let keep_os_metadata = v.flag("keep-os-metadata");
     let warn = |m: &str| err(&format!("warning: {m}\n"));
     if !v.flag("detach") {
-        let tree = load_served_tree_with(
+        let site = load_served_site(
             &store,
             &source,
             &ServedTreeOptions {
@@ -182,6 +295,9 @@ fn run_serve(v: &Parsed) -> Result<i32> {
                 warn: Some(&warn),
             },
         )?;
+        let tree = site.tree;
+        check_site_files(&tree, strict_site_files, &warn, site.content.as_deref())?;
+        warn_spa_fallback(&tree, spa_fallback.as_deref(), &warn);
         let modified = served_last_modified(&store, &source);
         let n = tree.len();
         catch_signals();
@@ -189,19 +305,29 @@ fn run_serve(v: &Parsed) -> Result<i32> {
         let server = listen(
             Arc::new(tree),
             SiteServerOptions {
-                spa: v.flag("spa"),
+                spa,
+                spa_exclude,
+                spa_fallback,
+                base: base
+                    .clone()
+                    .map(|b| -> crate::server::BaseFn { Arc::new(move || Some(b.clone())) }),
+                country: country.clone(),
                 log: Some(log),
                 server_id: None,
                 live_reload: None,
                 last_modified: Some(Arc::new(move || modified)),
                 warn: None,
+                allowed_hosts: Some(allowed_hosts.clone()),
+                cors: v.flag("cors"),
+                content: site.content,
+                ..Default::default()
             },
             &bind.host,
             bind.port,
         )?;
         out(&format!(
             "Serving {label} ({n} files) at {}  (Ctrl-C to stop)\n",
-            format_url(&server.host, server.port)
+            site_url(&server.host, server.port, base.as_deref())
         ));
         wait_for_signal();
         server.close();
@@ -216,8 +342,15 @@ fn run_serve(v: &Parsed) -> Result<i32> {
             source,
             name: name.map(str::to_string),
             bind,
-            spa: v.flag("spa"),
+            spa,
+            spa_exclude,
+            spa_fallback,
+            base,
             keep_os_metadata,
+            allowed_hosts,
+            cors: v.flag("cors"),
+            country,
+            strict_site_files,
             project: None,
         },
         None,
@@ -227,7 +360,7 @@ fn run_serve(v: &Parsed) -> Result<i32> {
         "Started {} ({}) serving {label} at {}\n",
         up.name,
         up.id,
-        format_url(&up.host, up.port)
+        site_url(&up.host, up.port, up.base.as_deref())
     ));
     Ok(0)
 }
@@ -242,6 +375,7 @@ fn serve_watch(v: &Parsed) -> Result<i32> {
         return usage("--name needs -d (only detached servers are tracked)");
     }
     let bind = parse_publish(v.str("publish"))?;
+    let allowed_hosts = allowed_hosts_of(v)?;
     let context = v.positionals.first().cloned().unwrap_or_else(|| ".".into());
     let file = v.str("file").filter(|s| !s.is_empty()).map(str::to_string);
     let arg_files = v.strs("build-arg-file");
@@ -257,6 +391,25 @@ fn serve_watch(v: &Parsed) -> Result<i32> {
         "morph" => true,
         "full" => false,
         other => return usage(format!("--reload expects full or morph, got '{other}'")),
+    };
+    let (spa, spa_exclude, spa_fallback) = spa_options(v)?;
+    let base_flag = parse_base(v.str("base"))?;
+    // `--base`, else the path of the last good build's EXPORT BASE URL.
+    let base: Arc<RwLock<Option<String>>> = Arc::new(RwLock::new(base_flag.clone()));
+    let country = parse_country(v.str("country"))?;
+    let strict_site_files = v.flag("strict-site-files");
+    // The site-file warnings last printed: a rebuild repeats them only when they change.
+    let last_site_warnings = std::cell::RefCell::new(String::new());
+    let site_files = |tree: &Tree| -> Result<()> {
+        let shown = crate::server::site_file_warnings(tree, None);
+        let text = shown.join("\n");
+        if text != *last_site_warnings.borrow() {
+            for m in &shown {
+                err(&format!("warning: {m}\n"));
+            }
+        }
+        *last_site_warnings.borrow_mut() = text;
+        check_site_files(tree, strict_site_files, &|_| {}, None)
     };
     if is_wildcard(&bind.host) {
         err(&format!(
@@ -327,6 +480,9 @@ fn serve_watch(v: &Parsed) -> Result<i32> {
                         if n == 1 { "" } else { "s" },
                         tree.digest()
                     ));
+                    if let Err(e) = site_files(&tree) {
+                        return failed(&e);
+                    }
                     swap(tree);
                     BuildOutcome {
                         code: 0,
@@ -336,7 +492,7 @@ fn serve_watch(v: &Parsed) -> Result<i32> {
                 Err(e) => failed(&e),
             };
         }
-        let attempt = || -> Result<Tree> {
+        let attempt = || -> Result<(Tree, Option<String>)> {
             let mut options = BuildOptions {
                 context_dir: context.clone(),
                 sitefile: file.clone(),
@@ -357,16 +513,25 @@ fn serve_watch(v: &Parsed) -> Result<i32> {
             options.on_notice = Some(notice);
             let warning: Callback = Arc::new(|m: &str| err(&format!("warning: {m}\n")));
             options.on_warning = Some(warning);
-            Ok(build(&options)?.output)
+            let r = build(&options)?;
+            Ok((r.output, r.plan.export_base))
         };
         match attempt() {
-            Ok(tree) => {
+            Ok((tree, export_base)) => {
                 let n = tree.len();
                 out(&format!(
                     "Built {n} file{} ({})\n",
                     if n == 1 { "" } else { "s" },
                     tree.digest()
                 ));
+                if let Err(e) = site_files(&tree) {
+                    return failed(&e);
+                }
+                if base_flag.is_none() {
+                    if let Ok(mut b) = base.write() {
+                        *b = export_base_path(export_base.as_deref());
+                    }
+                }
                 swap(tree);
                 BuildOutcome {
                     code: 0,
@@ -379,7 +544,14 @@ fn serve_watch(v: &Parsed) -> Result<i32> {
     let mut on_started = || -> Result<()> {
         let log: crate::server::LogFn = Arc::new(|l: &str| out(&format!("{l}\n")));
         let opts = SiteServerOptions {
-            spa: v.flag("spa"),
+            spa,
+            spa_exclude: spa_exclude.clone(),
+            spa_fallback: spa_fallback.clone(),
+            base: Some(Arc::new({
+                let base = base.clone();
+                move || base.read().ok().and_then(|b| b.clone())
+            })),
+            country: country.clone(),
             log: Some(log),
             server_id: None,
             live_reload: Some(live.clone()),
@@ -388,12 +560,19 @@ fn serve_watch(v: &Parsed) -> Result<i32> {
                 move || built_at.read().ok().and_then(|t| *t)
             })),
             warn: Some(Arc::new(|m: &str| err(&format!("warning: {m}\n")))),
+            allowed_hosts: Some(allowed_hosts.clone()),
+            cors: v.flag("cors"),
+            content: None,
         };
         let s = listen_shared(current.clone(), opts, &bind.host, bind.port)?;
         let n = current.read().map(|t| t.len()).unwrap_or(0);
         out(&format!(
             "Serving {context} ({n} files) at {}  (Ctrl-C to stop)\n",
-            format_url(&s.host, s.port)
+            site_url(
+                &s.host,
+                s.port,
+                base.read().ok().and_then(|b| b.clone()).as_deref()
+            )
         ));
         server = Some(s);
         started.set(true);
@@ -442,13 +621,20 @@ pub fn serve_worker(id: &str) -> i32 {
     catch_signals();
     let started = (|| -> Result<crate::server::ListeningServer> {
         let warn = |m: &str| stamp(&format!("warning: {m}"));
-        let tree = load_served_tree_with(
+        let site = load_served_site(
             &reg.store,
             &state.source,
             &ServedTreeOptions {
                 keep_os_metadata: state.keep_os_metadata,
                 warn: Some(&warn),
             },
+        )?;
+        let tree = site.tree;
+        check_site_files(
+            &tree,
+            state.strict_site_files,
+            &warn,
+            site.content.as_deref(),
         )?;
         let modified = served_last_modified(&reg.store, &state.source);
         let n = tree.len();
@@ -457,11 +643,22 @@ pub fn serve_worker(id: &str) -> i32 {
             Arc::new(tree),
             SiteServerOptions {
                 spa: state.spa,
+                spa_exclude: state.spa_exclude.clone(),
+                spa_fallback: state.spa_fallback.clone(),
+                base: state
+                    .base
+                    .clone()
+                    .map(|b| -> crate::server::BaseFn { Arc::new(move || Some(b.clone())) }),
+                country: state.country.clone(),
                 log: Some(log),
                 server_id: Some(id.to_string()),
                 live_reload: None,
                 last_modified: Some(Arc::new(move || modified)),
                 warn: None,
+                allowed_hosts: Some(state.allowed_hosts.clone()),
+                cors: state.cors,
+                content: site.content,
+                ..Default::default()
             },
             &state.bind.host,
             state.bind.port,
@@ -477,7 +674,7 @@ pub fn serve_worker(id: &str) -> i32 {
         stamp(&format!(
             "serving {} ({n} files) at {}",
             state.image,
-            format_url(&host, port)
+            site_url(&host, port, state.base.as_deref())
         ));
         Ok(server)
     })();
@@ -742,7 +939,7 @@ fn run_restart(v: &Parsed) -> Result<i32> {
         up.name,
         up.id,
         up.image,
-        format_url(&up.host, up.port)
+        site_url(&up.host, up.port, up.base.as_deref())
     ));
     Ok(0)
 }
