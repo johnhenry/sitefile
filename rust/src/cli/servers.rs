@@ -11,7 +11,7 @@ use crate::error::{ErrorCode::*, Result, SitefileError};
 use crate::executor::{build, BuildOptions, Callback, LockfileSetting};
 use crate::server::{format_url, listen, listen_shared, LiveReload, SiteServerOptions};
 use crate::servers::{
-    is_running, load_served_tree_with, resolve_source, restart_detached, serve_detached_with,
+    is_running, load_served_site, resolve_source, restart_detached, serve_detached_with,
     served_last_modified, DetachedServe, ServedTreeOptions, ServerRegistry, ServerState,
 };
 pub use crate::servers::{parse_publish, stop_server};
@@ -535,7 +535,7 @@ fn run_serve(v: &Parsed) -> Result<i32> {
     let keep_os_metadata = v.flag("keep-os-metadata");
     let warn = |m: &str| err(&format!("warning: {m}\n"));
     if !v.flag("detach") {
-        let tree = load_served_tree_with(
+        let site = load_served_site(
             &store,
             &source,
             &ServedTreeOptions {
@@ -543,6 +543,7 @@ fn run_serve(v: &Parsed) -> Result<i32> {
                 warn: Some(&warn),
             },
         )?;
+        let tree = site.tree;
         let modified = served_last_modified(&store, &source);
         let n = tree.len();
         catch_signals();
@@ -573,6 +574,7 @@ fn run_serve(v: &Parsed) -> Result<i32> {
                 compress: v.flag("compress"),
                 gzip_cache: Default::default(),
                 throttle: throttle.as_ref().map(|t| t.1),
+                content: site.content,
             },
             &bind.host,
             bind.port,
@@ -852,6 +854,7 @@ fn serve_watch(v: &Parsed) -> Result<i32> {
             compress: v.flag("compress"),
             gzip_cache: Default::default(),
             throttle: throttle.as_ref().map(|t| t.1),
+            content: None,
         };
         let s = listen_shared(current.clone(), opts, &bind.host, bind.port)?;
         let n = current.read().map(|t| t.len()).unwrap_or(0);
@@ -980,7 +983,7 @@ pub fn serve_worker(id: &str) -> i32 {
             ));
         }
         let warn = |m: &str| stamp(&format!("warning: {m}"));
-        let tree = load_served_tree_with(
+        let site = load_served_site(
             &reg.store,
             &state.source,
             &ServedTreeOptions {
@@ -988,6 +991,7 @@ pub fn serve_worker(id: &str) -> i32 {
                 warn: Some(&warn),
             },
         )?;
+        let tree = site.tree;
         let modified = served_last_modified(&reg.store, &state.source);
         let n = tree.len();
         let log: crate::server::LogFn = Arc::new(stamp);
@@ -1034,6 +1038,7 @@ pub fn serve_worker(id: &str) -> i32 {
                     .throttle
                     .as_deref()
                     .and_then(crate::server::parse_throttle),
+                content: site.content,
             },
             &state.bind.host,
             state.bind.port,

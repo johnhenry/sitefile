@@ -8,13 +8,14 @@ import { outdatedCommands } from './outdated.js';
 import { hostsCommands } from './hosts.js';
 import { bakeCommands } from './bake.js';
 import { upCommands } from './up.js';
+import { importConfigCommands } from './import-config.js';
 import { integrityCommands } from './integrity.js';
 
 /**
  * Image-store and site-server commands. They live outside cli.ts' build/validate/inspect
  * parser: each has its own options and `--help`.
  */
-const TOP: ReadonlyMap<string, Command> = new Map([...imageCommands, ...serverCommands, ...registryCommands, ...vendorCommands, ...outdatedCommands, ...hostsCommands, ...bakeCommands, ...integrityCommands, ...upCommands].filter(([k]) => !k.includes(' ')));
+const TOP: ReadonlyMap<string, Command> = new Map([...imageCommands, ...serverCommands, ...registryCommands, ...vendorCommands, ...outdatedCommands, ...hostsCommands, ...bakeCommands, ...integrityCommands, ...upCommands, ...importConfigCommands].filter(([k]) => !k.includes(' ')));
 
 export const EXTRA_COMMANDS: readonly string[] = [...TOP.keys(), 'image', 'server', 'cache', 'lsp'];
 
@@ -50,6 +51,11 @@ Integrity:
 Variants:
   sitefile bake [targets...] [-f file] [--print]   build several targets (matrix, groups) from
                                                    sitefile.bake.yaml; --print shows the plan
+
+Host config files:
+  sitefile import-config <file> [--json]           translate netlify.toml, vercel.json, firebase.json,
+                                                   staticwebapp.config.json, wrangler.toml or .htaccess
+                                                   into _redirects and _headers
 
 Offline builds:
   sitefile vendor [context] [--vendor-dir dir]     download remote imports and the BASE image into

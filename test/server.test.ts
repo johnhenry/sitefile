@@ -537,7 +537,7 @@ test('compression: precompressed variants, --compress, Vary and per-encoding ETa
     assert.equal(br.headers['content-encoding'], 'br');
     assert.equal(br.body, 'BR');
     assert.match(String(br.headers.etag), /-br"$/);
-    assert.equal(br.headers.vary, 'Accept-Encoding');
+    assert.equal(br.headers.vary, 'accept-encoding');
     const raw = await new Promise<Buffer>((resolve, reject) => {
       const r = http.request({ host: '127.0.0.1', port, path: '/big.txt', headers: { 'accept-encoding': 'gzip' }, agent: false }, (res) => {
         const chunks: Buffer[] = [];
