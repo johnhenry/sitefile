@@ -178,6 +178,8 @@ pub struct WatchOptions<'a> {
     pub poll: Option<Duration>,
     /// `serve --watch ./dir` without a Sitefile: the directory is re-read, not built (other messages).
     pub plain: bool,
+    /// Asked between scans: true builds again now, as if a file had changed (`serve --watch`, key `r`).
+    pub rebuild: Option<&'a dyn Fn() -> bool>,
 }
 
 /// Build once, then rebuild whenever a watched path changes, until `stop()`.
@@ -247,6 +249,9 @@ pub fn watch_loop(
     let mut dirty_since: Option<Instant> = None;
     while !stop() {
         std::thread::sleep(o.poll.unwrap_or(POLL));
+        if o.rebuild.is_some_and(|f| f()) {
+            dirty_since = Some(Instant::now() - DEBOUNCE);
+        }
         let snap = w.scan();
         if snap != last {
             last = snap;

@@ -27,6 +27,21 @@
   `gzip_static` and Caddy `precompressed`. `br` and `zstd` are rejected as not
   supported yet. Both implementations, with conformance cases; example
   `examples/precompress`.
+- **`serve` in a terminal** (johnhenry/sitefile#224): single keys in a
+  foreground `serve` or `serve --watch`:
+  - `o` opens the browser;
+  - `u` prints the local URL, plus the network URL and its QR code when
+    bound to every interface;
+  - `r` rebuilds, or re-reads a served directory;
+  - `c` clears the screen;
+  - `q` quits;
+  - `h` lists the keys.
+
+  `--open[=path]` opens the browser at start (`$BROWSER`, else the system
+  default). `--qr` prints a QR code of the network URL. The QR encoder is
+  shared by both implementations: they check the same golden fixtures and
+  the standard's format and version bits.
+
 - **`serve --base /repo/`** (johnhenry/sitefile#195): serves the site under
   a path prefix (GitHub Pages project sites): `/` redirects to it, `/repo`
   gets its slash, everything else is 404, and the server's redirects and
