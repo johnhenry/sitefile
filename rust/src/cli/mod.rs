@@ -9,11 +9,13 @@ pub mod common;
 pub mod git_context;
 pub mod hosts;
 pub mod images;
+pub mod import_config;
 pub mod integrity;
 pub mod network;
 pub mod outdated;
 pub mod registry;
 pub mod servers;
+pub mod up;
 pub mod vendor;
 
 use crate::build_args::collect_build_args;
@@ -66,6 +68,11 @@ Variants:
   sitefile bake [targets...] [-f file] [--print]   build several targets (matrix, groups) from
                                                    sitefile.bake.yaml; --print shows the plan
 
+Host config files:
+  sitefile import-config <file> [--json]           translate netlify.toml, vercel.json, firebase.json,
+                                                   staticwebapp.config.json, wrangler.toml or .htaccess
+                                                   into _redirects and _headers
+
 Offline builds:
   sitefile vendor [context] [--vendor-dir dir]     download remote imports and the BASE image into
                                                    vendor/sitefile; builds then read them from there
@@ -90,6 +97,9 @@ Serving sites (detached servers are tracked by name):
   sitefile serve --watch [-p [host:]port] [ctx]    build in memory, serve, rebuild + live reload
   sitefile servers [-a] [--json]                   list servers (alias: server ls)
   sitefile server stop|rm [-f]|restart|logs [-f] <name|id>
+  sitefile up [-f sitefile.servers.yaml]           start every server of a servers file (detached, idempotent)
+  sitefile down [-f file]                          stop and remove the servers it started
+  sitefile ps [-f file] [--json]                   list them: running, exited or not created
 
 Editor support:
   sitefile lsp [--stdio]                           language server over stdio (Rust build only; docs/LSP.md)
@@ -118,13 +128,14 @@ Options:
       --target <stage>         stop after the named stage and export its whole tree instead of
                                the EXPORT path (EXPORT's format still applies; no _redirects/_headers)
   -o, --out <path>             export destination (build only): a directory for 'directory',
-                               a file for zip, tar, tgz, wbn (*.wbn.gz: a gzipped bundle)
+                               a file for zip, tar, tgz, wbn (*.wbn.gz: a gzipped bundle), car, html, mhtml
   -t, --tag <name[:tag]>       also store the build as a local image (build only, repeatable);
                                with -t and no -o nothing is written to the context
-      --format <fmt>           directory | zip | tar | tgz (alias tar.gz) | wbn | oci (build only).
+      --format <fmt>           directory | zip | tar | tgz (alias tar.gz) | wbn | oci | car | html | mhtml
+                               (build only).
                                oci writes an OCI archive for -o *.tar (e.g. site.oci.tar), else an
                                OCI image layout directory.
-                               Default: the --out extension (.zip .tar .tar.gz .tgz .wbn .wbn.gz .oci.tar),
+                               Default: the --out extension (.zip .tar .tar.gz .tgz .wbn .wbn.gz .oci.tar .car .mhtml),
                                else the Sitefile's EXPORT ... AS <fmt>
       --oci-root <path>        directory inside an oci image layer (default /srv/www; overrides EXPORT ... AT)
       --compression <c>        gzip or none (build only; overrides EXPORT ... COMPRESSION): the oci site layer
@@ -143,7 +154,7 @@ Options:
       --base <image>           build the oci image on <image> (runnable; overrides EXPORT ... AS oci BASE);
                                a bare name means Docker Hub. Pin it: nginx:alpine@sha256:...
       --insecure-registry <h>  allow plain http to registry host[:port] (repeatable; localhost always may)
-      --base-url <url>         https URL ending in '/' the files are mounted at (wbn only);
+      --base-url <url>         https URL ending in '/' the files are mounted at (wbn, mhtml);
                                overrides EXPORT ... BASE
       --build-arg <NAME=value> set an ARG (repeatable); --build-arg NAME reads $NAME
       --secret id=<id>,env=<VAR> | id=<id>,src=<file>
@@ -153,7 +164,7 @@ Options:
       --plugin-memory <MiB>    memory limit for each plugin: a JavaScript plugin's heap, a wasm
                                plugin's linear memory (default 1024)
       --node <path>            the Node binary JavaScript plugins run on (absolute path; default
-                               $SITEFILE_NODE, else node on PATH); must be >= 26
+                               $SITEFILE_NODE, else the default Node, see docs/PLUGINS.md); must be >= 26
       --allow-exec <name[=path]> allow a TOOL (external program) to run, resolved on PATH or at
                                the absolute path (repeatable); programs run with your privileges
       --allow-plugin <name>    allow a JavaScript PLUGIN to run (repeatable; wasm plugins need no flag)
@@ -289,6 +300,10 @@ const TOP: &[&Command] = &[
     &bake::BAKE,
     &integrity::VERIFY,
     &integrity::DIFF,
+    &up::UP,
+    &up::DOWN,
+    &up::PS,
+    &import_config::IMPORT_CONFIG,
 ];
 
 struct Group {
@@ -753,7 +768,7 @@ fn run_build_command(
         if format_override.is_none() {
             return Ok(usage_error(&format!(
                 "--format expects one of {} (or tar.gz), got '{f}'",
-                images::EXPORT_FORMATS
+                images::export_formats()
             )));
         }
     }
@@ -1010,14 +1025,18 @@ fn run_build_command(
                     r.bytes.map(|b| format!(", {b} bytes")).unwrap_or_default()
                 ),
                 f => format!(
-                    "Exported {n} to {where_} ({}, {} bytes, {})\n",
+                    "Exported {n} to {where_} ({}, {} bytes, {}{})\n",
                     if f == ExportFormat::Tgz {
                         "tar.gz"
                     } else {
                         f.as_str()
                     },
                     r.bytes.unwrap_or(0),
-                    r.file_digest.as_deref().unwrap_or("")
+                    r.file_digest.as_deref().unwrap_or(""),
+                    r.root_cid
+                        .as_deref()
+                        .map(|c| format!(", root {c}"))
+                        .unwrap_or_default()
                 ),
             };
             out(&line);

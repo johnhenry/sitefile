@@ -1,0 +1,9 @@
+{
+  "steps": [
+    ["up", "-f", "${CTX}/sitefile.servers.yaml"],
+    ["up", "-f", "${CTX}/sitefile.servers.yaml"],
+    ["ps", "-f", "${CTX}/sitefile.servers.yaml"],
+    ["down", "-f", "${CTX}/sitefile.servers.yaml"],
+    ["up", "-f", "${CTX}/bad.yaml"]
+  ]
+}
