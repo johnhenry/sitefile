@@ -215,6 +215,15 @@ bytes for the same request. Avoid `Date.now()`, `Math.random()` and anything
 that depends on the machine. (Reading the clock is not blocked; it is just a
 bad idea.)
 
+**State carries over between calls.** A JavaScript plugin runs as one Node
+process for the whole build: the module is loaded once and every
+`transform()` call of every TRANSFORM line that uses it runs in that process,
+one at a time. Module-level variables, caches and counters keep their values
+from one call to the next, so a result can depend on which calls came first,
+and on whether earlier calls were answered from the cache instead (then they
+never ran). Keep `transform()` a function of its request. (A wasm plugin gets
+a fresh instance for every call, so nothing carries over.)
+
 ## WebAssembly plugins
 
 `PLUGIN name FROM ./plugins/x.wasm` loads a WebAssembly module instead of a
@@ -524,14 +533,26 @@ is not part of the key, and entries written before it was recorded (no
 corrupt or truncated entry is ignored, removed, and rewritten after the rebuild;
 a cache that cannot be written never fails the build.
 
-**Caching assumes deterministic code.** A plugin that depends on the clock,
-randomness, the network or the machine should opt out by exporting `cache`:
+**Caching assumes deterministic code.** WebAssembly plugins are deterministic
+by construction (no imports: no clock or randomness, and a fresh instance per
+call). JavaScript plugins are not: they have `Date`, `Math.random` and module
+state that lasts for the whole build. So a JavaScript plugin says which it is
+by exporting `cache`:
 
 ```js
+export const cache = true;          // deterministic: results may be cached and reused
 export const cache = false;         // or: export default { apiVersion: 1, cache: false, transform }
 ```
 
-Its results are then never stored or reused (it is started on every build).
+With `cache = false` its results are never stored or reused (it is started on
+every build). Any other value is `E_PLUGIN` when it loads. A plugin that
+exports neither is still cached, as before, but the first call of a build
+that caches or memoizes results (a cache directory, or `serve --watch`)
+warns once:
+
+```
+warning: PLUGIN motion does not export cache, so its results are reused as if it were deterministic: export const cache = true to confirm, or cache = false if a result can depend on the clock, randomness or an earlier call
+```
 Anything not in the key is invisible to the cache: a tool that reads files
 other than `{input}`, or a different version of a tool installed at the same
 path with the same size and mtime. Use `--no-cache` to bypass (no reads, no
@@ -548,6 +569,20 @@ resolved path, size and mtime, so tool results only match where the same
 binary sits at the same path with the same mtime, such as one CI image). A plugin that exports
 `cache = false` is never pushed. Only use `--cache-from` with a registry
 repository you trust: a cached result is used as if the plugin had returned it.
+
+### What sitefile trusts as-is
+
+Some stored results are used without being recomputed or checked against
+their inputs. Each is only as trustworthy as whoever can write to it:
+
+| Trusted as-is | Why | Protected by |
+| --- | --- | --- |
+| `--cache-from <ref>` results (JavaScript, wasm and tool results alike) | a hit is written into the output as if the plugin or tool had returned it; the blob digests prove the bytes are the ones the entry names, not that the plugin produced them | you: only pull from a registry repository whose writers you trust |
+| the local TRANSFORM cache (`$SITEFILE_HOME/cache/transform`) | the same, for results from earlier builds on this machine | file permissions on `$SITEFILE_HOME` (anyone who can write there can change a build's output) |
+| the compiled wasm module cache (`$SITEFILE_HOME/cache/wasm`, Rust only) | compiled native code is loaded with wasmtime's `Module::deserialize_file`, which is `unsafe`: a forged file runs as native code, outside the wasm sandbox | the directory is created `0700` and entries `0600`, and a key covers the module bytes, the wasmtime version, the target and the codegen settings ([RUST.md](RUST.md#wasm-module-cache)); `SITEFILE_NO_WASM_CACHE=1` turns it off |
+
+`--no-cache` skips the TRANSFORM caches (local and registry, and cannot be
+combined with `--cache-from`); `SITEFILE_NO_WASM_CACHE=1` skips the wasm one.
 
 ## Not yet
 

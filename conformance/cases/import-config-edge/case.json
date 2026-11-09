@@ -1,0 +1,12 @@
+{
+  "steps": [
+    ["import-config", "${CTX}/netlify.toml", "--json"],
+    ["import-config", "${CTX}/netlify.toml"],
+    ["import-config", "${CTX}/vercel.json", "--json"],
+    ["import-config", "${CTX}/staticwebapp.config.json", "--json"],
+    ["import-config", "${CTX}/htaccess", "--format", "htaccess", "--json"],
+    ["import-config", "${CTX}/htaccess", "--format", "htaccess", "--headers"],
+    ["import-config", "${CTX}/bad3.toml", "--format", "netlify"]
+  ],
+  "stdout": true
+}
