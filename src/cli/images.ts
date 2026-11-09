@@ -9,6 +9,7 @@ import { EXPORT_FORMATS, parseExportFormat, type ExportFormat } from '../languag
 import { MEDIA, siteLayerIndex } from '../oci.js';
 import { looksLikeImageId, parseLocalRef, refKey } from '../ref.js';
 import { shortId, Store, type ImageSummary } from '../store.js';
+import { encodeCar } from '../car.js';
 import { encodeManifest, manifestOf } from '../integrity.js';
 import { humanSize, relativeTime, requireArgs, str, table, usage, type Command } from './common.js';
 
@@ -179,7 +180,7 @@ const save: Command = {
   summary: 'export an image to a directory or archive',
   usage: 'save <ref|id> -o <out> [--format fmt] [--base-url url] [--manifest file] [--force]',
   description:
-    'Write an image\'s files to a directory, or to a zip, tar, tar.gz (tgz) or wbn archive, or the image itself as\nan OCI archive (-o x.oci.tar) or OCI layout directory (--format oci). The format is chosen like "build -o":\nfrom --format, else the extension (.zip .tar .tar.gz .tgz .wbn .wbn.gz .oci.tar), else a directory; a wbn\nwritten to *.wbn.gz is gzipped.\nArchives are deterministic (set SOURCE_DATE_EPOCH to stamp them). A non-empty destination needs --force.',
+    'Write an image\'s files to a directory, or to a zip, tar, tar.gz (tgz) or wbn archive, an IPFS CAR, a single-file\npage (html, mhtml), or the image itself as\nan OCI archive (-o x.oci.tar) or OCI layout directory (--format oci). The format is chosen like "build -o":\nfrom --format, else the extension (.zip .tar .tar.gz .tgz .wbn .wbn.gz .oci.tar .car .mhtml), else a directory; a wbn\nwritten to *.wbn.gz is gzipped.\nArchives are deterministic (set SOURCE_DATE_EPOCH to stamp them). A non-empty destination needs --force.',
   flags: [
     '-o, --out <path>     destination (required)',
     `    --format <fmt>   ${EXPORT_FORMATS.join(' | ')} (alias tar.gz)`,
@@ -234,9 +235,10 @@ const save: Command = {
         const w = await exportDirectory(tree, out, opts);
         process.stdout.write(`Saved ${shortId(id)} (${tree.size} files) to ${shown(w.outDir)}\n`);
       } else {
-        const data = encodeTree(tree, format, { epoch: sourceDateEpoch(), baseUrl: str(v['base-url']), compression: compressionFromExtension(out, format) });
+        const car = format === 'car' ? encodeCar(tree) : undefined;
+        const data = car?.bytes ?? encodeTree(tree, format, { epoch: sourceDateEpoch(), baseUrl: str(v['base-url']), compression: compressionFromExtension(out, format) });
         const w = await exportFile(data, out, opts);
-        process.stdout.write(`Saved ${shortId(id)} (${tree.size} files) to ${shown(w.outFile)} (${format === 'tgz' ? 'tar.gz' : format}, ${w.bytes} bytes)\n`);
+        process.stdout.write(`Saved ${shortId(id)} (${tree.size} files) to ${shown(w.outFile)} (${format === 'tgz' ? 'tar.gz' : format}, ${w.bytes} bytes${car ? `, root ${car.root}` : ''})\n`);
       }
       await writeManifest();
     } finally {
