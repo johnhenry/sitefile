@@ -4,7 +4,7 @@ import http from 'node:http';
 import net from 'node:net';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
-import { byteRange, closeServer, createSiteServer, earlyHints, httpDate, parseHttpDate, listen, LiveReload, originForm, RELOAD_SCRIPT, safeSegments } from '../src/server.js';
+import { byteRange, closeServer, createSiteServer, earlyHints, httpDate, parseHttpDate, listen, LiveReload, normalizeBase, originForm, RELOAD_SCRIPT, safeSegments } from '../src/server.js';
 import { makeFile, Tree } from '../src/tree.js';
 import { siteFileWarnings } from '../src/serve-rules.js';
 import { makeSite, runCli, tmpDir } from './helpers/cli.js';
@@ -481,7 +481,7 @@ test('run: bad -p values, unknown images, registries, port in use, foreground --
 
 // ---------------------------------------------------------------- 404.html, clean URLs, _redirects, _headers
 
-async function withTree(files: Record<string, string>, opts: { spa?: boolean; spaExclude?: string[]; spaFallback?: string }, fn: (port: number) => Promise<void>): Promise<void> {
+async function withTree(files: Record<string, string>, opts: { spa?: boolean; spaExclude?: string[]; spaFallback?: string; base?: string }, fn: (port: number) => Promise<void>): Promise<void> {
   const t = Tree.fromFiles(Object.entries(files).map(([p, c]) => [p, makeFile(enc(c), 't')] as const));
   const s = createSiteServer(t, opts);
   const { port } = await listen(s, '127.0.0.1', 0);
@@ -709,6 +709,37 @@ test('serve --strict-site-files refuses a site with ignored lines; --country is 
   const bad = await runCli(dir, ['serve', '--country', 'nzl', dir + '/']);
   assert.equal(bad.code, 2);
   assert.match(bad.stderr, /--country expects a two-letter country code such as nz, got 'nzl'/);
+});
+
+// johnhenry/sitefile#195
+test('serve --base: the site under a path prefix; / redirects there, outside is 404', async () => {
+  assert.equal(normalizeBase('repo'), '/repo/');
+  assert.equal(normalizeBase('/a b//c/'), '/a%20b/c/');
+  assert.equal(normalizeBase('https://user.github.io/repo/?x'), '/repo/');
+  assert.equal(normalizeBase('https://example.com'), '/');
+  assert.equal(normalizeBase('/../x'), undefined);
+  const files = { '/index.html': 'home', '/docs/index.html': 'docs', '/about.html': 'about', '/404.html': 'site 404', '/_redirects': '/old /about 301\n/ext https://e.x/ 302\n' };
+  await withTree(files, { base: '/repo/' }, async (port) => {
+    let r = await req(port, '/?q=1');
+    assert.equal(r.status, 302);
+    assert.equal(r.headers.location, '/repo/?q=1');
+    r = await req(port, '/repo');
+    assert.equal(r.status, 301);
+    assert.equal(r.headers.location, '/repo/');
+    assert.equal((await req(port, '/repo/')).body, 'home');
+    assert.equal((await req(port, '/repo/about')).body, 'about');
+    assert.equal((await req(port, '/repo/docs')).headers.location, '/repo/docs/');
+    assert.equal((await req(port, '/repo/about/')).headers.location, '/repo/about');
+    assert.equal((await req(port, '/repo/old')).headers.location, '/repo/about', 'path targets are under the base');
+    assert.equal((await req(port, '/repo/ext')).headers.location, 'https://e.x/');
+    r = await req(port, '/repo/missing');
+    assert.equal(r.status, 404);
+    assert.equal(r.body, 'site 404');
+    r = await req(port, '/about');
+    assert.equal(r.status, 404);
+    assert.match(r.body, /404 Not Found/, 'outside the base: the built-in page');
+    assert.equal((await req(port, '/repository/')).status, 404);
+  });
 });
 
 const NAV = { 'sec-fetch-mode': 'navigate', 'sec-fetch-dest': 'document' };

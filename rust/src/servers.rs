@@ -89,6 +89,9 @@ pub struct ServerState {
         skip_serializing_if = "Option::is_none"
     )]
     pub spa_fallback: Option<String>,
+    /// `--base`: the path prefix the site is served under, `/repo/` (absent: `/`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub base: Option<String>,
     /// `--keep-os-metadata`: serve a directory's or archive's OS metadata files too.
     #[serde(
         default,
@@ -315,7 +318,11 @@ impl ServerRegistry {
             state: s.clone(),
             status: if running { "running" } else { "exited" },
             url: if s.ready {
-                url_of(&s.host, s.port)
+                format!(
+                    "{}{}",
+                    url_of(&s.host, s.port),
+                    &s.base.as_deref().unwrap_or("/")[1..]
+                )
             } else {
                 String::new()
             },
@@ -901,6 +908,8 @@ pub struct DetachedServe {
     pub spa_exclude: Vec<String>,
     /// `--spa-fallback`.
     pub spa_fallback: Option<String>,
+    /// `--base` (normalized; `None` for `/`).
+    pub base: Option<String>,
     /// `--keep-os-metadata`.
     pub keep_os_metadata: bool,
     /// `--country`.
@@ -924,6 +933,7 @@ impl DetachedServe {
             spa: false,
             spa_exclude: Vec::new(),
             spa_fallback: None,
+            base: None,
             keep_os_metadata: false,
             country: None,
             strict_site_files: false,
@@ -977,6 +987,7 @@ pub fn serve_detached_with(
         spa: serve.spa,
         spa_exclude: serve.spa_exclude.clone(),
         spa_fallback: serve.spa_fallback.clone(),
+        base: serve.base.clone(),
         keep_os_metadata: serve.keep_os_metadata,
         country: serve.country.clone(),
         strict_site_files: serve.strict_site_files,
@@ -1190,6 +1201,7 @@ mod tests {
             spa: false,
             spa_exclude: Vec::new(),
             spa_fallback: None,
+            base: None,
             keep_os_metadata: false,
             country: None,
             strict_site_files: false,

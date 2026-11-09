@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- **`serve --base /repo/`** (johnhenry/sitefile#195): serves the site under
+  a path prefix (GitHub Pages project sites): `/` redirects to it, `/repo`
+  gets its slash, everything else is 404, and the server's redirects and
+  `_redirects` path targets stay under it. `serve --watch` defaults it to the
+  path of the EXPORT BASE URL. Kept in the server record and shown in URLs.
+  Both implementations.
 - **`serve --spa` falls back by navigation** (johnhenry/sitefile#194): the
   app shell answers only page navigations (`Sec-Fetch-Mode`/`Sec-Fetch-Dest`,
   else `Accept: text/html`), never subresources, so `/users/jane.doe` works
