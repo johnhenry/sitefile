@@ -361,7 +361,7 @@ export async function runServeCase(c, { impls, tmp }) {
       answers[impl] = [];
       for (const r of c.requests) answers[impl].push(await rawRequest(server.port, r));
       // The access-log line of the last request is written after its answer.
-      if (c.log) await new Promise((r) => setTimeout(r, 200));
+      if (c.log) await new Promise((r) => setTimeout(r, 600));
     } catch (e) {
       detail.push(`${impl}: ${e.message}`);
     } finally {
