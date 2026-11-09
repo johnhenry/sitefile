@@ -256,9 +256,9 @@ export async function startServers(root, dir) {
 // every request in `requests` over its own connection (`connection: close`), and
 // requires the same answer from both: interim (1xx) and final status lines, every
 // header but `date`, `connection` and `keep-alive` (sorted by name), and the body
-// bytes. A request is `{ method = "GET", target, headers = {}, expect }`; `target`
-// is sent as written (so an absolute-form target works). `expect` checks both
-// answers: `status`, `headers` (name → exact value, or null for absent), `body`
+// bytes. A request is `{ method = "GET", target, headers = {}, version = "1.1", expect }`;
+// `target` is sent as written (so an absolute-form target works). `expect` checks both
+// answers: `status`, `headers` (name → exact value, null for absent, true for present), `body`
 // (exact text) and `interim` (the list of 1xx statuses). With `"log": true` the CLIs'
 // stdout and stderr (the Serving line, warnings and access log) must match too, after
 // the port and each request's time (`1.2ms`) are replaced by fixed text; `expectLog`
@@ -267,11 +267,11 @@ export async function startServers(root, dir) {
 const IGNORED_HEADERS = new Set(['date', 'connection', 'keep-alive']);
 
 /** Send one raw HTTP/1.1 request; resolve with { interim, status, headers, body }. */
-function rawRequest(port, { method = 'GET', target, headers = {} }) {
+function rawRequest(port, { method = 'GET', target, headers = {}, version = '1.1' }) {
   return new Promise((resolve, reject) => {
     const sock = net.connect(port, '127.0.0.1');
     const chunks = [];
-    const lines = [`${method} ${target} HTTP/1.1`, `host: 127.0.0.1:${port}`, ...Object.entries(headers).map(([k, v]) => `${k}: ${v}`), 'connection: close', '', ''];
+    const lines = [`${method} ${target} HTTP/${version}`, `host: 127.0.0.1:${port}`, ...Object.entries(headers).map(([k, v]) => `${k}: ${v}`), 'connection: close', '', ''];
     sock.on('connect', () => sock.write(lines.join('\r\n')));
     sock.on('data', (d) => chunks.push(d));
     sock.on('error', reject);
@@ -380,7 +380,7 @@ export async function runServeCase(c, { impls, tmp }) {
         const got = answers[impl][i];
         const get = (n) => got.headers.find(([k]) => k === n)?.[1] ?? null;
         if (want.status !== undefined && got.status !== want.status) detail.push(`${impl} ${label}: status ${got.status}, expected ${want.status}`);
-        for (const [n, v] of Object.entries(want.headers ?? {})) if (get(n) !== v) detail.push(`${impl} ${label}: ${n} ${JSON.stringify(get(n))}, expected ${JSON.stringify(v)}`);
+        for (const [n, v] of Object.entries(want.headers ?? {})) if (v === true ? get(n) === null : get(n) !== v) detail.push(`${impl} ${label}: ${n} ${JSON.stringify(get(n))}, expected ${JSON.stringify(v)}`);
         if (want.body !== undefined && got.body.toString('utf8') !== want.body) detail.push(`${impl} ${label}: body ${JSON.stringify(got.body.toString('utf8').slice(0, 200))}, expected ${JSON.stringify(want.body)}`);
         if (want.interim !== undefined && JSON.stringify(got.interim.map((x) => x.status)) !== JSON.stringify(want.interim)) {
           detail.push(`${impl} ${label}: interim ${JSON.stringify(got.interim.map((x) => x.status))}, expected ${JSON.stringify(want.interim)}`);

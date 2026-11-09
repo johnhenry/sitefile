@@ -1,0 +1,24 @@
+{
+  "command": "serve",
+  "requests": [
+    { "target": "/v.txt", "expect": { "status": 200, "headers": { "accept-ranges": "bytes", "content-length": "10", "content-range": null } } },
+    { "target": "/v.txt", "headers": { "range": "bytes=2-4" }, "expect": { "status": 206, "headers": { "content-range": "bytes 2-4/10", "content-length": "3", "accept-ranges": "bytes" }, "body": "234" } },
+    { "target": "/v.txt", "headers": { "range": "bytes=7-" }, "expect": { "status": 206, "headers": { "content-range": "bytes 7-9/10" }, "body": "789" } },
+    { "target": "/v.txt", "headers": { "range": "bytes=-3" }, "expect": { "status": 206, "headers": { "content-range": "bytes 7-9/10" }, "body": "789" } },
+    { "target": "/v.txt", "headers": { "range": "bytes=-30" }, "expect": { "status": 206, "headers": { "content-range": "bytes 0-9/10" }, "body": "0123456789" } },
+    { "target": "/v.txt", "headers": { "range": "bytes=8-100" }, "expect": { "status": 206, "headers": { "content-range": "bytes 8-9/10" }, "body": "89" } },
+    { "target": "/v.txt", "headers": { "range": "bytes=10-" }, "expect": { "status": 416, "headers": { "content-range": "bytes */10", "content-length": "0" }, "body": "" } },
+    { "target": "/v.txt", "headers": { "range": "bytes=-0" }, "expect": { "status": 416 } },
+    { "target": "/empty.txt", "headers": { "range": "bytes=0-" }, "expect": { "status": 416, "headers": { "content-range": "bytes */0" } } },
+    { "target": "/v.txt", "headers": { "range": "bytes=0-1,4-5" }, "expect": { "status": 200, "body": "0123456789" } },
+    { "target": "/v.txt", "headers": { "range": "bytes=5-2" }, "expect": { "status": 200, "body": "0123456789" } },
+    { "target": "/v.txt", "headers": { "range": "items=0-1" }, "expect": { "status": 200 } },
+    { "target": "/v.txt", "headers": { "range": "bytes=0-0", "if-range": "\"84d89877f0d4041efb6bf91a16f0248f2fd573e6af05c19f96bedb9f882f7882\"" }, "expect": { "status": 206, "body": "0" } },
+    { "target": "/v.txt", "headers": { "range": "bytes=0-0", "if-range": "\"other\"" }, "expect": { "status": 200, "body": "0123456789" } },
+    { "target": "/v.txt", "headers": { "range": "bytes=0-0", "if-range": "W/\"84d89877f0d4041efb6bf91a16f0248f2fd573e6af05c19f96bedb9f882f7882\"" }, "expect": { "status": 200 } },
+    { "target": "/v.txt", "headers": { "range": "bytes=0-0", "if-none-match": "\"84d89877f0d4041efb6bf91a16f0248f2fd573e6af05c19f96bedb9f882f7882\"" }, "expect": { "status": 304 } },
+    { "method": "HEAD", "target": "/v.txt", "headers": { "range": "bytes=0-1" }, "expect": { "status": 200, "headers": { "content-length": "10", "accept-ranges": "bytes" }, "body": "" } },
+    { "target": "/", "headers": { "range": "bytes=0-3" }, "expect": { "status": 206, "body": "<h1>" } },
+    { "target": "/missing", "headers": { "range": "bytes=0-3" }, "expect": { "status": 404, "headers": { "content-range": null } } }
+  ]
+}

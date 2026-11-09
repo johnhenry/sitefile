@@ -20,6 +20,11 @@ export interface SiteServerOptions {
    * and never written to exports.
    */
   readonly liveReload?: LiveReload;
+  /**
+   * When the served files last changed (Unix seconds), read per request: sent as `Last-Modified` on
+   * file responses, and `If-Modified-Since` (without `If-None-Match`) gives `304`. Unset: neither.
+   */
+  readonly lastModified?: () => number | undefined;
   /** Problems a person should know about (without the `warning: ` prefix), e.g. a CSP that blocks live reload. */
   readonly warn?: (message: string) => void;
   /** `--country`: what `_redirects` `Country=` conditions match (there is no geolocation locally). */
@@ -348,6 +353,92 @@ export function originForm(target: string): string {
   return rest.startsWith('/') ? rest : '/' + rest;
 }
 
+const DAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+
+/** An IMF-fixdate (`Sun, 06 Nov 1994 08:49:37 GMT`, RFC 9110 section 5.6.7) for Unix seconds. */
+export function httpDate(secs: number): string {
+  return new Date(secs * 1000).toUTCString();
+}
+
+/** Unix seconds of an IMF-fixdate, or undefined for anything else (the obsolete formats too). */
+export function parseHttpDate(value: string): number | undefined {
+  const m = /^(Mon|Tue|Wed|Thu|Fri|Sat|Sun), ([0-9]{2}) (Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec) ([0-9]{4}) ([0-9]{2}):([0-9]{2}):([0-9]{2}) GMT$/.exec(value.trim());
+  if (!m) return undefined;
+  const [day, month, year, h, min, sec] = [Number(m[2]), MONTHS.indexOf(m[3]!), Number(m[4]), Number(m[5]), Number(m[6]), Number(m[7])];
+  if (day < 1 || h > 23 || min > 59 || sec > 59) return undefined;
+  const ms = Date.UTC(year, month, day, h, min, sec);
+  const d = new Date(ms);
+  if (d.getUTCDate() !== day || DAYS[d.getUTCDay()] !== m[1]) return undefined;
+  return ms / 1000;
+}
+
+/** One link-value as Node's `writeEarlyHints` accepts it: `<uri>` and `; param[=value]` pairs. */
+const LINK_VALUE = /^(?:<[^>\r\n]*>)(?:\s*;\s*[^;"\s]+(?:=(")?[^;"\s]*\1)?)*$/;
+
+/**
+ * The link-values of a `Link` header that become `103 Early Hints`: split at commas outside `<…>`
+ * and quotes, kept when well formed and `rel=preload` or `rel=preconnect` (ASCII case-insensitive).
+ */
+export function earlyHints(link: string): string[] {
+  const parts: string[] = [];
+  let cur = '';
+  let angle = false;
+  let quote = false;
+  for (const c of link) {
+    if (c === '<' && !quote) angle = true;
+    else if (c === '>' && !quote) angle = false;
+    else if (c === '"' && !angle) quote = !quote;
+    if (c === ',' && !angle && !quote) {
+      parts.push(cur);
+      cur = '';
+    } else cur += c;
+  }
+  parts.push(cur);
+  return parts
+    .map((p) => p.trim())
+    .filter((p) => {
+      if (!LINK_VALUE.test(p)) return false;
+      const v = p.replace(/[A-Z]/g, (c) => c.toLowerCase()).replace(/[ \t]/g, '');
+      return ['rel=preload', 'rel="preload"', 'rel=preconnect', 'rel="preconnect"'].some((t) => v.includes(t));
+    });
+}
+
+/** A `bytes=` value's number: digits only; more than 15 digits counts as larger than any file. */
+function rangeNumber(s: string): number | undefined {
+  if (!/^[0-9]+$/.test(s)) return undefined;
+  return s.length > 15 ? Number.POSITIVE_INFINITY : Number(s);
+}
+
+/**
+ * The byte range a `Range` header asks of a body of `size` bytes: `[start, end]` (inclusive),
+ * `'unsatisfiable'` (416), or undefined when the header is absent, malformed, not in bytes, or
+ * asks for several ranges (those are ignored: the whole body is sent, as RFC 9110 allows).
+ */
+export function byteRange(header: string | undefined, size: number): [number, number] | 'unsatisfiable' | undefined {
+  if (header === undefined) return undefined;
+  const v = header.trim();
+  if (v.slice(0, 6).toLowerCase() !== 'bytes=') return undefined;
+  const spec = v.slice(6).trim();
+  if (spec.includes(',')) return undefined;
+  const dash = spec.indexOf('-');
+  if (dash === -1) return undefined;
+  const first = spec.slice(0, dash).trim();
+  const last = spec.slice(dash + 1).trim();
+  if (first === '') {
+    const n = rangeNumber(last);
+    if (n === undefined) return undefined;
+    if (n === 0 || size === 0) return 'unsatisfiable';
+    return [Math.max(0, size - n), size - 1];
+  }
+  const start = rangeNumber(first);
+  if (start === undefined) return undefined;
+  const end = last === '' ? Number.POSITIVE_INFINITY : rangeNumber(last);
+  if (end === undefined || end < start) return undefined;
+  if (start >= size) return 'unsatisfiable';
+  return [start, Math.min(end, size - 1)];
+}
+
 function etagMatches(header: string | undefined, etag: string): boolean {
   if (header === undefined) return false;
   if (header.trim() === '*') return true;
@@ -411,6 +502,13 @@ export function createSiteServer(site: Tree | (() => Tree), options: SiteServerO
     let note = '';
     const finish = (status: number, headers: Record<string, string | number>, body: Uint8Array | string | undefined, quiet = false): void => {
       const buf = body === undefined ? undefined : typeof body === 'string' ? Buffer.from(body) : body;
+      // 103 Early Hints before an HTML page whose `Link` (from `_headers`) preloads or preconnects.
+      const link = headers.link;
+      const html = String(headers['content-type'] ?? '').startsWith('text/html');
+      if (status === 200 && method === 'GET' && html && typeof link === 'string' && (req.httpVersionMajor > 1 || req.httpVersionMinor >= 1)) {
+        const hints = earlyHints(link);
+        if (hints.length > 0) res.writeEarlyHints({ link: hints });
+      }
       res.writeHead(status, { ...base, ...headers });
       if (buf !== undefined && method !== 'HEAD' && status !== 304) {
         bytes = buf.byteLength;
@@ -488,8 +586,29 @@ export function createSiteServer(site: Tree | (() => Tree), options: SiteServerO
       if (status !== 200) return finish(status, { 'content-type': type, 'content-length': body.byteLength, ...custom }, body);
       // An injected page is a different representation of the file: give it its own ETag.
       const etag = `"${file.digest.replace(/^sha256:/, '')}${live ? '-live' : ''}"`;
-      if (etagMatches(req.headers['if-none-match'], etag)) return finish(304, { ...custom, etag }, undefined);
-      finish(200, { 'content-type': type, 'content-length': body.byteLength, ...custom, etag }, body);
+      const modified = options.lastModified?.();
+      const lm: Record<string, string> = modified === undefined ? {} : { 'last-modified': httpDate(modified) };
+      if (etagMatches(req.headers['if-none-match'], etag)) return finish(304, { ...custom, etag, ...lm }, undefined);
+      // If-Modified-Since only counts without If-None-Match (RFC 9110 section 13.2.2).
+      const ims = req.headers['if-none-match'] === undefined ? req.headers['if-modified-since'] : undefined;
+      const since = ims === undefined ? undefined : parseHttpDate(ims);
+      if (modified !== undefined && since !== undefined && modified <= since) return finish(304, { ...custom, etag, ...lm }, undefined);
+      // A single byte range of a GET (`If-Range` must name this ETag); anything else gets the whole file.
+      const ifRange = req.headers['if-range'] as string | undefined;
+      const range = method === 'GET' && (ifRange === undefined || ifRange.trim() === etag) ? byteRange(req.headers.range, body.byteLength) : undefined;
+      if (range === 'unsatisfiable') {
+        return finish(416, { ...custom, 'accept-ranges': 'bytes', 'content-range': `bytes */${body.byteLength}`, 'content-length': 0 }, undefined);
+      }
+      if (range !== undefined) {
+        const [start, end] = range;
+        const part = body.subarray(start, end + 1);
+        return finish(
+          206,
+          { 'content-type': type, 'content-length': part.byteLength, ...custom, etag, ...lm, 'accept-ranges': 'bytes', 'content-range': `bytes ${start}-${end}/${body.byteLength}` },
+          part,
+        );
+      }
+      finish(200, { 'content-type': type, 'content-length': body.byteLength, ...custom, etag, ...lm, 'accept-ranges': 'bytes' }, body);
     };
     /** The file for a path: exact, `<path>.html` (clean URLs), or `<dir>/index.html` with a trailing slash. */
     const resolve = (p: string, slash: boolean): string | undefined => {
