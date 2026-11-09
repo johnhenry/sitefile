@@ -343,6 +343,16 @@ pub struct Loaded {
 pub fn relative_path(from: &Path, to: &Path) -> String {
     let a: Vec<_> = from.components().collect();
     let b: Vec<_> = to.components().collect();
+    // Windows: on another drive there is no relative path; Node's
+    // `path.relative` then returns the target itself.
+    if cfg!(windows)
+        && matches!(
+            (a.first(), b.first()),
+            (Some(std::path::Component::Prefix(x)), Some(std::path::Component::Prefix(y))) if x != y
+        )
+    {
+        return to.to_string_lossy().into_owned();
+    }
     let mut i = 0;
     while i < a.len() && i < b.len() && a[i] == b[i] {
         i += 1;

@@ -3,6 +3,8 @@
 //! passes its store home explicitly; `SITEFILE_HOME` is pointed at an empty
 //! directory first, so a test that fell back to the environment would fail
 //! (and could never touch `~/.sitefile`).
+// The detached-server and TOOL cp tests are Unix-only.
+#![cfg_attr(not(unix), allow(unused_imports, dead_code))]
 
 use sitefile::error::{ErrorCode, Needs, NeedsKind};
 use sitefile::executor::{
@@ -204,6 +206,10 @@ fn from_image_and_wasm_use_the_store_home_given() {
     let wasm_home = t.0.join("wasm-home");
     let r = build(&options(&t.0.join("w"), &wasm_home)).unwrap();
     assert_eq!(r.output.len(), 1);
+    // Windows has no wasm disk cache (docs/RUST.md, "Windows").
+    if cfg!(windows) {
+        return;
+    }
     let cached: Vec<_> = fs::read_dir(wasm_home.join("cache/wasm"))
         .expect("the wasm cache is under the store home given")
         .flatten()
@@ -265,6 +271,7 @@ fn a_cancelled_build_fails_with_e_cancelled() {
     assert!(store.list().unwrap().is_empty());
 }
 
+#[cfg(unix)]
 #[test]
 fn cancelling_from_a_callback_stops_the_running_build() {
     isolate();
@@ -301,6 +308,7 @@ fn cancelling_from_a_callback_stops_the_running_build() {
 
 // ------------------------------------------------------------ 5. per-plugin cache entries
 
+#[cfg(unix)]
 #[test]
 fn cache_entries_record_their_plugin_and_can_be_pruned_per_plugin() {
     isolate();
@@ -403,6 +411,7 @@ fn get(host: &str, port: u16, path: &str) -> String {
     s
 }
 
+#[cfg(unix)]
 #[test]
 fn detached_servers_start_restart_and_stop_from_a_long_lived_process() {
     isolate();
@@ -487,6 +496,7 @@ fn detached_servers_start_restart_and_stop_from_a_long_lived_process() {
     assert!(reg.all().unwrap().is_empty());
 }
 
+#[cfg(unix)]
 #[test]
 fn detached_servers_serve_archive_files_and_reread_them_on_restart() {
     use sitefile::export::archive_writers::{write_zip, WriterOptions};

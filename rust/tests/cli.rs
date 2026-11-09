@@ -597,6 +597,7 @@ fn a_wasm_named_symlink_to_a_js_plugin_still_needs_allow_plugin() {
     );
 }
 
+#[cfg(unix)]
 #[test]
 fn tool_needs_allow_exec() {
     let work = Tmp::new();
@@ -1070,6 +1071,7 @@ fn cache_size_limit_evicts_after_build_and_cache_du_reports() {
 }
 
 /// Same as test/transform-cache.test.ts "CLI: cache prune --plugin …".
+#[cfg(unix)]
 #[test]
 fn cache_prune_plugin_deletes_only_that_plugins_results() {
     let work = Tmp::new();

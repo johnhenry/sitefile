@@ -84,6 +84,9 @@ pub fn resolve_tool(
         None => {
             for dir in std::env::split_paths(search_path.unwrap_or("")) {
                 if !dir.as_os_str().is_empty() && dir.is_absolute() {
+                    // Windows: `name.exe` first, then the name as given (#318).
+                    #[cfg(windows)]
+                    candidates.push(dir.join(format!("{name}.exe")));
                     candidates.push(dir.join(name));
                 }
             }

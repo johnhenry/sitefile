@@ -1522,9 +1522,15 @@ mod tests {
 
     #[test]
     fn store_home_resolution() {
+        #[cfg(unix)]
         assert_eq!(
             resolve_store_home_from(Some("/x/y/../z")),
             PathBuf::from("/x/z")
+        );
+        #[cfg(windows)]
+        assert_eq!(
+            resolve_store_home_from(Some(r"C:\x\y\..\z")),
+            PathBuf::from(r"C:\x\z")
         );
         assert!(resolve_store_home_from(None).ends_with(".sitefile"));
         assert_eq!(short_id("sha256:0123456789abcdef"), "0123456789ab");

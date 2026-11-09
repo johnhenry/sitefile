@@ -1063,6 +1063,17 @@ pub fn looks_like_dir(arg: &str) -> bool {
         || arg.starts_with("../")
         || arg.starts_with('/')
         || arg.ends_with('/')
+        || (cfg!(windows) && windows_path_like(arg))
+}
+
+/// Windows: `C:\…`, `C:/…`, `.\…`, `..\…`, `\…` or a trailing `\` is a path too.
+fn windows_path_like(arg: &str) -> bool {
+    let b = arg.as_bytes();
+    (b.len() >= 3 && b[0].is_ascii_alphabetic() && b[1] == b':' && matches!(b[2], b'\\' | b'/'))
+        || arg.starts_with(".\\")
+        || arg.starts_with("..\\")
+        || arg.starts_with('\\')
+        || arg.ends_with('\\')
 }
 
 /// An archive file source: labelled by its absolute path, stored by its real path.
@@ -1685,6 +1696,25 @@ mod tests {
             error: None,
             project: None,
         }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn detached_servers_are_unsupported_on_windows() {
+        let d = TmpDir::new("servers");
+        let reg = ServerRegistry::open(Some(Store::open(d.path()).unwrap())).unwrap();
+        let s = state(&reg, "abc", "web", "2026-01-01T00:00:00.000Z");
+        let e = restart_detached(&reg, &s, Duration::from_millis(10), None).unwrap_err();
+        assert_eq!(e.code, E_UNSUPPORTED);
+        assert!(
+            e.message().contains("not supported on Windows"),
+            "{}",
+            e.message()
+        );
+        let e = start_detached(&reg, &s, None).unwrap_err();
+        assert_eq!(e.code, E_UNSUPPORTED);
+        assert!(pid_alive(std::process::id() as i64));
+        assert!(!pid_alive(0));
     }
 
     #[test]

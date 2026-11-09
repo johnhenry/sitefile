@@ -86,6 +86,11 @@ permission bits, shell scripts or detached servers are `#[cfg(unix)]`). Unix
 behaviour is unchanged: `rust/src/platform.rs` re-exports the `std::os::unix`
 items on Unix and supplies a Windows stand-in for each. On Windows:
 
+- **Paths.** The default store is `%USERPROFILE%\.sitefile` (`$HOME` when
+  `USERPROFILE` is unset), as Node's `os.homedir()`. Real paths drop the
+  `\\?\` prefix that Windows' `GetFinalPathNameByHandle` adds when the path is
+  an ordinary drive path (UNC and over-long paths keep it), and `path.resolve`
+  keeps the drive.
 - **Permission bits are neither applied nor read.** Files are created without
   a mode (the store, server records and logs rely on the default ACL of the
   user's profile instead of `0600`/`0700`), exported files get no mode, and
@@ -113,9 +118,16 @@ items on Unix and supplies a Windows stand-in for each. On Windows:
 - **The wasm module disk cache is off**: it trusts the files it maps, and
   without permission bits there is no cheap "nobody else can write here"
   check, so every process compiles each wasm plugin (~55 ms).
-- **`TOOL` lookup on `PATH` takes the name as given**: `--allow-exec node`
-  finds a file named `node`, not `node.exe` (there is no `PATHEXT` search);
-  pass `--allow-exec node=C:\path\to\node.exe`.
+- **Looking things up on `PATH`** (`TOOL name`, the default `node` for
+  JavaScript plugins) tries `name.exe` in each directory, then the name as
+  given; there is no general `PATHEXT` search (a `.cmd` or `.bat` tool needs
+  `--allow-exec name=C:\path\to\tool.cmd`).
+- **Paths on the command line**: `serve C:\site`, `.\site` and `site\` are
+  paths, like `./site` and `/site`. A Sitefile on another drive than the
+  working directory is shown by its absolute path in messages (Node's
+  `path.relative` does the same).
+- **The binary asks for an 8 MiB main-thread stack** (`/STACK`, set in
+  `build.rs` for MSVC), the size Linux and macOS give by default.
 - A symlink loop is recognised by Windows' `ERROR_CANT_RESOLVE_FILENAME`
   (`E_UNSUPPORTED_FILE`, as `ELOOP` on Unix). Creating symlinks needs
   Developer Mode or an elevated prompt on Windows, so the symlink tests do not

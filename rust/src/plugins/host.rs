@@ -465,10 +465,20 @@ fn file_url(file: &Path) -> String {
     s
 }
 
+#[cfg(unix)]
 fn find_on_path(name: &str) -> Option<PathBuf> {
     let path = std::env::var_os("PATH")?;
     std::env::split_paths(&path)
         .map(|d| d.join(name))
+        .find(|p| p.is_file())
+}
+
+/// Windows: `name.exe` in each PATH directory, then the name as given.
+#[cfg(windows)]
+fn find_on_path(name: &str) -> Option<PathBuf> {
+    let path = std::env::var_os("PATH")?;
+    std::env::split_paths(&path)
+        .flat_map(|d| [d.join(format!("{name}.exe")), d.join(name)])
         .find(|p| p.is_file())
 }
 
