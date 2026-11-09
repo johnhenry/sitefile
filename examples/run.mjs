@@ -81,6 +81,12 @@ const examples = {
     assert.throws(() => build('motion'), 'a JavaScript plugin does not run without --allow-plugin');
     assert.ok(files(build('motion', ['--allow-plugin', 'motion'])).some((p) => p.endsWith('.svg')), 'the plugin writes SVG');
   },
+  canonical() {
+    const site = build('canonical');
+    assert.match(read(site, 'index.html'), /<link rel="canonical" href="https:\/\/example.com\/"><\/head>/, 'CANONICAL links the home page');
+    assert.match(read(site, 'about.html'), /href="https:\/\/example.com\/about"/, 'PRETTY drops .html');
+    assert.equal(read(site, 'old.html').match(/rel="canonical"/g).length, 1, 'a page with its own canonical link keeps it');
+  },
   fileable() {
     // The plugin reads only its own folder, so fileable is vendored into it first (gitignored).
     execFileSync(process.execPath, [path.join(here, 'fileable', 'vendor.mjs')], { stdio: 'ignore' });

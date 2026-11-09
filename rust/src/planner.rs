@@ -198,6 +198,14 @@ pub enum Operation {
         overwrite: bool,
         span: SourceSpan,
     },
+    /// Add a canonical link to every page below `root` (the EXPORT path) that has none; `base` is checked,
+    /// without trailing slashes.
+    Canonical {
+        base: String,
+        pretty: bool,
+        root: String,
+        span: SourceSpan,
+    },
     /// Write a `.gz` sidecar for each file matching `patterns` (checked, NFC) that is compressible, has at
     /// least `min` bytes and gets smaller.
     Precompress {
@@ -280,6 +288,7 @@ impl Operation {
             | Operation::Render { span, .. }
             | Operation::Sitemap { span, .. }
             | Operation::Fingerprint { span, .. }
+            | Operation::Canonical { span, .. }
             | Operation::Precompress { span, .. }
             | Operation::CheckLinks { span, .. }
             | Operation::Feed { span, .. } => span,
@@ -292,6 +301,7 @@ impl Operation {
             Operation::Render { .. } => "RENDER",
             Operation::Sitemap { .. } => "SITEMAP",
             Operation::Fingerprint { .. } => "FINGERPRINT",
+            Operation::Canonical { .. } => "CANONICAL",
             Operation::Precompress { .. } => "PRECOMPRESS",
             Operation::CheckLinks { .. } => "CHECKLINKS",
             Operation::Feed { .. } => "FEED",
@@ -892,6 +902,20 @@ pub fn plan_with(
                 });
                 fingerprints.push((span.clone(), !*no_cache_headers));
             }
+            Instruction::Canonical { span, base, pretty } => {
+                let base = check_base_url(
+                    &evaluate_operand(base, &vars)?,
+                    "CANONICAL BASE",
+                    &base.span,
+                )?;
+                // `root` is the EXPORT path, filled in below.
+                operations(&mut stages, span)?.push(Operation::Canonical {
+                    base,
+                    pretty: *pretty,
+                    root: "/".into(),
+                    span: span.clone(),
+                });
+            }
             Instruction::CheckLinks {
                 span,
                 warn,
@@ -1033,7 +1057,9 @@ pub fn plan_with(
     for st in &mut stages {
         for op in &mut st.operations {
             match op {
-                Operation::Fingerprint { root: r, .. } => *r = root.clone(),
+                Operation::Fingerprint { root: r, .. } | Operation::Canonical { root: r, .. } => {
+                    *r = root.clone()
+                }
                 Operation::CheckLinks {
                     root: r,
                     redirects: rs,
@@ -1580,6 +1606,17 @@ impl Operation {
                 }
                 m.insert("root".into(), json!(root));
                 m.insert("overwrite".into(), json!(overwrite));
+                m.insert("span".into(), span_json(span));
+            }
+            Operation::Canonical {
+                base,
+                pretty,
+                root,
+                span,
+            } => {
+                m.insert("base".into(), json!(base));
+                m.insert("pretty".into(), json!(pretty));
+                m.insert("root".into(), json!(root));
                 m.insert("span".into(), span_json(span));
             }
             Operation::Precompress {

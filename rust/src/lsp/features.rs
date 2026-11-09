@@ -415,6 +415,17 @@ pub fn completion(lines: &Lines, ix: &Index, line: u32, col: u32) -> Completion 
                 kw_items(FINGERPRINT_CLAUSES[from..].iter().copied(), CIK_KEYWORD)
             }
         }
+        "CANONICAL" => {
+            // BASE <url>, then PRETTY.
+            let ops: Vec<String> = prior.iter().skip(1).map(|w| w.upper()).collect();
+            if ops.is_empty() {
+                kw_items(["BASE"], CIK_KEYWORD)
+            } else if ops.len() == 2 && ops[0] == "BASE" {
+                kw_items(["PRETTY"], CIK_KEYWORD)
+            } else {
+                Vec::new()
+            }
+        }
         "PRECOMPRESS" => {
             // [gzip] (before the patterns), then patterns, then MIN <bytes> once.
             let ops: Vec<String> = prior
@@ -1289,6 +1300,11 @@ mod tests {
         assert!(labels("FINGERPRINT /a/ MANIFEST ").is_empty());
         assert_eq!(labels("FINGERPRINT /a/ MANIFEST /m.json "), ["INTEGRITY"]);
         assert!(labels("FINGERPRINT /a/ INTEGRITY ").is_empty());
+        // CANONICAL: BASE <url>, then PRETTY
+        assert_eq!(labels("CANONICAL "), ["BASE"]);
+        assert!(labels("CANONICAL BASE ").is_empty());
+        assert_eq!(labels("CANONICAL BASE https://e.x "), ["PRETTY"]);
+        assert!(labels("CANONICAL BASE https://e.x PRETTY ").is_empty());
         // PRECOMPRESS: gzip first, then patterns, then MIN once
         assert_eq!(labels("PRECOMPRESS "), ["gzip"]);
         assert_eq!(labels("PRECOMPRESS --"), ["--overwrite"]);

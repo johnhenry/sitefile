@@ -111,6 +111,7 @@ export default grammar({
         $.redirect_instruction,
         $.header_instruction,
         $.fingerprint_instruction,
+        $.canonical_instruction,
         $.precompress_instruction,
         $.checklinks_instruction,
         $.export_instruction,
@@ -319,6 +320,10 @@ export default grammar({
         optional(seq(kw($, 'MANIFEST'), field('manifest', $._operand))),
         optional(kw($, 'INTEGRITY')),
       ),
+
+    // CANONICAL BASE <url> [PRETTY]
+    canonical_instruction: ($) =>
+      seq(kw($, 'CANONICAL'), kw($, 'BASE'), field('base', $._operand), optional(kw($, 'PRETTY'))),
 
     // PRECOMPRESS [--overwrite] [gzip] <pattern>… [MIN <bytes>] (a format word reads as a pattern here)
     precompress_instruction: ($) =>

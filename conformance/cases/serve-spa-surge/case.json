@@ -1,0 +1,8 @@
+{
+  "command": "serve",
+  "args": ["--spa"],
+  "requests": [
+    { "target": "/route", "headers": { "sec-fetch-mode": "navigate" }, "expect": { "status": 200, "body": "surge\n" } },
+    { "target": "/admin/deep/route", "headers": { "sec-fetch-mode": "navigate" }, "expect": { "status": 200, "body": "admin\n" } }
+  ]
+}

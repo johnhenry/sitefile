@@ -18,7 +18,7 @@ const NOT_YET: [&str; 5] = ["REMOVE", "GENERATE", "ASSERT", "META", "EXEC"];
 // (`crate::lsp`) completes and documents them from the same lists.
 
 /// Every instruction keyword `parse_instruction` accepts.
-pub const INSTRUCTIONS: [&str; 18] = [
+pub const INSTRUCTIONS: [&str; 19] = [
     "FROM",
     "STAGE",
     "ARG",
@@ -34,6 +34,7 @@ pub const INSTRUCTIONS: [&str; 18] = [
     "REDIRECT",
     "HEADER",
     "FINGERPRINT",
+    "CANONICAL",
     "PRECOMPRESS",
     "CHECKLINKS",
     "EXPORT",
@@ -66,6 +67,8 @@ pub const SITEMAP_CLAUSES: [&str; 2] = ["BASE", "TO"];
 pub const FEED_CLAUSES: [&str; 4] = ["BASE", "LINK", "TO", "TITLE"];
 /// Clauses after `FINGERPRINT <pattern>…`.
 pub const FINGERPRINT_CLAUSES: [&str; 2] = ["MANIFEST", "INTEGRITY"];
+/// Clauses of CANONICAL, in this order (`BASE` is required).
+pub const CANONICAL_CLAUSES: [&str; 2] = ["BASE", "PRETTY"];
 /// Sidecar formats PRECOMPRESS knows; only gzip has an encoder (`crate::deflate`, shared with the TypeScript).
 pub const PRECOMPRESS_FORMATS: [&str; 3] = ["gzip", "br", "zstd"];
 /// Clauses after `PRECOMPRESS <pattern>…`.
@@ -168,6 +171,7 @@ fn parse_instruction(c: &mut Cursor) -> Result<Instruction> {
         "REDIRECT" => parse_redirect(c, span),
         "HEADER" => parse_header(c, span),
         "FINGERPRINT" => parse_fingerprint(c, span),
+        "CANONICAL" => parse_canonical(c, span),
         "PRECOMPRESS" => parse_precompress(c, span),
         "CHECKLINKS" => parse_check_links(c, span),
         "RUN" => Err(SitefileError::at(
@@ -1136,6 +1140,15 @@ fn parse_fingerprint(c: &mut Cursor, span: SourceSpan) -> Result<Instruction> {
         no_cache_headers: flags.has("no-cache-headers"),
         overwrite: flags.has("overwrite"),
     })
+}
+
+/// `CANONICAL BASE <url> [PRETTY]`
+fn parse_canonical(c: &mut Cursor, span: SourceSpan) -> Result<Instruction> {
+    c.expect_keyword("BASE")?;
+    let base = c.operand("base URL")?;
+    let pretty = c.keyword("PRETTY");
+    c.expect_end()?;
+    Ok(Instruction::Canonical { span, base, pretty })
 }
 
 /// `PRECOMPRESS [--overwrite] [gzip]… <pattern>… [MIN <bytes>]`
