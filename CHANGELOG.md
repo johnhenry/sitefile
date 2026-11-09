@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+- **`serve --reload` without `--watch`** (johnhenry/sitefile#317): servers of images, archive files and
+  directory snapshots (foreground or `-d`) inject the live-reload script and serve `/__sitefile/reload`, so pages
+  left open reload after a restart (`server restart`, a restart on a new image), using the per-process instance ID
+  from #305. With `-d` it is kept in the server record as `"reload": "morph"|"full"` (`servers --json`), and
+  `-d --watch` now accepts `--reload` too. `--reload` takes its mode only when the next argument is `full` or
+  `morph`, so a bare `--reload` works before the operand; `--reload <other>` is now a bare `--reload` followed by
+  an operand (write `--reload=<mode>`). Detached live-reload servers now log the CSP warning. Both
+  implementations, conformance cases `reload/detached-image` and `reload/foreground`.
+
 ## 0.0.5 (2026-11-09)
 
 - **`PRECOMPRESS br`** (johnhenry/sitefile#203): Brotli sidecars `<file>.br`, alone or with gzip

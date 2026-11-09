@@ -201,6 +201,10 @@ pub struct ServerState {
     /// `--sync` with `-d --watch`: `nav` or `scroll` (absent: off).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sync: Option<String>,
+    /// `--reload` (with or without `--watch`): `full` or `morph`; the live-reload script and
+    /// stream, so open pages reload after a restart (absent: only with `watch`, morph).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reload: Option<String>,
     /// The requested bind address (port 0 = pick a free port).
     pub bind: Bind,
     pub host: String,
@@ -1137,6 +1141,9 @@ pub struct DetachedServe {
     pub poll_ms: Option<u64>,
     /// `--sync` with `-d --watch`.
     pub sync: Option<crate::server::SyncMode>,
+    /// `--reload`: Some(true) morph, Some(false) full; the live-reload script with or without
+    /// `watch`.
+    pub reload: Option<bool>,
     /// The servers file it belongs to (`sitefile up`), by real path.
     pub project: Option<String>,
 }
@@ -1183,6 +1190,7 @@ impl DetachedServe {
             watch: false,
             poll_ms: None,
             sync: None,
+            reload: None,
             project: None,
         })
     }
@@ -1271,6 +1279,9 @@ pub fn serve_detached_with(
             .sync
             .filter(|_| serve.watch)
             .map(|m| m.as_str().to_string()),
+        reload: serve
+            .reload
+            .map(|morph| if morph { "morph" } else { "full" }.to_string()),
         host: serve.bind.host.clone(),
         port: serve.bind.port,
         bind: serve.bind.clone(),
@@ -1510,6 +1521,7 @@ mod tests {
             watch: false,
             poll_ms: None,
             sync: None,
+            reload: None,
             bind: Bind {
                 host: "127.0.0.1".into(),
                 port: 0,

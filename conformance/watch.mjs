@@ -25,6 +25,9 @@
 //   { get: '/path', mask: true }                record the body with ISO times as <ts>
 // A case with `detach: true` runs `serve -d --watch` (named, on a free port, so a restart keeps the
 // URL) and reads the server's log instead of the output; it is removed at the end.
+// `watch: false` leaves out --watch (`serve [-d] --reload ...`: pages reload after a restart);
+// `prebuild: [...]` runs `build <context> ...` first, and `source` is the operand to serve
+// instead of the context (an image built by prebuild with -t, say).
 // Every stream starts with `id: <instance>` (random): it is not recorded.
 // Each implementation gets its own copy of the context and its own SITEFILE_HOME.
 
@@ -256,6 +259,50 @@ export const WATCH_CASES = [
     ],
   },
   {
+    // johnhenry/sitefile#317: --reload without --watch, on an image: the script and the stream, and
+    // reload after a restart. --reload full is kept in the record.
+    name: 'reload/detached-image',
+    detach: true,
+    watch: false,
+    prebuild: ['-t', 'conf-reload:1'],
+    source: 'conf-reload:1',
+    args: ['--reload', 'full'],
+    files: { Sitefile: SITEFILE, 'public/index.html': '<h1>img</h1>', 'public/frag.html': '<li>f</li>' },
+    steps: [
+      { get: '/', headers: NAV },
+      { get: '/frag.html', headers: FETCH },
+      { get: '/__sitefile/reload.js' },
+      { open: true },
+      { open: true, lastEventId: 'previous' },
+      { next: true, ms: 1000 },
+      { restart: true },
+      { get: '/__sitefile/reload.js' },
+      { open: true, lastEventId: 'previous' },
+      { next: true },
+      { get: '/', headers: NAV },
+    ],
+  },
+  {
+    // A bare --reload (before the operand) in the foreground, on a plain directory: morph, a page from
+    // an earlier instance reloads, and the CSP warning.
+    name: 'reload/foreground',
+    watch: false,
+    source: 'public',
+    args: ['--reload'],
+    files: {
+      'public/index.html': '<h1>fg</h1>',
+      'public/strict/index.html': '<h1>strict</h1>',
+      'public/_headers': "/strict/*\n  Content-Security-Policy: script-src 'nonce-abc'\n",
+    },
+    steps: [
+      { get: '/', headers: NAV },
+      { get: '/strict/', headers: NAV },
+      { get: '/__sitefile/reload.js' },
+      { open: true, lastEventId: '0123456789abcdef' },
+      { next: true },
+    ],
+  },
+  {
     name: 'watch/reload-full',
     files: { Sitefile: SITEFILE, 'public/index.html': '<h1>i</h1>' },
     args: ['--reload', 'full'],
@@ -351,10 +398,13 @@ async function runOne(c, cmd, work, home) {
     await fs.writeFile(path.join(work, rel), content);
   }
   const env = { ...process.env, SITEFILE_HOME: home };
+  const watch = c.watch !== false;
+  if (c.prebuild) await new Promise((r) => spawn(cmd[0], [...cmd.slice(1), 'build', work, '--no-lockfile', ...c.prebuild], { env, stdio: 'ignore' }).once('exit', r));
+  const operand = c.source === undefined ? work : c.prebuild ? c.source : path.join(work, c.source);
   const fixedPort = c.detach ? await freePort() : 0;
   const child = c.detach
-    ? spawn(cmd[0], [...cmd.slice(1), 'serve', '-d', '--watch', '--name', 'conf-watch', '-p', `127.0.0.1:${fixedPort}`, ...(c.args ?? []), work], { env, stdio: ['ignore', 'pipe', 'pipe'] })
-    : spawn(cmd[0], [...cmd.slice(1), 'serve', '--watch', '--no-lockfile', ...(c.args ?? []), work], { env, stdio: ['ignore', 'pipe', 'pipe'] });
+    ? spawn(cmd[0], [...cmd.slice(1), 'serve', '-d', ...(watch ? ['--watch'] : []), '--name', 'conf-watch', '-p', `127.0.0.1:${fixedPort}`, ...(c.args ?? []), operand], { env, stdio: ['ignore', 'pipe', 'pipe'] })
+    : spawn(cmd[0], [...cmd.slice(1), 'serve', ...(watch ? ['--watch', '--no-lockfile'] : []), ...(c.args ?? []), operand], { env, stdio: ['ignore', 'pipe', 'pipe'] });
   let stdout = '';
   let stderr = '';
   child.stdout.on('data', (d) => (stdout += d));
@@ -395,7 +445,7 @@ async function runOne(c, cmd, work, home) {
       if (child.exitCode !== 0 || id === undefined) return { transcript: [`did not start: ${stderr.trim()}`], stderr };
       logFile = path.join(home, 'servers', `${id}.log`);
     } else {
-      while (!/Watching /.test(stdout)) {
+      while (!(watch ? /Watching / : /^Serving /m).test(stdout)) {
         if (Date.now() > deadline || child.exitCode !== null) return { transcript: [`did not start: ${stderr.trim()}`], stderr };
         await sleep(20);
       }

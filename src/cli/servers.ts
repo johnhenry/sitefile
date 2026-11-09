@@ -248,7 +248,7 @@ const run: Command = {
     '--console         also forward console.log/info from pages to the log, not only errors and warnings (--watch)',
     '--no-overlay      no Rebuilding badge or build-error overlay in pages (--watch)',
     '--navigate-to-changed        after a rebuild that changed one page, open pages go to it (--watch)',
-    '--reload <full|morph>        morph (default): update a page in place when only HTML changed; full: always reload (--watch)',
+    '--reload [full|morph]        morph (default): update a page in place when only HTML changed; full: always reload (--watch); without --watch (also -d): pages left open reload after a restart',
     '--sync[=scroll]   open pages report where they are and follow each other\'s navigation (=scroll: and scrolling) (--watch, -d --watch)',
   ],
   options: {
@@ -327,6 +327,8 @@ const run: Command = {
     else requireArgs(pos, 1, 1, 'an image reference, ./directory or archive file');
     const pollMs = watchDetached ? pollOption(!!v.poll, str(v['poll-interval'])) : undefined;
     const sync = watchDetached ? syncOf(v) : undefined;
+    // `--reload` without --watch: the live-reload script and stream, so pages reload after a restart.
+    const reload = reloadOf(v);
     const bind = parsePublish(str(v.publish));
     const allowedHosts = allowedHostsOf(v);
     const isolate = isolateOf(v);
@@ -360,7 +362,8 @@ const run: Command = {
       const modified = await servedLastModified(store, source);
       let current = tree;
       const proxy = proxyOption(v);
-      const server = createSiteServer(() => current, { allowedHosts, proxy, cors: !!v.cors, ...(isolate ? { isolate } : {}), ...(cache ? { cache } : {}), ...logging, ...(auth.server ? { auth: auth.server } : {}), ...perIp, ...sharing.server, ...(tls.server ? { tls: tls.server } : {}), compress: !!v.compress, ...(throttle ? { throttle: throttle.limits } : {}), ...(mime ? { mime } : {}), lastModified: () => modified, log: logWriter(logging), ...(content ? { content } : {}), ...(country !== undefined ? { country } : {}), ...spa, ...(base !== undefined ? { base } : {}), ...(rewriteBase !== undefined ? { rewriteBase } : {}), ...(profile ? { profile } : {}), devNotFound: !isWildcard(bind.host) });
+      const live = reload !== undefined ? new LiveReload({ reload }) : undefined;
+      const server = createSiteServer(() => current, { ...(live ? { liveReload: live, warn } : {}), allowedHosts, proxy, cors: !!v.cors, ...(isolate ? { isolate } : {}), ...(cache ? { cache } : {}), ...logging, ...(auth.server ? { auth: auth.server } : {}), ...perIp, ...sharing.server, ...(tls.server ? { tls: tls.server } : {}), compress: !!v.compress, ...(throttle ? { throttle: throttle.limits } : {}), ...(mime ? { mime } : {}), lastModified: () => modified, log: logWriter(logging), ...(content ? { content } : {}), ...(country !== undefined ? { country } : {}), ...spa, ...(base !== undefined ? { base } : {}), ...(rewriteBase !== undefined ? { rewriteBase } : {}), ...(profile ? { profile } : {}), devNotFound: !isWildcard(bind.host) });
       const addr = await listen(server, bind.host, bind.port);
       if (logging.logFormat === 'json') process.stdout.write(`${startedLogLine(new Date().toISOString(), label, tree.size, siteUrl(addr.host, addr.port, base, tls.scheme))}\n`);
       else process.stdout.write(`Serving ${label} (${tree.size} files) at ${siteUrl(addr.host, addr.port, base, tls.scheme)}  (Ctrl-C to stop)\n${networkLines(addr.host, addr.port, base, tls.scheme)}${throttleLine(throttle?.spec)}`);
@@ -388,7 +391,7 @@ const run: Command = {
     if (v.open !== undefined || v.qr) usage('--open and --qr are for a server in the foreground, not -d');
     const reg = await ServerRegistry.open(store);
     for (const f of PROXY_FLAGS) if (v[f] !== undefined) usage(`--${f} is for a server in the foreground (or --watch), not -d`);
-    const up = await serveDetached(reg, { label, source, name, bind, keepOsMetadata, allowedHosts, cors: !!v.cors, ...(isolate ? { isolate } : {}), ...(cache ? { cache } : {}), ...logging, ...auth.record, ...perIp, ...sharing.record, ...tls.record, ...(v.compress ? { compress: true } : {}), ...(throttle ? { throttle: throttle.spec } : {}), ...(mime ? { mime: Object.fromEntries(mime) } : {}), country, strictSiteFiles, ...spa, base, rewriteBase, ...profiles, ...(watchDetached ? { watch: true, pollMs, sync } : {}) }, warn);
+    const up = await serveDetached(reg, { label, source, name, bind, keepOsMetadata, allowedHosts, cors: !!v.cors, ...(isolate ? { isolate } : {}), ...(cache ? { cache } : {}), ...logging, ...auth.record, ...perIp, ...sharing.record, ...tls.record, ...(v.compress ? { compress: true } : {}), ...(throttle ? { throttle: throttle.spec } : {}), ...(mime ? { mime: Object.fromEntries(mime) } : {}), country, strictSiteFiles, ...spa, base, rewriteBase, ...profiles, ...(watchDetached ? { watch: true, pollMs, sync } : {}), ...(reload !== undefined ? { reload } : {}) }, warn);
     process.stdout.write(`Started ${up.name} (${up.id}) serving ${label} at ${siteUrl(up.host, up.port, up.base, up.tlsCert ? 'https' : 'http')}\n${networkLines(up.host, up.port, up.base, up.tlsCert ? 'https' : 'http')}${throttleLine(up.throttle)}`);
     return 0;
   },
@@ -461,6 +464,8 @@ export interface DetachedServe {
   readonly pollMs?: number | undefined;
   /** `--sync` with `-d --watch`. */
   readonly sync?: SyncMode | undefined;
+  /** `--reload`: inject the live-reload script (with or without --watch) in this mode. */
+  readonly reload?: 'full' | 'morph' | undefined;
   /** The servers file it belongs to (`sitefile up`). */
   readonly project?: string | undefined;
 }
@@ -514,6 +519,7 @@ export async function serveDetached(reg: ServerRegistry, d: DetachedServe, warn?
     ...(d.watch ? { watch: true } : {}),
     ...(d.watch && d.pollMs !== undefined ? { pollMs: d.pollMs } : {}),
     ...(d.watch && d.sync !== undefined ? { sync: d.sync } : {}),
+    ...(d.reload !== undefined ? { reload: d.reload } : {}),
     bind: d.bind,
     host: d.bind.host,
     port: d.bind.port,
@@ -597,7 +603,19 @@ async function watchedDirectory(arg: string): Promise<{ label: string; source: S
 }
 
 /** serve flags that only mean something with --watch. */
-const WATCH_ONLY = ['file', 'target', 'build-arg', 'build-arg-file', 'no-cache', 'no-lockfile', 'keep-service-workers', 'poll', 'poll-interval', 'no-css-inject', 'console', 'no-overlay', 'navigate-to-changed', 'reload', 'no-rewrite-base', 'sync'] as const;
+const WATCH_ONLY = ['file', 'target', 'build-arg', 'build-arg-file', 'no-cache', 'no-lockfile', 'keep-service-workers', 'poll', 'poll-interval', 'no-css-inject', 'console', 'no-overlay', 'navigate-to-changed', 'no-rewrite-base', 'sync'] as const;
+
+/**
+ * `--reload [full|morph]` (a bare `--reload` arrives as `--reload=`): its mode, `morph` by default;
+ * undefined without it. Without --watch it turns on the live-reload script (pages reload after a restart).
+ */
+function reloadOf(v: ParsedValues): 'full' | 'morph' | undefined {
+  const s = str(v.reload);
+  if (s === undefined) return undefined;
+  if (s === '' || s === 'morph') return 'morph';
+  if (s === 'full') return 'full';
+  return usage(`--reload expects full or morph, got '${s}'`);
+}
 
 /** `--sync` (a bare `--sync` arrives as `--sync=`): `nav`, or `scroll` for `--sync=scroll`; undefined without it. */
 function syncOf(v: ParsedValues): SyncMode | undefined {
@@ -854,7 +872,7 @@ async function serveWatch(v: ParsedValues, pos: string[]): Promise<number> {
   const plain = !buildFlags && !(await isFile(path.join(context, 'Sitefile')));
   const cssInject = !v['no-css-inject'];
   const navigate = !!v['navigate-to-changed'];
-  const reloadMode = str(v.reload) ?? 'morph';
+  const reloadMode = reloadOf(v) ?? 'morph';
   const sync = syncOf(v);
   const spa = spaOptions(v);
   const baseFlag = sharing.randomBase ?? parseBase(str(v.base));
@@ -879,7 +897,6 @@ async function serveWatch(v: ParsedValues, pos: string[]): Promise<number> {
     lastSiteWarnings = text;
     checkSiteFiles(tree, strictSiteFiles, () => undefined);
   };
-  if (reloadMode !== 'full' && reloadMode !== 'morph') usage(`--reload expects full or morph, got '${reloadMode}'`);
   if (isWildcard(bind.host)) process.stderr.write(`warning: binding ${bind.host}: the site will be reachable from other machines\n`);
 
   let current: Tree = Tree.empty;

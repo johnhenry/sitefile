@@ -27,6 +27,13 @@ test('keys, URLs and --open', () => {
   assert.equal(withNet, `  Local:   https://127.0.0.1:8/\n  Network: https://192.0.2.7:8/\n  Network: https://[2001:db8::7]:8/\n${qrTerminal(encodeQr('https://192.0.2.7:8/')!)}`);
   assert.deepEqual(optionalOpen(['./site', '--open', '-p', '8080']), ['./site', '--open=', '-p', '8080']);
   assert.deepEqual(optionalOpen(['--open=/docs/', '--', '--open']), ['--open=/docs/', '--', '--open']);
+  // --reload takes full or morph as the next argument; anything else (or nothing) is a bare --reload (#317).
+  assert.deepEqual(optionalOpen(['--reload', 'full', 'img']), ['--reload', 'full', 'img']);
+  assert.deepEqual(optionalOpen(['--reload', 'morph']), ['--reload', 'morph']);
+  assert.deepEqual(optionalOpen(['--reload', 'img:1']), ['--reload=', 'img:1']);
+  assert.deepEqual(optionalOpen(['-d', '--reload']), ['-d', '--reload=']);
+  assert.deepEqual(optionalOpen(['--reload=full', '--reload', '--', 'full']), ['--reload=full', '--reload=', '--', 'full']);
+  assert.deepEqual(optionalOpen(['--', '--reload']), ['--', '--reload']);
 });
 
 test('u lists the start line\'s network URLs, https:// for a TLS server (johnhenry/sitefile#300)', () => {

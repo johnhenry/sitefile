@@ -99,6 +99,8 @@ export interface ServerState {
   readonly pollMs?: number;
   /** `--sync` with `-d --watch`: pages report where they are and follow each other (`scroll`: their scrolling too) (absent: off). */
   readonly sync?: 'nav' | 'scroll';
+  /** `--reload` (with or without `--watch`): live-reload script and stream in this mode, so open pages reload after a restart (absent: only with `watch`, in morph mode). */
+  readonly reload?: 'full' | 'morph';
   /** The requested bind address (port 0 = pick a free port). */
   readonly bind: { readonly host: string; readonly port: number };
   readonly host: string;
