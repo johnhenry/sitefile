@@ -1,7 +1,9 @@
 //! PRECOMPRESS (port of `src/precompress.ts`; docs/LANGUAGE.md, "Precompressed sidecars"): write
-//! `<file>.gz` next to compressible files. Both implementations use the shared deflate encoder
-//! (`crate::deflate`), so the sidecars are byte-identical.
+//! `<file>.gz` and/or `<file>.br` next to compressible files. gzip uses the shared deflate encoder
+//! (`crate::deflate`); br uses the vendored C Brotli encoder at node:zlib's version and settings
+//! (`crate::brotli`), so the sidecars are byte-identical.
 
+use crate::brotli::brotli_compress;
 use crate::deflate::gzip;
 use crate::error::{Result, SourceSpan};
 use crate::fingerprint::glob_matches;
@@ -49,15 +51,24 @@ pub fn compressible(path: &str) -> bool {
     }
 }
 
+/// The file a sidecar compresses: `path` without its `.gz` or `.br`.
+pub fn sidecar_source(path: &str) -> &str {
+    path.strip_suffix(".gz")
+        .or_else(|| path.strip_suffix(".br"))
+        .unwrap_or(path)
+}
+
 pub struct PrecompressOp<'a> {
+    /// `gzip` and/or `br`, in the order given.
+    pub formats: &'a [String],
     pub patterns: &'a [String],
     pub min: u64,
     pub overwrite: bool,
     pub span: &'a SourceSpan,
 }
 
-/// The tree with a `<path>.gz` sidecar for every matching, compressible file of at least `min` bytes
-/// whose gzip is smaller (see `precompress` in the TypeScript module). Warns when nothing matches.
+/// The tree with a `<path>.gz` / `<path>.br` sidecar per format for every matching, compressible file
+/// of at least `min` bytes whose compressed form is smaller (see `precompress` in the TypeScript module). Warns when nothing matches.
 pub fn precompress(
     tree: Tree,
     op: &PrecompressOp,
@@ -79,9 +90,14 @@ pub fn precompress(
         if !compressible(p) || (node.bytes.len() as u64) < op.min {
             continue;
         }
-        let gz = gzip(&node.bytes);
-        if gz.len() < node.bytes.len() {
-            files.push((format!("{p}.gz"), make_file(gz, origin, node.mode)));
+        for format in op.formats {
+            let (ext, out) = match format.as_str() {
+                "br" => ("br", brotli_compress(&node.bytes)),
+                _ => ("gz", gzip(&node.bytes)),
+            };
+            if out.len() < node.bytes.len() {
+                files.push((format!("{p}.{ext}"), make_file(out, origin, node.mode)));
+            }
         }
     }
     if files.is_empty() {
@@ -93,4 +109,48 @@ pub fn precompress(
         ConflictPolicy::Error
     };
     tree.with_files(files, policy, Some(op.span))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn br_and_gzip_sidecars_in_the_order_given_each_only_when_smaller() {
+        let big = "body { color: red; }\n".repeat(100);
+        let tree = Tree::from_files([
+            (
+                "/a.css".to_string(),
+                make_file(big.as_bytes().to_vec(), "t", 0o644),
+            ),
+            (
+                "/r.txt".to_string(),
+                make_file(b"x7Kq".to_vec(), "t", 0o644),
+            ),
+        ])
+        .unwrap();
+        let span = SourceSpan {
+            file: "Sitefile".into(),
+            line: 2,
+            column: 1,
+        };
+        let formats = ["br".to_string(), "gzip".to_string()];
+        let patterns = ["/**".to_string()];
+        let op = PrecompressOp {
+            formats: &formats,
+            patterns: &patterns,
+            min: 4,
+            overwrite: false,
+            span: &span,
+        };
+        let out = precompress(tree, &op, "Sitefile:2 PRECOMPRESS", &|_| {}).unwrap();
+        let paths: Vec<&String> = out.entries().map(|(p, _)| p).collect();
+        assert_eq!(paths, ["/a.css", "/a.css.br", "/a.css.gz", "/r.txt"]);
+        assert_eq!(
+            &out.get("/a.css.br").unwrap().bytes[..],
+            &brotli_compress(big.as_bytes())[..]
+        );
+        assert_eq!(sidecar_source("/a.css.br"), "/a.css");
+        assert_eq!(sidecar_source("/a.css.gz"), "/a.css");
+    }
 }

@@ -1,9 +1,13 @@
-// PRECOMPRESS (docs/LANGUAGE.md, "Precompressed sidecars"): write `<file>.gz` next to compressible files,
-// for hosts and servers that serve them in place of the file (nginx gzip_static, Caddy precompressed, sirv).
-// Ported as rust/src/precompress.rs: both use the shared deflate encoder (src/deflate.ts), so the sidecars
-// are byte-identical.
+// PRECOMPRESS (docs/LANGUAGE.md, "Precompressed sidecars"): write `<file>.gz` and/or `<file>.br` next to
+// compressible files, for hosts and servers that serve them in place of the file (nginx gzip_static,
+// Caddy precompressed, sirv). Ported as rust/src/precompress.rs. gzip uses the shared deflate encoder
+// (src/deflate.ts); br uses node:zlib's Brotli, and the Rust port compiles the same C encoder at the
+// same version (rust/vendor/brotli, rust/src/brotli.rs) with the same settings, so the sidecars are
+// byte-identical.
+import { brotliCompressSync, constants } from 'node:zlib';
 import type { SourceSpan } from './errors.js';
 import { gzip } from './deflate.js';
+import type { PrecompressFormat } from './language/ast.js';
 import { globMatches } from './fingerprint.js';
 import { makeFile, type FileNode, type Tree } from './tree.js';
 
@@ -20,7 +24,34 @@ export function compressible(path: string): boolean {
   return dot > 0 && COMPRESSIBLE.has(base.slice(dot + 1).toLowerCase());
 }
 
+/** The Brotli encoder version rust/vendor/brotli holds; br sidecars match the Rust port's only while Node bundles it. */
+export const BROTLI_VERSION = '1.2.0';
+
+/** `data` as Brotli: quality 11, window 22 (4 MiB), generic mode, one FINISH over the whole input (rust/src/brotli.rs). */
+export function brotli(data: Uint8Array): Uint8Array {
+  return new Uint8Array(
+    brotliCompressSync(data, {
+      params: {
+        [constants.BROTLI_PARAM_QUALITY]: 11,
+        [constants.BROTLI_PARAM_LGWIN]: 22,
+        [constants.BROTLI_PARAM_MODE]: constants.BROTLI_MODE_GENERIC,
+      },
+    }),
+  );
+}
+
+const ENCODERS: Record<PrecompressFormat, { readonly ext: string; readonly encode: (b: Uint8Array) => Uint8Array }> = {
+  gzip: { ext: '.gz', encode: gzip },
+  br: { ext: '.br', encode: brotli },
+};
+
+/** The file a sidecar compresses: `path` without its `.gz` or `.br`. */
+export function sidecarSource(path: string): string {
+  return path.endsWith('.gz') || path.endsWith('.br') ? path.slice(0, -3) : path;
+}
+
 export interface PrecompressOp {
+  readonly formats: readonly PrecompressFormat[];
   readonly patterns: readonly string[];
   readonly min: number;
   readonly overwrite: boolean;
@@ -28,8 +59,9 @@ export interface PrecompressOp {
 }
 
 /**
- * The tree with a `<path>.gz` sidecar (gzip, fixed header) for every file that matches a pattern, is
- * compressible, has at least `min` bytes, and compresses to fewer bytes than it has. Sidecars keep the
+ * The tree with a sidecar per format (`<path>.gz`: gzip, fixed header; `<path>.br`: Brotli) for every file
+ * that matches a pattern, is compressible and has at least `min` bytes, when that format compresses it to
+ * fewer bytes than it has. Sidecars keep the
  * file's mode and get the origin `origin`; one that would replace a different file is a conflict unless
  * `overwrite`. Warns when no file matches the patterns.
  */
@@ -39,8 +71,11 @@ export function precompress(tree: Tree, op: PrecompressOp, origin: string, warn:
   const files: Array<[string, FileNode]> = [];
   for (const [p, node] of matched) {
     if (!compressible(p) || node.bytes.byteLength < op.min) continue;
-    const gz = gzip(node.bytes);
-    if (gz.byteLength < node.bytes.byteLength) files.push([p + '.gz', makeFile(gz, origin, node.mode)]);
+    for (const format of op.formats) {
+      const { ext, encode } = ENCODERS[format];
+      const out = encode(node.bytes);
+      if (out.byteLength < node.bytes.byteLength) files.push([p + ext, makeFile(out, origin, node.mode)]);
+    }
   }
   return files.length ? tree.withFiles(files, op.overwrite ? 'overwrite' : 'error', op.span) : tree;
 }

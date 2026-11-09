@@ -952,6 +952,7 @@ version = "0.1.0"
 dependencies = [
  "base64 0.22.1",
  "bcrypt",
+ "cc",
  "flate2",
  "icu_normalizer",
  "ring",

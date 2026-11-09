@@ -1,0 +1,1 @@
+{"command": "why", "operands": ["/assets/site.css.br"], "copy": {"public/assets/site.css": "conformance/cases/ok-precompress/public/assets/site.css"}}

@@ -893,7 +893,7 @@ impl<'a> WhyScope<'a> {
                 Operation::Canonical { .. } => inputs.push("the page (canonical link)".into()),
                 Operation::Precompress { .. } => inputs.push(format!(
                     "{} (compressed)",
-                    file.strip_suffix(".gz").unwrap_or(file)
+                    crate::precompress::sidecar_source(file)
                 )),
                 Operation::TextFile { .. } => inputs.push("the Sitefile".into()),
                 Operation::Precache { into, .. } => inputs.push(

@@ -1,0 +1,14 @@
+{
+  "copy": {
+    "public/index.html": "conformance/cases/ok-precompress/public/index.html",
+    "public/assets/site.css": "conformance/cases/ok-precompress/public/assets/site.css",
+    "public/assets/App.JS": "conformance/cases/ok-precompress/public/assets/App.JS",
+    "public/assets/rand.svg": "conformance/cases/ok-precompress/public/assets/rand.svg",
+    "public/logo.png": "conformance/cases/ok-precompress/public/logo.png",
+    "public/docs/language.md": "docs/LANGUAGE.md",
+    "public/docs/cli.md": "docs/CLI.md",
+    "public/readme.txt": "README.md",
+    "public/image.wasm": "plugins/image/image.wasm"
+  },
+  "expectPaths": ["/index.html.br", "/index.html.gz", "/docs/language.md.br", "/image.wasm.br", "/readme.txt.br"]
+}

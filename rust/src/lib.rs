@@ -30,6 +30,7 @@ pub mod secrets;
 // Templates and data formats
 pub mod bake;
 pub mod bcrypt_verify;
+pub mod brotli;
 pub mod csv;
 pub mod documents;
 pub mod frontmatter;

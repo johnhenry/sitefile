@@ -59,6 +59,7 @@ to find in the other:
 | `watch` (watch mode: polling, ignore rules, rebuild loop) | `watch.ts`, `cli/watch.ts` |
 | `profile` (`--profile` Chrome trace) | `profile.ts` |
 | `memo` (incremental rebuilds in watch mode) | `memo.ts` |
+| `precompress`, `brotli` (the vendored C encoder's binding) | `precompress.ts` (node:zlib) |
 | `lsp::*` (the language server) | none: Rust only, see below |
 
 ## Tooling exception: the language server
@@ -292,6 +293,22 @@ stored/fixed/dynamic blocks; output is within about 1-2% of zlib level 9.
 Decompression (reading archives and pulled images) still uses `node:zlib` and
 flate2. A change to the encoder must be made in both files; regenerate
 `rust/tests/fixtures/deflate/fixtures.json` with its `generate.mjs`.
+
+**Brotli** (`PRECOMPRESS br`, #203) is the exception: both implementations run
+**the same C code**. TypeScript uses `node:zlib` (`brotliCompressSync`); the
+Rust port compiles Google's C encoder, vendored at the exact version Node 26
+bundles (`process.versions.brotli`, **1.2.0**) in `rust/vendor/brotli`, through
+`rust/build.rs` and the `cc` crate, and drives it the way node:zlib does
+(`rust/src/brotli.rs`: quality 11, window 22, generic mode, one
+`BROTLI_OPERATION_FINISH` over the whole input). The pure-Rust `brotli` crate was
+measured and rejected: it differs from libbrotli 1.2.0 at every quality but 0.
+So **building the Rust port needs a C compiler** (cc/clang on Linux and macOS,
+MSVC on Windows), which `ring` already required. The two stay identical only
+while Node bundles the vendored version: `test/precompress.test.ts` and
+`rust/src/brotli.rs` pin it and two output digests, and
+`node rust/tests/fixtures/brotli/corpus.mjs` compares both over about 1,250
+inputs (all identical at 1.2.0). When Node moves to another libbrotli, update
+`rust/vendor/brotli` (its README says how) in the same change.
 
 ## Git sources
 

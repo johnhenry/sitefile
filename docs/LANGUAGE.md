@@ -1132,9 +1132,9 @@ SITEMAP, a COPY into another stage, `--target`) see the renamed files, and
   a later stage's FINGERPRINT like any other operation.
 
 ### Precompressed sidecars: PRECOMPRESS (see `examples/precompress/`)
-`PRECOMPRESS [--overwrite] [gzip] <pattern>… [MIN <bytes>]` writes a gzip
-sidecar `<file>.gz` next to each matching file, for servers that send it in
-place of the file to clients that accept gzip (nginx `gzip_static`, Caddy
+`PRECOMPRESS [--overwrite] [gzip] [br] <pattern>… [MIN <bytes>]` writes a gzip
+sidecar `<file>.gz` and/or a Brotli sidecar `<file>.br` next to each matching
+file, for servers that send it in place of the file to clients that accept it (nginx `gzip_static`, Caddy
 `file_server precompressed`, sirv, http-server `--gzip`). Like FINGERPRINT it
 runs **at its place in the stage** on the tree at that point, so put it after
 the files it compresses (and after a FINGERPRINT, so the hashed names get
@@ -1150,13 +1150,19 @@ sidecars).
   alone. A file needs at least `MIN` bytes (an operand, a whole number;
   default **1024**), and its sidecar is written only when it is smaller than
   the file.
-- **Formats**: `gzip` (the default, and the only one so far). `br` and `zstd`
-  are `E_UNSUPPORTED`: sitefile has no Brotli or Zstandard encoder that writes
-  the same bytes in both implementations without a new dependency.
+- **Formats**: `gzip` (the default) and `br`, in any order, each at most once
+  (`PRECOMPRESS br gzip /` writes both). Each sidecar is written only when it is
+  smaller than the file. `zstd` is `E_UNSUPPORTED`: sitefile has no Zstandard
+  encoder that writes the same bytes in both implementations.
 - **Deterministic**: the sidecar is a gzip member with a fixed header (no
   modification time, no file name) around the shared deflate encoder
   (`src/deflate.ts`, `rust/src/deflate.rs`) that zip, tar.gz and OCI layers use,
-  so both implementations write the same bytes on every run.
+  so both implementations write the same bytes on every run. A `.br` sidecar is
+  Brotli at quality 11 (the smallest output, the usual choice for static
+  precompression; it runs at a few MB per second, so a build with many large files
+  takes longer), window 22 (4 MiB) and generic mode, from libbrotli 1.2.0: Node's
+  own in TypeScript, the same C code vendored in the Rust port (docs/RUST.md,
+  "Compression").
 - Sidecars keep the file's mode and get the origin `Sitefile:<line> PRECOMPRESS`;
   `why` shows `<file> (compressed)` as the input. A sidecar path that already
   holds different content is `E_CONFLICT` unless `--overwrite`. In watch mode an

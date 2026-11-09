@@ -1,0 +1,8 @@
+# PRECOMPRESS br (johnhenry/sitefile#203): .br sidecars from the same C Brotli encoder (node:zlib's
+# libbrotli 1.2.0; vendored in rust/vendor/brotli) with the same settings, byte-identical in both
+# implementations, next to gzip ones. The inputs are copied from the repository (case.json).
+FROM scratch
+COPY ./public/ /
+PRECOMPRESS br gzip / MIN 64
+PRECOMPRESS --overwrite br /docs/
+EXPORT /

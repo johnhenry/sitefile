@@ -1,0 +1,5 @@
+# PRECOMPRESS br (#203): why names the file a .br sidecar compresses.
+FROM scratch
+COPY ./public/ /
+PRECOMPRESS gzip br / MIN 64
+EXPORT /

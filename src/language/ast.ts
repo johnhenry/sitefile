@@ -399,11 +399,11 @@ export interface LanguagesInstruction {
   readonly default?: Operand;
 }
 
-/** A PRECOMPRESS sidecar format: `gzip` writes `<file>.gz` (`br` and `zstd` are reserved: no encoder yet). */
-export type PrecompressFormat = 'gzip';
+/** A PRECOMPRESS sidecar format: `gzip` writes `<file>.gz`, `br` writes `<file>.br` (`zstd` is reserved: no encoder yet). */
+export type PrecompressFormat = 'gzip' | 'br';
 
 /**
- * `PRECOMPRESS [--overwrite] [gzip]… <pattern>… [MIN <bytes>]`: write a `.gz` sidecar next to each matching
+ * `PRECOMPRESS [--overwrite] [gzip] [br] <pattern>… [MIN <bytes>]`: write a `.gz` and/or `.br` sidecar next to each matching
  * compressible file of at least MIN bytes, when it is smaller.
  */
 export interface PrecompressInstruction {

@@ -2,5 +2,5 @@ FROM scratch
 COPY <<X /a.css
 x
 X
-PRECOMPRESS gzip br /a.css
+PRECOMPRESS gzip br zstd /a.css
 EXPORT /
