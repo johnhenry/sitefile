@@ -49,6 +49,12 @@ pub struct SiteServerOptions {
     /// `--max-age`, `--immutable`, `--max-age-html`: a production `Cache-Control` preview for
     /// files ([`cache_control_for`]).
     pub cache: Option<CachePreview>,
+    /// `--log-format json`: access-log lines as JSON objects ([`access_log_line`]); else text.
+    pub log_json: bool,
+    /// `--log-ip`: add the client address to access-log lines.
+    pub log_ip: bool,
+    /// `--quiet`: no access-log lines (other log lines still go to `log`).
+    pub quiet: bool,
 }
 
 pub type LastModifiedFn = Arc<dyn Fn() -> Option<i64> + Send + Sync>;
@@ -773,6 +779,193 @@ fn base_headers(options: &SiteServerOptions) -> Vec<(String, String)> {
     }
     base.extend(isolation_headers(options));
     base
+}
+
+/// One access-log request, as [`access_log_line`] writes it.
+pub struct AccessLogEntry<'a> {
+    pub ts: &'a str,
+    pub method: &'a str,
+    /// The request target as received (made printable).
+    pub target: &'a str,
+    pub status: u16,
+    pub bytes: usize,
+    pub ms: f64,
+    /// `Content-Range` of a `206`/`416`.
+    pub range: Option<&'a str>,
+    /// The client address (`--log-ip`).
+    pub remote: Option<&'a str>,
+}
+
+fn json_str(s: &str) -> String {
+    serde_json::to_string(s).unwrap_or_else(|_| "\"\"".into())
+}
+
+/// An access-log line, text or JSON (`accessLogLine` in src/server.ts; the JSON form is a stable
+/// contract, docs/CLI.md).
+pub fn access_log_line(json: bool, e: &AccessLogEntry) -> String {
+    let target = printable(e.target);
+    if !json {
+        return format!(
+            "{} {target} {} {} {:.1}ms{}",
+            e.method,
+            e.status,
+            e.bytes,
+            e.ms,
+            e.remote.map(|r| format!(" {r}")).unwrap_or_default()
+        );
+    }
+    let (path, query) = match target.find('?') {
+        Some(q) => (&target[..q], &target[q + 1..]),
+        None => (target.as_str(), ""),
+    };
+    format!(
+        "{{\"type\":\"request\",\"ts\":{},\"method\":{},\"path\":{},\"query\":{},\"status\":{},\"bytes\":{},\"ms\":{:.1},\"encoding\":\"identity\",\"range\":{}{}}}",
+        json_str(e.ts),
+        json_str(e.method),
+        json_str(path),
+        json_str(query),
+        e.status,
+        e.bytes,
+        e.ms,
+        e.range.map(json_str).unwrap_or_else(|| "null".into()),
+        e.remote
+            .map(|r| format!(",\"remote\":{}", json_str(r)))
+            .unwrap_or_default()
+    )
+}
+
+/// A log line that is not a request, as a JSON object (`jsonLogLine` in src/server.ts).
+pub fn json_log_line(ts: &str, line: &str) -> String {
+    let (kind, message) = if let Some(m) = line.strip_prefix("warning: ") {
+        ("warning", m)
+    } else if line.starts_with("error") {
+        ("error", line)
+    } else {
+        ("message", line)
+    };
+    format!(
+        "{{\"type\":{},\"ts\":{},\"message\":{}}}",
+        json_str(kind),
+        json_str(ts),
+        json_str(message)
+    )
+}
+
+/// `{"type":"started","ts","site","files","url"}` (`startedLogLine` in src/server.ts).
+pub fn started_log_line(ts: &str, site: &str, files: usize, url: &str) -> String {
+    format!(
+        "{{\"type\":\"started\",\"ts\":{},\"site\":{},\"files\":{files},\"url\":{}}}",
+        json_str(ts),
+        json_str(site),
+        json_str(url)
+    )
+}
+
+/// `{"type":"stopped","ts","signal"}` (`stoppedLogLine` in src/server.ts).
+pub fn stopped_log_line(ts: &str, signal: &str) -> String {
+    format!(
+        "{{\"type\":\"stopped\",\"ts\":{},\"signal\":{}}}",
+        json_str(ts),
+        json_str(signal)
+    )
+}
+
+/// A detached server's log line as JSON (`logLineAsJson` in src/server.ts).
+pub fn log_line_as_json(line: &str) -> String {
+    if line.starts_with('{') {
+        return line.to_string();
+    }
+    let is_ts = |t: &str| {
+        let b = t.as_bytes();
+        b.len() > 11
+            && b[..4].iter().all(u8::is_ascii_digit)
+            && b[4] == b'-'
+            && b[5..7].iter().all(u8::is_ascii_digit)
+            && b[7] == b'-'
+            && b[8..10].iter().all(u8::is_ascii_digit)
+            && b[10] == b'T'
+            && b.ends_with(b"Z")
+            && b.len() > 12
+            && b[11..b.len() - 1]
+                .iter()
+                .all(|c| c.is_ascii_digit() || *c == b':' || *c == b'.')
+    };
+    let Some((ts, rest)) = line.split_once(' ').filter(|(t, _)| is_ts(t)) else {
+        return json_log_line("", line);
+    };
+    if let Some(r) = parse_text_request(rest) {
+        return access_log_line(
+            true,
+            &AccessLogEntry {
+                ts,
+                method: r.0,
+                target: r.1,
+                status: r.2,
+                bytes: r.3,
+                ms: r.4,
+                range: None,
+                remote: r.5,
+            },
+        );
+    }
+    if let Some(body) = rest.strip_prefix("serving ") {
+        if let Some((site, tail)) = body.rsplit_once(" (") {
+            if let Some((n, url)) = tail.split_once(" files) at ") {
+                if !n.is_empty()
+                    && n.bytes().all(|b| b.is_ascii_digit())
+                    && !url.is_empty()
+                    && !url.contains(char::is_whitespace)
+                    && !site.is_empty()
+                {
+                    if let Ok(files) = n.parse() {
+                        return started_log_line(ts, site, files, url);
+                    }
+                }
+            }
+        }
+    }
+    if let Some(sig) = rest
+        .strip_prefix("received ")
+        .and_then(|r| r.strip_suffix(", shutting down"))
+        .filter(|s| s.len() > 3 && s.starts_with("SIG") && s[3..].bytes().all(|b| b.is_ascii_uppercase()))
+    {
+        return stopped_log_line(ts, sig);
+    }
+    json_log_line(ts, rest)
+}
+
+/// `METHOD target STATUS BYTES MS.Dms[ remote]`, a text access-log line.
+#[allow(clippy::type_complexity)]
+fn parse_text_request(rest: &str) -> Option<(&str, &str, u16, usize, f64, Option<&str>)> {
+    let parts: Vec<&str> = rest.split(' ').collect();
+    if !(5..=6).contains(&parts.len()) || parts.iter().any(|p| p.is_empty()) {
+        return None;
+    }
+    let method = parts[0];
+    let mb = method.as_bytes();
+    if !mb[0].is_ascii_uppercase() || !mb.iter().all(|b| b.is_ascii_uppercase() || *b == b'-') {
+        return None;
+    }
+    let digits = |s: &str| !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit());
+    if parts[2].len() != 3 || !digits(parts[2]) || !digits(parts[3]) {
+        return None;
+    }
+    let ms = parts[4].strip_suffix("ms")?;
+    let (whole, frac) = ms.split_once('.')?;
+    if !digits(whole) || frac.len() != 1 || !digits(frac) {
+        return None;
+    }
+    if parts[1].contains(char::is_whitespace) {
+        return None;
+    }
+    Some((
+        method,
+        parts[1],
+        parts[2].parse().ok()?,
+        parts[3].parse().ok()?,
+        ms.parse().ok()?,
+        parts.get(5).copied(),
+    ))
 }
 
 /// Production cache headers to preview instead of `no-cache` (`serve --max-age`).
@@ -1911,6 +2104,7 @@ fn serve_connection(
     let Ok(mut out) = stream.try_clone() else {
         return;
     };
+    let peer = stream.peer_addr().ok().map(|a| a.ip().to_string());
     let mut reader = BufReader::new(stream);
     loop {
         let req = match read_request(&mut reader) {
@@ -2028,14 +2222,25 @@ fn serve_connection(
         // nor do console messages (they are logged as `browser ...` lines)
         let quiet = options.live_reload.is_some()
             && [RELOAD_SCRIPT_PATH, CONSOLE_PATH].contains(&raw_path_of(&req.url));
-        if !probe && !quiet {
+        if !probe && !quiet && !options.quiet {
             if let Some(log) = &options.log {
-                log(&format!(
-                    "{} {} {} {} {ms:.1}ms",
-                    req.method,
-                    printable(&req.url),
-                    res.status,
-                    res.body.len()
+                let remote = if options.log_ip {
+                    peer.clone()
+                } else {
+                    None
+                };
+                log(&access_log_line(
+                    options.log_json,
+                    &AccessLogEntry {
+                        ts: &crate::store::now_iso(),
+                        method: &req.method,
+                        target: &req.url,
+                        status: res.status,
+                        bytes: res.body.len(),
+                        ms,
+                        range: res.header("content-range"),
+                        remote: remote.as_deref(),
+                    },
                 ));
             }
         }
@@ -2307,6 +2512,9 @@ mod tests {
             cors: false,
             isolate: None,
             cache: None,
+            log_json: false,
+            log_ip: false,
+            quiet: false,
         };
         let s = listen(site(), opts, "127.0.0.1", 0).unwrap();
         f(s.port, &log);
@@ -2481,6 +2689,49 @@ mod tests {
             200
         );
         assert_eq!(ask(&[ims, ("if-none-match", "\"x\"")]).status, 200);
+    }
+
+    #[test]
+    fn json_access_log() {
+        let e = AccessLogEntry {
+            ts: "2026-01-01T00:00:00.000Z",
+            method: "GET",
+            target: "/a?b",
+            status: 206,
+            bytes: 2,
+            ms: 1.24,
+            range: Some("bytes 0-1/10"),
+            remote: None,
+        };
+        assert_eq!(
+            access_log_line(true, &e),
+            "{\"type\":\"request\",\"ts\":\"2026-01-01T00:00:00.000Z\",\"method\":\"GET\",\"path\":\"/a\",\"query\":\"b\",\"status\":206,\"bytes\":2,\"ms\":1.2,\"encoding\":\"identity\",\"range\":\"bytes 0-1/10\"}"
+        );
+        let with_ip = AccessLogEntry {
+            remote: Some("::1"),
+            ..e
+        };
+        assert!(access_log_line(false, &with_ip).ends_with("ms ::1"));
+        assert_eq!(
+            log_line_as_json("2026-01-01T00:00:00.000Z GET /a?b 200 5 0.4ms"),
+            "{\"type\":\"request\",\"ts\":\"2026-01-01T00:00:00.000Z\",\"method\":\"GET\",\"path\":\"/a\",\"query\":\"b\",\"status\":200,\"bytes\":5,\"ms\":0.4,\"encoding\":\"identity\",\"range\":null}"
+        );
+        assert_eq!(
+            log_line_as_json("2026-01-01T00:00:00.000Z serving ./site (3 files) at http://127.0.0.1:8080/"),
+            "{\"type\":\"started\",\"ts\":\"2026-01-01T00:00:00.000Z\",\"site\":\"./site\",\"files\":3,\"url\":\"http://127.0.0.1:8080/\"}"
+        );
+        assert_eq!(
+            log_line_as_json("2026-01-01T00:00:00.000Z received SIGTERM, shutting down"),
+            "{\"type\":\"stopped\",\"ts\":\"2026-01-01T00:00:00.000Z\",\"signal\":\"SIGTERM\"}"
+        );
+        assert_eq!(
+            log_line_as_json("2026-01-01T00:00:00.000Z warning: x \"y\""),
+            "{\"type\":\"warning\",\"ts\":\"2026-01-01T00:00:00.000Z\",\"message\":\"x \\\"y\\\"\"}"
+        );
+        assert_eq!(
+            log_line_as_json("    at stack"),
+            "{\"type\":\"message\",\"ts\":\"\",\"message\":\"    at stack\"}"
+        );
     }
 
     #[test]
@@ -2805,6 +3056,9 @@ mod tests {
             cors: false,
             isolate: None,
             cache: None,
+            log_json: false,
+            log_ip: false,
+            quiet: false,
         };
         let s = listen(site(), opts, "127.0.0.1", 0).unwrap();
         let mut c = TcpStream::connect(("127.0.0.1", s.port)).unwrap();

@@ -122,6 +122,27 @@ fn cache_of(v: &Parsed) -> Result<Option<crate::server::CachePreview>> {
     }))
 }
 
+/// `--log-format`, `--log-ip`, `--quiet`: (json, log_ip, quiet).
+fn logging_of(v: &Parsed) -> Result<(bool, bool, bool)> {
+    let format = v.str("log-format");
+    if let Some(f) = format.filter(|f| *f != "text" && *f != "json") {
+        return usage(format!("--log-format must be text or json, not '{f}'"));
+    }
+    Ok((format == Some("json"), v.flag("log-ip"), v.flag("quiet")))
+}
+
+/// Where a foreground server's log lines go: stdout, other lines wrapped as JSON objects under
+/// `--log-format json`.
+fn log_writer(json: bool) -> crate::server::LogFn {
+    Arc::new(move |l: &str| {
+        if json && !l.starts_with('{') {
+            out(&format!("{}\n", crate::server::json_log_line(&now_iso(), l)));
+        } else {
+            out(&format!("{l}\n"));
+        }
+    })
+}
+
 fn allowed_hosts_of(v: &Parsed) -> Result<Vec<String>> {
     let mut out: Vec<String> = Vec::new();
     for raw in v.strs("allowed-host") {
@@ -148,6 +169,9 @@ const SERVE_OPTS: &[OptSpec] = &[
     string("max-age"),
     flag("immutable"),
     string("max-age-html"),
+    string("log-format"),
+    flag("log-ip"),
+    flag("quiet"),
     flag("watch"),
     string_s("file", 'f'),
     string("target"),
@@ -197,6 +221,9 @@ pub const SERVE: Command = Command {
         "--max-age <secs>  preview production caching: Cache-Control: public, max-age=<secs> on files other than HTML",
         "--immutable       add immutable to the --max-age value (fingerprinted assets)",
         "--max-age-html <secs>        Cache-Control: public, max-age=<secs> on HTML pages too (default: they keep no-cache)",
+        "--log-format <text|json>     access-log lines as text (default) or one JSON object per line (a stable format; docs/CLI.md)",
+        "--log-ip          add the client address to access-log lines",
+        "--quiet           no access-log lines",
         "--allowed-host <name>        also answer requests for this Host (repeatable; .example.com: and subdomains; *: any)",
         "--keep-os-metadata  serve __MACOSX, ._*, Thumbs.db and desktop.ini of a directory or archive (default: skipped)",
         "--watch           build the context, serve it, rebuild on change and live-reload pages (foreground only)",
@@ -238,6 +265,7 @@ fn run_serve(v: &Parsed) -> Result<i32> {
     let allowed_hosts = allowed_hosts_of(v)?;
     let isolate = isolate_of(v)?;
     let cache = cache_of(v)?;
+    let (log_json, log_ip, quiet) = logging_of(v)?;
     let name = v.str("name");
     if name.is_some() && !v.flag("detach") {
         return usage("--name needs -d (only detached servers are tracked)");
@@ -265,12 +293,11 @@ fn run_serve(v: &Parsed) -> Result<i32> {
         let modified = served_last_modified(&store, &source);
         let n = tree.len();
         catch_signals();
-        let log: crate::server::LogFn = Arc::new(|l: &str| out(&format!("{l}\n")));
         let server = listen(
             Arc::new(tree),
             SiteServerOptions {
                 spa: v.flag("spa"),
-                log: Some(log),
+                log: Some(log_writer(log_json)),
                 server_id: None,
                 live_reload: None,
                 last_modified: Some(Arc::new(move || modified)),
@@ -279,14 +306,29 @@ fn run_serve(v: &Parsed) -> Result<i32> {
                 cors: v.flag("cors"),
                 isolate: isolate.clone(),
                 cache: cache.clone(),
+                log_json,
+                log_ip,
+                quiet,
             },
             &bind.host,
             bind.port,
         )?;
-        out(&format!(
-            "Serving {label} ({n} files) at {}  (Ctrl-C to stop)\n",
-            format_url(&server.host, server.port)
-        ));
+        if log_json {
+            out(&format!(
+                "{}\n",
+                crate::server::started_log_line(
+                    &now_iso(),
+                    &label,
+                    n,
+                    &format_url(&server.host, server.port)
+                )
+            ));
+        } else {
+            out(&format!(
+                "Serving {label} ({n} files) at {}  (Ctrl-C to stop)\n",
+                format_url(&server.host, server.port)
+            ));
+        }
         wait_for_signal();
         server.close();
         return Ok(0);
@@ -306,6 +348,9 @@ fn run_serve(v: &Parsed) -> Result<i32> {
             cors: v.flag("cors"),
             isolate,
             cache,
+            log_format: log_json.then(|| "json".to_string()),
+            log_ip,
+            quiet,
         },
         None,
         &warn,
@@ -332,6 +377,7 @@ fn serve_watch(v: &Parsed) -> Result<i32> {
     let allowed_hosts = allowed_hosts_of(v)?;
     let isolate = isolate_of(v)?;
     let cache = cache_of(v)?;
+    let (log_json, log_ip, quiet) = logging_of(v)?;
     let context = v.positionals.first().cloned().unwrap_or_else(|| ".".into());
     let file = v.str("file").filter(|s| !s.is_empty()).map(str::to_string);
     let arg_files = v.strs("build-arg-file");
@@ -467,10 +513,9 @@ fn serve_watch(v: &Parsed) -> Result<i32> {
         }
     };
     let mut on_started = || -> Result<()> {
-        let log: crate::server::LogFn = Arc::new(|l: &str| out(&format!("{l}\n")));
         let opts = SiteServerOptions {
             spa: v.flag("spa"),
-            log: Some(log),
+            log: Some(log_writer(log_json)),
             server_id: None,
             live_reload: Some(live.clone()),
             last_modified: Some(Arc::new({
@@ -482,13 +527,23 @@ fn serve_watch(v: &Parsed) -> Result<i32> {
             cors: v.flag("cors"),
             isolate: isolate.clone(),
             cache: cache.clone(),
+            log_json,
+            log_ip,
+            quiet,
         };
         let s = listen_shared(current.clone(), opts, &bind.host, bind.port)?;
         let n = current.read().map(|t| t.len()).unwrap_or(0);
-        out(&format!(
-            "Serving {context} ({n} files) at {}  (Ctrl-C to stop)\n",
-            format_url(&s.host, s.port)
-        ));
+        if log_json {
+            out(&format!(
+                "{}\n",
+                crate::server::started_log_line(&now_iso(), &context, n, &format_url(&s.host, s.port))
+            ));
+        } else {
+            out(&format!(
+                "Serving {context} ({n} files) at {}  (Ctrl-C to stop)\n",
+                format_url(&s.host, s.port)
+            ));
+        }
         server = Some(s);
         started.set(true);
         Ok(())
@@ -514,7 +569,6 @@ fn serve_watch(v: &Parsed) -> Result<i32> {
 
 /// `sitefile __serve-worker <id>`: the detached server process.
 pub fn serve_worker(id: &str) -> i32 {
-    let stamp = |m: &str| out(&format!("{} {m}\n", now_iso()));
     let reg = match ServerRegistry::open(None) {
         Ok(r) => r,
         Err(e) => {
@@ -533,6 +587,21 @@ pub fn serve_worker(id: &str) -> i32 {
             return 1;
         }
     };
+    // `--log-format json`: every line is a JSON object.
+    let json = state.log_format.as_deref() == Some("json");
+    let stamp = move |m: &str| {
+        let ts = now_iso();
+        if json {
+            let line = if m.starts_with('{') {
+                m.to_string()
+            } else {
+                crate::server::json_log_line(&ts, m)
+            };
+            out(&format!("{line}\n"));
+        } else {
+            out(&format!("{ts} {m}\n"));
+        }
+    };
     catch_signals();
     let started = (|| -> Result<crate::server::ListeningServer> {
         let warn = |m: &str| stamp(&format!("warning: {m}"));
@@ -546,7 +615,7 @@ pub fn serve_worker(id: &str) -> i32 {
         )?;
         let modified = served_last_modified(&reg.store, &state.source);
         let n = tree.len();
-        let log: crate::server::LogFn = Arc::new(|l: &str| out(&format!("{} {l}\n", now_iso())));
+        let log: crate::server::LogFn = Arc::new(stamp);
         let server = listen(
             Arc::new(tree),
             SiteServerOptions {
@@ -560,6 +629,9 @@ pub fn serve_worker(id: &str) -> i32 {
                 cors: state.cors,
                 isolate: state.isolate.clone(),
                 cache: state.cache.clone(),
+                log_json: json,
+                log_ip: state.log_ip,
+                quiet: state.quiet,
             },
             &state.bind.host,
             state.bind.port,
@@ -572,17 +644,30 @@ pub fn serve_worker(id: &str) -> i32 {
             s.ready = true;
             s.error = None;
         })?;
-        stamp(&format!(
-            "serving {} ({n} files) at {}",
-            state.image,
-            format_url(&host, port)
-        ));
+        if json {
+            stamp(&crate::server::started_log_line(
+                &now_iso(),
+                &state.image,
+                n,
+                &format_url(&host, port),
+            ));
+        } else {
+            stamp(&format!(
+                "serving {} ({n} files) at {}",
+                state.image,
+                format_url(&host, port)
+            ));
+        }
         Ok(server)
     })();
     match started {
         Ok(server) => {
             let sig = wait_for_signal();
-            stamp(&format!("received {sig}, shutting down"));
+            if json {
+                stamp(&crate::server::stopped_log_line(&now_iso(), sig));
+            } else {
+                stamp(&format!("received {sig}, shutting down"));
+            }
             let (tx, rx) = std::sync::mpsc::channel();
             std::thread::spawn(move || {
                 server.close();
@@ -594,7 +679,12 @@ pub fn serve_worker(id: &str) -> i32 {
         }
         Err(e) => {
             let message = format!("error[{}]: {}", e.code, e.message());
-            err(&format!("{} {message}\n", now_iso()));
+            let ts = now_iso();
+            if json {
+                err(&format!("{}\n", crate::server::json_log_line(&ts, &message)));
+            } else {
+                err(&format!("{ts} {message}\n"));
+            }
             let _ = reg.update(id, |s| {
                 s.pid = 0;
                 s.ready = false;
@@ -751,13 +841,13 @@ fn run_rm(v: &Parsed) -> Result<i32> {
     })
 }
 
-const LOGS_OPTS: &[OptSpec] = &[flag_s("follow", 'f'), string_s("tail", 'n')];
+const LOGS_OPTS: &[OptSpec] = &[flag_s("follow", 'f'), string_s("tail", 'n'), flag("json")];
 pub const LOGS: Command = Command {
     name: "logs",
     summary: "show a server's access log",
-    usage: "server logs [-f] [-n lines] <name|id>",
+    usage: "server logs [-f] [-n lines] [--json] <name|id>",
     description: "Print the log of a detached server: one line per request (\"METHOD /path STATUS BYTES MSms\").",
-    flags: &["-f, --follow    keep printing new lines until Ctrl-C", "-n, --tail <n>  only the last n lines"],
+    flags: &["-f, --follow    keep printing new lines until Ctrl-C", "-n, --tail <n>  only the last n lines", "--json          one JSON object per line (text lines of older servers are converted)"],
     options: LOGS_OPTS,
     run: run_logs,
 };
@@ -791,8 +881,31 @@ fn run_logs(v: &Parsed) -> Result<i32> {
         }
         text = tail_lines(&text, n as usize);
     }
-    out(&text);
+    let json = v.flag("json");
+    let mut carry = String::new();
+    // Write log bytes; with --json, whole lines only, each converted.
+    let mut emit = |chunk: &str| {
+        if !json {
+            out(chunk);
+            return;
+        }
+        carry.push_str(chunk);
+        let Some(last) = carry.rfind('\n') else {
+            return;
+        };
+        let whole: String = carry[..last]
+            .split('\n')
+            .map(|l| format!("{}\n", crate::server::log_line_as_json(l)))
+            .collect();
+        carry = carry[last + 1..].to_string();
+        out(&whole);
+    };
+    emit(&text);
     if !v.flag("follow") {
+        drop(emit);
+        if json && !carry.is_empty() {
+            out(&format!("{}\n", crate::server::log_line_as_json(&carry)));
+        }
         return Ok(0);
     }
     catch_signals();
@@ -810,10 +923,7 @@ fn run_logs(v: &Parsed) -> Result<i32> {
             let mut buf = vec![0u8; (size - pos) as usize];
             if f.seek(SeekFrom::Start(pos)).is_ok() && f.read_exact(&mut buf).is_ok() {
                 pos = size;
-                use std::io::Write;
-                let mut o = std::io::stdout().lock();
-                let _ = o.write_all(&buf);
-                let _ = o.flush();
+                emit(&String::from_utf8_lossy(&buf));
             }
         }
     }

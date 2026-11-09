@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- **`serve --log-format json`, `--log-ip`, `--quiet`** (johnhenry/sitefile#173):
+  one JSON object per log line (request, started, stopped, warning, error,
+  message), a stable contract in docs/CLI.md, identical in both servers; kept in
+  the server record. `server logs --json` converts text logs of older servers.
 - **`serve --max-age`, `--immutable`, `--max-age-html`** (johnhenry/sitefile#175):
   preview production `Cache-Control` on files (HTML keeps `no-cache` unless
   `--max-age-html`); `_headers` still wins; kept in the server record. Both

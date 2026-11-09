@@ -44,6 +44,12 @@ export interface ServerState {
   readonly isolate?: 'require-corp' | 'credentialless';
   /** `--max-age`, `--immutable`, `--max-age-html` (absent: every response keeps `no-cache`). */
   readonly cache?: CachePreview;
+  /** `--log-format json` (absent: text). */
+  readonly logFormat?: 'json';
+  /** `--log-ip` (absent: false). */
+  readonly logIp?: boolean;
+  /** `--quiet` (absent: false). */
+  readonly quiet?: boolean;
   /** The requested bind address (port 0 = pick a free port). */
   readonly bind: { readonly host: string; readonly port: number };
   readonly host: string;

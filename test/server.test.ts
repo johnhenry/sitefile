@@ -4,7 +4,7 @@ import http from 'node:http';
 import net from 'node:net';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
-import { byteRange, cacheControlFor, closeServer, createSiteServer, hostAllowed, preflightHeaders, parseAllowedHost, earlyHints, httpDate, parseHttpDate, listen, LiveReload, originForm, RELOAD_SCRIPT, safeSegments } from '../src/server.js';
+import { accessLogLine, byteRange, cacheControlFor, logLineAsJson, closeServer, createSiteServer, hostAllowed, preflightHeaders, parseAllowedHost, earlyHints, httpDate, parseHttpDate, listen, LiveReload, originForm, RELOAD_SCRIPT, safeSegments } from '../src/server.js';
 import { makeFile, Tree } from '../src/tree.js';
 import { makeSite, runCli, tmpDir } from './helpers/cli.js';
 
@@ -352,6 +352,53 @@ test('--max-age/--immutable/--max-age-html: a production cache preview (johnhenr
   assert.equal(cacheControlFor('text/css; charset=utf-8', { maxAgeHtml: 5 }), undefined);
   assert.equal(cacheControlFor('image/png', { maxAge: 5 }), 'public, max-age=5');
   assert.equal(cacheControlFor('image/png', undefined), undefined);
+});
+
+test('--log-format json, --log-ip, --quiet and server logs --json conversion (johnhenry/sitefile#173)', async () => {
+  const lines: string[] = [];
+  const s = createSiteServer(tree, { logFormat: 'json', logIp: true, log: (l) => lines.push(l) });
+  const { port } = await listen(s, '127.0.0.1', 0);
+  try {
+    await req(port, '/app.js?x=1');
+    await new Promise((r) => setTimeout(r, 50));
+    const o = JSON.parse(lines[0]!);
+    assert.deepEqual(Object.keys(o), ['type', 'ts', 'method', 'path', 'query', 'status', 'bytes', 'ms', 'encoding', 'range', 'remote']);
+    assert.equal(o.type, 'request');
+    assert.equal(o.path, '/app.js');
+    assert.equal(o.query, 'x=1');
+    assert.equal(o.status, 200);
+    assert.equal(o.remote, '127.0.0.1');
+    assert.equal(o.range, null);
+  } finally {
+    await closeServer(s);
+  }
+  const quiet: string[] = [];
+  const q = createSiteServer(tree, { quiet: true, log: (l) => quiet.push(l) });
+  const qp = await listen(q, '127.0.0.1', 0);
+  try {
+    await req(qp.port, '/app.js');
+    assert.deepEqual(quiet, []);
+  } finally {
+    await closeServer(q);
+  }
+  const e = { ts: '2026-01-01T00:00:00.000Z', method: 'GET', target: '/a?b', status: 206, bytes: 2, ms: 1.24, range: 'bytes 0-1/10' };
+  assert.equal(accessLogLine('text', { ...e, remote: '::1' }), 'GET /a?b 206 2 1.2ms ::1');
+  assert.equal(
+    accessLogLine('json', e),
+    '{"type":"request","ts":"2026-01-01T00:00:00.000Z","method":"GET","path":"/a","query":"b","status":206,"bytes":2,"ms":1.2,"encoding":"identity","range":"bytes 0-1/10"}',
+  );
+  assert.equal(
+    logLineAsJson('2026-01-01T00:00:00.000Z GET /a?b 200 5 0.4ms'),
+    '{"type":"request","ts":"2026-01-01T00:00:00.000Z","method":"GET","path":"/a","query":"b","status":200,"bytes":5,"ms":0.4,"encoding":"identity","range":null}',
+  );
+  assert.equal(
+    logLineAsJson('2026-01-01T00:00:00.000Z serving ./site (3 files) at http://127.0.0.1:8080/'),
+    '{"type":"started","ts":"2026-01-01T00:00:00.000Z","site":"./site","files":3,"url":"http://127.0.0.1:8080/"}',
+  );
+  assert.equal(logLineAsJson('2026-01-01T00:00:00.000Z received SIGTERM, shutting down'), '{"type":"stopped","ts":"2026-01-01T00:00:00.000Z","signal":"SIGTERM"}');
+  assert.equal(logLineAsJson('2026-01-01T00:00:00.000Z warning: x "y"'), '{"type":"warning","ts":"2026-01-01T00:00:00.000Z","message":"x \\"y\\""}');
+  assert.equal(logLineAsJson('    at stack'), '{"type":"message","ts":"","message":"    at stack"}');
+  assert.equal(logLineAsJson('{"type":"request"}'), '{"type":"request"}');
 });
 
 test('an access log line is written per request: method path status bytes ms', async () => {

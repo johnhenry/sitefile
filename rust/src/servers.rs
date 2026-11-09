@@ -95,6 +95,15 @@ pub struct ServerState {
     /// `--max-age`, `--immutable`, `--max-age-html`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cache: Option<crate::server::CachePreview>,
+    /// `--log-format json` (`None`: text).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub log_format: Option<String>,
+    /// `--log-ip`.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub log_ip: bool,
+    /// `--quiet`.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub quiet: bool,
     /// The requested bind address (port 0 = pick a free port).
     pub bind: Bind,
     pub host: String,
@@ -778,6 +787,12 @@ pub struct DetachedServe {
     pub isolate: Option<String>,
     /// `--max-age`, `--immutable`, `--max-age-html`.
     pub cache: Option<crate::server::CachePreview>,
+    /// `--log-format json` (`Some("json")`; `None`: text).
+    pub log_format: Option<String>,
+    /// `--log-ip`.
+    pub log_ip: bool,
+    /// `--quiet`.
+    pub quiet: bool,
 }
 
 impl DetachedServe {
@@ -796,6 +811,9 @@ impl DetachedServe {
             cors: false,
             isolate: None,
             cache: None,
+            log_format: None,
+            log_ip: false,
+            quiet: false,
         })
     }
 }
@@ -840,6 +858,9 @@ pub fn serve_detached_with(
         cors: serve.cors,
         isolate: serve.isolate.clone(),
         cache: serve.cache.clone(),
+        log_format: serve.log_format.clone(),
+        log_ip: serve.log_ip,
+        quiet: serve.quiet,
         host: serve.bind.host.clone(),
         port: serve.bind.port,
         bind: serve.bind.clone(),
@@ -1051,6 +1072,9 @@ mod tests {
             cors: false,
             isolate: None,
             cache: None,
+            log_format: None,
+            log_ip: false,
+            quiet: false,
             bind: Bind {
                 host: "127.0.0.1".into(),
                 port: 0,

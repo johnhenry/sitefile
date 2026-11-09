@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { SitefileError } from '../errors.js';
 import { collectBuildArgs } from '../build-args.js';
 import { build } from '../executor.js';
-import { BUILDING_EVENT, closeServer, createSiteServer, errorEvent, formatUrl, listen, type CachePreview, LiveReload, OK_EVENT, parseAllowedHost, reloadEventFor } from '../server.js';
+import { BUILDING_EVENT, closeServer, createSiteServer, errorEvent, formatUrl, jsonLogLine, listen, logLineAsJson, startedLogLine, type CachePreview, LiveReload, OK_EVENT, parseAllowedHost, reloadEventFor } from '../server.js';
 import { isRunning, loadDirectoryTree, loadServedTree, pidAlive, servedLastModified, ServerRegistry, type ServerState } from '../servers.js';
 import { Store } from '../store.js';
 import { Tree } from '../tree.js';
@@ -119,6 +119,9 @@ const run: Command = {
     '--max-age <secs>  preview production caching: Cache-Control: public, max-age=<secs> on files other than HTML',
     '--immutable       add immutable to the --max-age value (fingerprinted assets)',
     '--max-age-html <secs>        Cache-Control: public, max-age=<secs> on HTML pages too (default: they keep no-cache)',
+    '--log-format <text|json>     access-log lines as text (default) or one JSON object per line (a stable format; docs/CLI.md)',
+    '--log-ip          add the client address to access-log lines',
+    '--quiet           no access-log lines',
     '--allowed-host <name>        also answer requests for this Host (repeatable; .example.com: and subdomains; *: any)',
     '--keep-os-metadata  serve __MACOSX, ._*, Thumbs.db and desktop.ini of a directory or archive (default: skipped)',
     '--watch           build the context, serve it, rebuild on change and live-reload pages (foreground only)',
@@ -150,6 +153,9 @@ const run: Command = {
     'max-age': { type: 'string' },
     immutable: { type: 'boolean' },
     'max-age-html': { type: 'string' },
+    'log-format': { type: 'string' },
+    'log-ip': { type: 'boolean' },
+    quiet: { type: 'boolean' },
     watch: { type: 'boolean' },
     file: { type: 'string', short: 'f' },
     target: { type: 'string' },
@@ -174,6 +180,7 @@ const run: Command = {
     const allowedHosts = allowedHostsOf(v);
     const isolate = isolateOf(v);
     const cache = cacheOf(v);
+    const logging = loggingOf(v);
     const name = str(v.name);
     if (name !== undefined && !v.detach) usage('--name needs -d (only detached servers are tracked)');
     const store = await Store.open();
@@ -185,9 +192,10 @@ const run: Command = {
     if (!v.detach) {
       const tree = await loadServedTree(store, source, { keepOsMetadata, warn });
       const modified = await servedLastModified(store, source);
-      const server = createSiteServer(tree, { spa: !!v.spa, allowedHosts, cors: !!v.cors, ...(isolate ? { isolate } : {}), ...(cache ? { cache } : {}), lastModified: () => modified, log: (l) => process.stdout.write(`${l}\n`) });
+      const server = createSiteServer(tree, { spa: !!v.spa, allowedHosts, cors: !!v.cors, ...(isolate ? { isolate } : {}), ...(cache ? { cache } : {}), ...logging, lastModified: () => modified, log: logWriter(logging) });
       const addr = await listen(server, bind.host, bind.port);
-      process.stdout.write(`Serving ${label} (${tree.size} files) at ${formatUrl(addr.host, addr.port)}  (Ctrl-C to stop)\n`);
+      if (logging.logFormat === 'json') process.stdout.write(`${startedLogLine(new Date().toISOString(), label, tree.size, formatUrl(addr.host, addr.port))}\n`);
+      else process.stdout.write(`Serving ${label} (${tree.size} files) at ${formatUrl(addr.host, addr.port)}  (Ctrl-C to stop)\n`);
       await waitForSignal();
       await closeServer(server);
       return 0;
@@ -207,6 +215,7 @@ const run: Command = {
       ...(v.cors ? { cors: true } : {}),
       ...(isolate ? { isolate } : {}),
       ...(cache ? { cache } : {}),
+      ...logging,
       bind,
       host: bind.host,
       port: bind.port,
@@ -269,6 +278,18 @@ function cacheOf(v: ParsedValues): CachePreview | undefined {
   return { ...(maxAge !== undefined ? { maxAge } : {}), ...(v.immutable ? { immutable: true } : {}), ...(maxAgeHtml !== undefined ? { maxAgeHtml } : {}) };
 }
 
+/** `--log-format`, `--log-ip`, `--quiet`: the server options (and record fields) they set, only those not at their default. */
+function loggingOf(v: ParsedValues): { logFormat?: 'json'; logIp?: true; quiet?: true } {
+  const format = str(v['log-format']);
+  if (format !== undefined && format !== 'text' && format !== 'json') usage(`--log-format must be text or json, not '${format}'`);
+  return { ...(format === 'json' ? { logFormat: 'json' as const } : {}), ...(v['log-ip'] ? { logIp: true as const } : {}), ...(v.quiet ? { quiet: true as const } : {}) };
+}
+
+/** Where a foreground server's log lines go: stdout, other lines wrapped as JSON objects under `--log-format json`. */
+function logWriter(logging: { logFormat?: 'json' }): (line: string) => void {
+  return (l) => void process.stdout.write(`${logging.logFormat === 'json' && !l.startsWith('{') ? jsonLogLine(new Date().toISOString(), l) : l}\n`);
+}
+
 async function serveWatch(v: ParsedValues, pos: string[]): Promise<number> {
   requireArgs(pos, 0, 1, 'a build context directory');
   if (v.detach) usage('--watch cannot be combined with -d');
@@ -277,6 +298,7 @@ async function serveWatch(v: ParsedValues, pos: string[]): Promise<number> {
   const allowedHosts = allowedHostsOf(v);
   const isolate = isolateOf(v);
   const cache = cacheOf(v);
+  const logging = loggingOf(v);
   const context = pos[0] ?? '.';
   const file = str(v.file);
   const target = str(v.target);
@@ -303,7 +325,7 @@ async function serveWatch(v: ParsedValues, pos: string[]): Promise<number> {
     builtAt = Math.floor(Date.now() / 1000);
     if (event !== undefined) live.send(event);
   };
-  const server = createSiteServer(() => current, { spa: !!v.spa, allowedHosts, cors: !!v.cors, ...(isolate ? { isolate } : {}), ...(cache ? { cache } : {}), liveReload: live, lastModified: () => builtAt, log: (l) => process.stdout.write(`${l}\n`), warn: (m) => process.stderr.write(`warning: ${m}\n`) });
+  const server = createSiteServer(() => current, { spa: !!v.spa, allowedHosts, cors: !!v.cors, ...(isolate ? { isolate } : {}), ...(cache ? { cache } : {}), ...logging, liveReload: live, lastModified: () => builtAt, log: logWriter(logging), warn: (m) => process.stderr.write(`warning: ${m}\n`) });
   try {
     return await watchLoop({
       context,
@@ -347,7 +369,8 @@ async function serveWatch(v: ParsedValues, pos: string[]): Promise<number> {
       onStarted: async () => {
         const addr = await listen(server, bind.host, bind.port);
         started = true;
-        process.stdout.write(`Serving ${context} (${current.size} files) at ${formatUrl(addr.host, addr.port)}  (Ctrl-C to stop)\n`);
+        if (logging.logFormat === 'json') process.stdout.write(`${startedLogLine(new Date().toISOString(), context, current.size, formatUrl(addr.host, addr.port))}\n`);
+        else process.stdout.write(`Serving ${context} (${current.size} files) at ${formatUrl(addr.host, addr.port)}  (Ctrl-C to stop)\n`);
       },
     });
   } finally {
@@ -479,10 +502,10 @@ export function tailLines(text: string, n: number): string {
 const logs: Command = {
   name: 'logs',
   summary: 'show a server\'s access log',
-  usage: 'server logs [-f] [-n lines] <name|id>',
+  usage: 'server logs [-f] [-n lines] [--json] <name|id>',
   description: 'Print the log of a detached server: one line per request ("METHOD /path STATUS BYTES MSms").',
-  flags: ['-f, --follow    keep printing new lines until Ctrl-C', '-n, --tail <n>  only the last n lines'],
-  options: { follow: { type: 'boolean', short: 'f' }, tail: { type: 'string', short: 'n' } },
+  flags: ['-f, --follow    keep printing new lines until Ctrl-C', '-n, --tail <n>  only the last n lines', '--json          one JSON object per line (text lines of older servers are converted)'],
+  options: { follow: { type: 'boolean', short: 'f' }, tail: { type: 'string', short: 'n' }, json: { type: 'boolean' } },
   async run(v, pos) {
     requireArgs(pos, 1, 1, 'a server id or name');
     const reg = await ServerRegistry.open();
@@ -495,8 +518,19 @@ const logs: Command = {
       if (!Number.isSafeInteger(n) || n < 0) usage('--tail expects a non-negative integer');
       text = tailLines(text, n);
     }
-    process.stdout.write(text);
-    if (!v.follow) return 0;
+    let carry = '';
+    /** Write log bytes; with --json, whole lines only, each converted. */
+    const emit = (chunk: string): void => {
+      if (!v.json) return void process.stdout.write(chunk);
+      const lines = (carry + chunk).split('\n');
+      carry = lines.pop() ?? '';
+      if (lines.length > 0) process.stdout.write(lines.map((l) => `${logLineAsJson(l)}\n`).join(''));
+    };
+    emit(text);
+    if (!v.follow) {
+      if (v.json && carry !== '') process.stdout.write(`${logLineAsJson(carry)}\n`);
+      return 0;
+    }
     let pos2 = offset;
     let done = false;
     void waitForSignal().then(() => (done = true));
@@ -511,7 +545,7 @@ const logs: Command = {
           const buf = Buffer.alloc(size - pos2);
           await fh.read(buf, 0, buf.length, pos2);
           pos2 = size;
-          process.stdout.write(buf);
+          emit(buf.toString('utf8'));
         }
       } finally {
         await fh.close();

@@ -43,6 +43,12 @@ export interface SiteServerOptions {
   readonly isolate?: 'require-corp' | 'credentialless';
   /** `--max-age`, `--immutable`, `--max-age-html`: a production `Cache-Control` preview for files ({@link cacheControlFor}). */
   readonly cache?: CachePreview;
+  /** `--log-format`: access-log lines as text (the default, `GET /path 200 1234 1.2ms`) or one JSON object each ({@link accessLogLine}). */
+  readonly logFormat?: 'text' | 'json';
+  /** `--log-ip`: add the client address to access-log lines. */
+  readonly logIp?: boolean;
+  /** `--quiet`: no access-log lines (other log lines still go to {@link log}). */
+  readonly quiet?: boolean;
 }
 
 /** Reserved for the live-reload event stream while `serve --watch` runs. */
@@ -362,6 +368,76 @@ export function safeSegments(rawPath: string): string[] | undefined {
  * section 3.2.2, sent by proxies and some clients) loses its scheme and authority (`/path?q`, or
  * `/` for an empty path); any other target is returned as it is. The authority is not checked.
  */
+/** One access-log request, as {@link accessLogLine} writes it. */
+export interface AccessLogEntry {
+  readonly ts: string;
+  readonly method: string;
+  /** The request target as received (made printable: other bytes become `%xx`). */
+  readonly target: string;
+  readonly status: number;
+  readonly bytes: number;
+  readonly ms: number;
+  /** `Content-Range` of a `206`/`416`, else undefined. */
+  readonly range?: string;
+  /** The client address (`--log-ip`), else undefined. */
+  readonly remote?: string;
+}
+
+/**
+ * An access-log line. Text: `METHOD target STATUS BYTES MSms` (then ` <remote>` with `--log-ip`). JSON, a stable
+ * contract (docs/CLI.md): `{"type":"request","ts","method","path","query","status","bytes","ms","encoding","range"}`
+ * and `"remote"` with `--log-ip`, in that order; `path` and `query` split the target at the first `?` (the `?`
+ * dropped), `ms` has one decimal, `range` is the response's `Content-Range` or null.
+ */
+export function accessLogLine(format: 'text' | 'json', e: AccessLogEntry): string {
+  const target = printable(e.target);
+  if (format === 'text') return `${e.method} ${target} ${e.status} ${e.bytes} ${e.ms.toFixed(1)}ms${e.remote !== undefined ? ` ${e.remote}` : ''}`;
+  const q = target.indexOf('?');
+  const path = q === -1 ? target : target.slice(0, q);
+  const query = q === -1 ? '' : target.slice(q + 1);
+  return (
+    `{"type":"request","ts":${JSON.stringify(e.ts)},"method":${JSON.stringify(e.method)},"path":${JSON.stringify(path)},"query":${JSON.stringify(query)},` +
+    `"status":${e.status},"bytes":${e.bytes},"ms":${e.ms.toFixed(1)},"encoding":"identity","range":${e.range === undefined ? 'null' : JSON.stringify(e.range)}` +
+    `${e.remote !== undefined ? `,"remote":${JSON.stringify(e.remote)}` : ''}}`
+  );
+}
+
+/** A log line that is not a request, as a JSON object (`--log-format json`): `warning: …` and `error…` lines get their own types. */
+export function jsonLogLine(ts: string, line: string): string {
+  const [type, message] = line.startsWith('warning: ') ? ['warning', line.slice(9)] : line.startsWith('error') ? ['error', line] : ['message', line];
+  return `{"type":${JSON.stringify(type)},"ts":${JSON.stringify(ts)},"message":${JSON.stringify(message)}}`;
+}
+
+/** `{"type":"started","ts","site","files","url"}`: a server is listening (`--log-format json`). */
+export function startedLogLine(ts: string, site: string, files: number, url: string): string {
+  return `{"type":"started","ts":${JSON.stringify(ts)},"site":${JSON.stringify(site)},"files":${files},"url":${JSON.stringify(url)}}`;
+}
+
+/** `{"type":"stopped","ts","signal"}`: a server shuts down (`--log-format json`). */
+export function stoppedLogLine(ts: string, signal: string): string {
+  return `{"type":"stopped","ts":${JSON.stringify(ts)},"signal":${JSON.stringify(signal)}}`;
+}
+
+/**
+ * A detached server's log line as JSON (`server logs --json`): JSON lines as they are; a text line
+ * (`<ISO time> <rest>`) as a request, started, stopped, warning, error or message object.
+ */
+export function logLineAsJson(line: string): string {
+  if (line.startsWith('{')) return line;
+  const m = /^([0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:.]+Z) (.*)$/.exec(line);
+  if (!m) return jsonLogLine('', line);
+  const [, ts, rest] = m as unknown as [string, string, string];
+  const r = /^([A-Z][A-Z-]*) (\S+) ([0-9]{3}) ([0-9]+) ([0-9]+\.[0-9])ms(?: (\S+))?$/.exec(rest);
+  if (r) {
+    return accessLogLine('json', { ts, method: r[1]!, target: r[2]!, status: Number(r[3]), bytes: Number(r[4]), ms: Number(r[5]), ...(r[6] !== undefined ? { remote: r[6] } : {}) });
+  }
+  const started = /^serving (.+) \(([0-9]+) files\) at (\S+)$/.exec(rest);
+  if (started) return startedLogLine(ts, started[1]!, Number(started[2]), started[3]!);
+  const stopped = /^received (SIG[A-Z]+), shutting down$/.exec(rest);
+  if (stopped) return stoppedLogLine(ts, stopped[1]!);
+  return jsonLogLine(ts, rest);
+}
+
 /** Production cache headers to preview instead of `no-cache` (`serve --max-age`). */
 export interface CachePreview {
   /** Seconds for files other than HTML: `public, max-age=N`. */
@@ -594,7 +670,20 @@ export function createSiteServer(site: Tree | (() => Tree), options: SiteServerO
       if (quiet) return;
       // `servers` probes carry the server's own id; they would only clutter the access log.
       if (options.serverId !== undefined && req.headers['x-sitefile-probe'] === options.serverId) return;
-      options.log?.(`${method} ${printable(target)} ${status} ${bytes} ${ms.toFixed(1)}ms`);
+      if (options.quiet) return;
+      const range = headers['content-range'];
+      options.log?.(
+        accessLogLine(options.logFormat ?? 'text', {
+          ts: new Date().toISOString(),
+          method,
+          target,
+          status,
+          bytes,
+          ms,
+          ...(range !== undefined ? { range: String(range) } : {}),
+          ...(options.logIp ? { remote: req.socket.remoteAddress ?? '' } : {}),
+        }),
+      );
     };
     const page = (status: number, html: string, extra: Record<string, string> = {}): void =>
       finish(status, { 'content-type': 'text/html; charset=utf-8', 'content-length': Buffer.byteLength(html), ...extra }, html);

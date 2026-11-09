@@ -1091,7 +1091,7 @@ sitefile serve --watch [-p [host:]port] [--spa] [build options] [context]   # se
 sitefile servers [-a] [--json]                   # also: sitefile server ls
 sitefile server stop [--time secs] <name|id>...
 sitefile server rm [-f] <name|id>...
-sitefile server logs [-f] [-n lines] <name|id>
+sitefile server logs [-f] [-n lines] [--json] <name|id>
 sitefile server restart <name|id>
 ```
 
@@ -1151,6 +1151,22 @@ to `image` (`imageId`) and `dir` (`path`).
   checks only when `allowedHosts` is given.
 - Foreground by default: prints the URL and one access-log line per request (`GET /path 200 1234 1.2ms`); Ctrl-C
   stops it. Foreground servers are not listed by `servers`; `--name` needs `-d`.
+- **Access log formats.** Text (the default) is `METHOD target STATUS BYTES MSms`, the target as received with
+  bytes outside printable ASCII as `%xx`, and ` <client address>` at the end with `--log-ip`. `--quiet` drops the
+  request lines. `--log-format json` writes **one JSON object per line**, a stable contract (field order fixed):
+  - request: `{"type":"request","ts":"2026-11-08T21:30:00.123Z","method":"GET","path":"/a","query":"x=1","status":200,"bytes":1234,"ms":1.2,"encoding":"identity","range":null}`
+    plus `"remote":"127.0.0.1"` with `--log-ip`. `path` and `query` split the target at the first `?` (dropped);
+    `ms` has one decimal; `range` is the `Content-Range` of a `206`/`416`, else `null`; `encoding` is the
+    `Content-Encoding` sent (`identity` until compression lands).
+  - `{"type":"started","ts","site","files","url"}` when the server listens (instead of the `Serving …` line),
+    `{"type":"stopped","ts","signal"}` when a detached server shuts down.
+  - any other line: `{"type":"warning"|"error"|"message","ts","message"}` (`warning: …` and `error…` lines get those
+    types).
+  Under `--watch` the access log, browser console lines and the start line are JSON; build output (`Built …`,
+  errors on stderr) is not part of the log and stays text. The format is stored in the server record
+  (`logFormat: "json"`, `logIp`, `quiet`), so a detached server writes it to its log file. `server logs --json`
+  prints any server's log as JSON, converting the text lines of servers started without it (`<time> GET … 200 …`
+  becomes a request object with `range: null`).
 - Behaviour: `GET` and `HEAD` only (`405` with `Allow` otherwise); `/` and `/dir/` serve `index.html`; clean
   URLs: `/about` serves `/about.html` when there is no file `/about`, and `/about/` redirects (`301`, query kept) to
   `/about` when only `/about.html` answers it (after any `_redirects` rule for the path); `/about.html` and
