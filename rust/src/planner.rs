@@ -198,6 +198,14 @@ pub enum Operation {
         overwrite: bool,
         span: SourceSpan,
     },
+    /// Add a canonical link to every page below `root` (the EXPORT path) that has none; `base` is checked,
+    /// without trailing slashes.
+    Canonical {
+        base: String,
+        pretty: bool,
+        root: String,
+        span: SourceSpan,
+    },
     /// Report the references in the tree's HTML and CSS files that point at nothing; `root` is the EXPORT path and
     /// `redirects` every REDIRECT source in the Sitefile.
     CheckLinks {
@@ -271,6 +279,7 @@ impl Operation {
             | Operation::Render { span, .. }
             | Operation::Sitemap { span, .. }
             | Operation::Fingerprint { span, .. }
+            | Operation::Canonical { span, .. }
             | Operation::CheckLinks { span, .. }
             | Operation::Feed { span, .. } => span,
         }
@@ -282,6 +291,7 @@ impl Operation {
             Operation::Render { .. } => "RENDER",
             Operation::Sitemap { .. } => "SITEMAP",
             Operation::Fingerprint { .. } => "FINGERPRINT",
+            Operation::Canonical { .. } => "CANONICAL",
             Operation::CheckLinks { .. } => "CHECKLINKS",
             Operation::Feed { .. } => "FEED",
         }
@@ -858,6 +868,20 @@ pub fn plan_with(
                 });
                 fingerprints.push((span.clone(), !*no_cache_headers));
             }
+            Instruction::Canonical { span, base, pretty } => {
+                let base = check_base_url(
+                    &evaluate_operand(base, &vars)?,
+                    "CANONICAL BASE",
+                    &base.span,
+                )?;
+                // `root` is the EXPORT path, filled in below.
+                operations(&mut stages, span)?.push(Operation::Canonical {
+                    base,
+                    pretty: *pretty,
+                    root: "/".into(),
+                    span: span.clone(),
+                });
+            }
             Instruction::CheckLinks {
                 span,
                 warn,
@@ -999,7 +1023,9 @@ pub fn plan_with(
     for st in &mut stages {
         for op in &mut st.operations {
             match op {
-                Operation::Fingerprint { root: r, .. } => *r = root.clone(),
+                Operation::Fingerprint { root: r, .. } | Operation::Canonical { root: r, .. } => {
+                    *r = root.clone()
+                }
                 Operation::CheckLinks {
                     root: r,
                     redirects: rs,
@@ -1524,6 +1550,17 @@ impl Operation {
                 }
                 m.insert("root".into(), json!(root));
                 m.insert("overwrite".into(), json!(overwrite));
+                m.insert("span".into(), span_json(span));
+            }
+            Operation::Canonical {
+                base,
+                pretty,
+                root,
+                span,
+            } => {
+                m.insert("base".into(), json!(base));
+                m.insert("pretty".into(), json!(pretty));
+                m.insert("root".into(), json!(root));
                 m.insert("span".into(), span_json(span));
             }
             Operation::Sitemap {
