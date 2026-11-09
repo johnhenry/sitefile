@@ -81,14 +81,23 @@ jobs:
       run:
         working-directory: rust
     steps:
-      # One conformance fixture has a name Windows can't create
-      # ("a&b <c>.html"); leave it out of the checkout.
-      - uses: actions/checkout@v4
-        with:
-          sparse-checkout-cone-mode: false
-          sparse-checkout: |
-            /*
-            !/conformance/cases/ok-site-files/public/a&b <c>.html
+      # One conformance fixture is named "a&b <c>.html", which Windows can't
+      # create, so git can't check this repository out there. Fetch the
+      # commit as a tarball instead and leave that one file out.
+      - name: Fetch the source (without the fixture Windows can't name)
+        working-directory: .
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          curl -fsSL -H "Authorization: Bearer $GH_TOKEN" -o src.tar.gz \
+            "https://api.github.com/repos/$REPO/tarball/$SHA"
+          tar -xzf src.tar.gz --strip-components=1 --exclude='*/public/a&b <c>.html'
+          rm src.tar.gz
+          ls
 
       - uses: dtolnay/rust-toolchain@stable
 
