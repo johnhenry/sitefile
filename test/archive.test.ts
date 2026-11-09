@@ -5,13 +5,15 @@ import { extractArchive } from '../src/resources/archive.js';
 import { DEFAULT_ARCHIVE_LIMITS, type ArchiveLimits } from '../src/resources/types.js';
 import { isSitefileError, type ErrorCode } from '../src/errors.js';
 import { tar, tarHeader, zip } from './archive-fixtures.js';
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 
 const text = (b: Uint8Array | undefined): string => new TextDecoder().decode(b);
 const paths = (t: Awaited<ReturnType<typeof extractArchive>>): string[] => t.entries().map(([p]) => p);
 
-async function rejects(bytes: Uint8Array, code: ErrorCode, match: RegExp, limits: Partial<ArchiveLimits> = {}): Promise<void> {
+async function rejects(bytes: Uint8Array, code: ErrorCode, match: RegExp, limits: Partial<ArchiveLimits> = {}, origin = 'test'): Promise<void> {
   await assert.rejects(
-    () => extractArchive(bytes, 'test', { ...DEFAULT_ARCHIVE_LIMITS, ...limits }),
+    () => extractArchive(bytes, origin, { ...DEFAULT_ARCHIVE_LIMITS, ...limits }),
     (e: unknown) => {
       assert.ok(isSitefileError(e), String(e));
       assert.equal(e.code, code, e.message);
@@ -67,6 +69,25 @@ test('unknown format and non-tar gzip are E_TYPE', async () => {
   await rejects(Buffer.from('just some text, not an archive'), 'E_TYPE', /not a recognized archive/);
   await rejects(new Uint8Array(0), 'E_TYPE', /not a recognized archive/);
   await rejects(gzipSync('hello'), 'E_TYPE', /not a tar archive/);
+});
+
+/** test/fixtures/gzip-wbn (from the source tree: the compiled test runs from lib/test). */
+const GZIP_WBN = fileURLToPath(new URL('../../test/fixtures/gzip-wbn/', import.meta.url));
+
+test('gzip-wrapped Web Bundles (fileable encode="wbn", packfile toArchive) import like plain ones (#141)', async () => {
+  const expected = JSON.parse(readFileSync(`${GZIP_WBN}expected.json`, 'utf8')) as Record<string, { tree: string; files: Record<string, string> }>;
+  assert.deepEqual(Object.keys(expected).sort(), ['fileable-encode-wbn.wbn', 'packfile-toarchive.wbn']);
+  for (const [name, want] of Object.entries(expected)) {
+    const bytes = readFileSync(`${GZIP_WBN}${name}`);
+    assert.deepEqual([...bytes.subarray(0, 2)], [0x1f, 0x8b], `${name} is gzip`);
+    const t = await extractArchive(bytes, name);
+    assert.deepEqual(Object.fromEntries(t.entries().map(([p, n]) => [p, n.digest])), want.files, name);
+    assert.equal(t.digest(), want.tree, name);
+  }
+  // the bundle's own limits apply to the decompressed stream
+  const bundle = readFileSync(`${GZIP_WBN}packfile-toarchive.wbn`);
+  await rejects(bundle, 'E_ARCHIVE_LIMIT', /^packfile: web bundle has more than 2 entries$/, { maxEntries: 2 }, 'packfile');
+  await rejects(bundle, 'E_ARCHIVE_LIMIT', /^packfile: web bundle expands beyond 20 bytes$/, { maxTotalBytes: 20 }, 'packfile');
 });
 
 test('unsafe tar paths are rejected', async () => {

@@ -8,6 +8,12 @@
   `watch` and `pollMs`, so `server restart` watches again. Every live-reload stream now starts with
   `id: <instance>`, and a page that reconnects with another instance's `Last-Event-ID` (the server
   restarted) is told to reload. Both implementations, with conformance cases.
+- **`IMPORT … AS tree` reads gzip-wrapped Web Bundles** (johnhenry/sitefile#141): after
+  gunzip, a Web Bundle is unpacked like a plain `.wbn` instead of failing with `gzip
+  content is not a tar archive`, so bundles written by `@johnhenry/fileable`
+  (`encode="wbn"`), `@johnhenry/packfile`'s `toArchive()` and `EXPORT … AS wbn COMPRESSION
+  gzip` import. Checked-in fixtures from both tools (`test/fixtures/gzip-wbn`) are read
+  by both implementations and a conformance case.
 
 ## 0.0.3 (2026-11-09)
 

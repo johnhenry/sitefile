@@ -18,7 +18,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { gunzipSync, gzipSync } from 'node:zlib';
-import { createRouter, fromArchive } from '@johnhenry/packfile';
+import { createRouter, fromArchive, fromFiles, toArchive } from '@johnhenry/packfile';
 import { createWebBundleRouter, fromWebBundle } from '@johnhenry/packfile/web-bundle';
 
 // `createWebBundleRouter` takes a parsed `wbn.Bundle`; `wbn` is packfile's own dependency, so
@@ -197,4 +197,16 @@ test('packfile fromArchive(buffer), with no options, reads a Sitefile EXPORT ...
   const plain = await fs.readFile(path.join(ctx, 'plain.wbn'));
   sameFiles(await fromArchive(plain, { compressed: false }), files);
   assert.ok(gunzipSync(archive).equals(plain));
+});
+
+test('IMPORT … AS tree reads a packfile toArchive() bundle (gzip around a Web Bundle, #141)', async () => {
+  const dir = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'sitefile-packfile-import-')));
+  temps.push(dir);
+  const files = await fromFiles({ 'index.html': '<h1>from packfile</h1>\n', 'docs/ünï/page.html': '<p>unicode path</p>\n', 'logo.bin': new Uint8Array(BINARY) });
+  await fs.writeFile(path.join(dir, 'site.wbn'), await toArchive(files));
+  await fs.writeFile(path.join(dir, 'Sitefile'), 'FROM scratch\nIMPORT p FROM ./site.wbn AS tree\nCOPY p:/ /\nEXPORT /\n');
+  await sitefile(['build', dir, '-o', path.join(dir, 'out')], dir);
+  assert.equal(await fs.readFile(path.join(dir, 'out', 'index.html'), 'utf8'), '<h1>from packfile</h1>\n');
+  assert.equal(await fs.readFile(path.join(dir, 'out', 'docs', 'ünï', 'page.html'), 'utf8'), '<p>unicode path</p>\n');
+  assert.ok((await fs.readFile(path.join(dir, 'out', 'logo.bin'))).equals(BINARY));
 });
