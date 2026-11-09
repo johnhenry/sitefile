@@ -192,3 +192,60 @@ fn profile_dir_gets_one_trace_per_target() {
         );
     }
 }
+
+#[test]
+fn a_gzip_wbn_target_defaults_to_dot_wbn_dot_gz_like_build() {
+    // #151: the same rule as `build`'s default name; the case directory is the conformance case's.
+    let work = Tmp::new();
+    let dir = work.0.join("bake");
+    copy_dir(
+        &repo_root()
+            .join("conformance")
+            .join("cases")
+            .join("bake-wbn-gzip"),
+        &dir,
+    );
+    let printed = sitefile(&work, &dir, &["bake", "--print", "--json"]);
+    assert_eq!(printed.code, 0, "{}", printed.stderr);
+    let plan: serde_json::Value = serde_json::from_str(&printed.stdout).unwrap();
+    let outputs: Vec<(String, String)> = plan["targets"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|t| {
+            (
+                t["name"].as_str().unwrap().to_string(),
+                t["output"].as_str().unwrap().to_string(),
+            )
+        })
+        .collect();
+    let want = [
+        ("gz", "dist/gz.wbn.gz"),
+        ("named", "dist/named.wbn"),
+        ("plain", "dist/plain.wbn"),
+        ("zip", "dist/zip.zip"),
+    ];
+    assert_eq!(
+        outputs,
+        want.iter()
+            .map(|(a, b)| (a.to_string(), b.to_string()))
+            .collect::<Vec<_>>()
+    );
+    let r = sitefile(&work, &dir, &["bake"]);
+    assert_eq!(r.code, 0, "{}", r.stderr);
+    assert!(
+        r.stdout
+            .lines()
+            .any(|l| l.starts_with("[gz] Exported 1 file to dist/gz.wbn.gz (wbn, ")),
+        "{}",
+        r.stdout
+    );
+    let gz = fs::read(dir.join("dist").join("gz.wbn.gz")).unwrap();
+    assert_eq!(
+        &gz[..2],
+        &[0x1f, 0x8b],
+        "the bytes are gzip, as the name says"
+    );
+    let plain = fs::read(dir.join("dist").join("plain.wbn")).unwrap();
+    assert_ne!(&plain[..2], &[0x1f, 0x8b]);
+}

@@ -1,6 +1,8 @@
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { SitefileError } from './errors.js';
+import { collectBuildArgs } from './build-args.js';
+import { planBuild, sitefileCompression } from './executor.js';
 import { defaultOutName } from './export-formats.js';
 import { EXPORT_FORMATS, parseExportFormat } from './language/ast.js';
 import { parseYaml } from './yaml.js';
@@ -30,6 +32,8 @@ export interface BakeTarget {
   /** `--target <stage>`. */
   readonly target: string | null;
   readonly output: string;
+  /** No `output` in the bake file: `output` is the default name, `dist/<name>` plus the format's extension. */
+  readonly defaultOutput: boolean;
   readonly format: string | null;
   readonly tags: readonly string[];
   /** The matrix values of an expanded target. */
@@ -266,6 +270,7 @@ function expand(def: Definition, bakeDir: string): Map<string, BakeTarget[]> {
         argFiles: (fields['arg-files'] ?? []).map((f) => joinTo(bakeDir, sub('arg-files', f))),
         target: fields.target !== undefined ? sub('target', fields.target) : null,
         output: joinTo(bakeDir, fields.output !== undefined ? sub('output', fields.output) : defaultOut),
+        defaultOutput: fields.output === undefined,
         format,
         tags: (fields.tags ?? []).map((t) => sub('tags', t)),
         matrix: raw.matrix ? Object.fromEntries(combo) : null,
@@ -335,7 +340,29 @@ function checkConflicts(targets: readonly BakeTarget[]): void {
 
 /** Read, check and resolve a bake file. */
 export async function bakePlan(file: string, selected: readonly string[]): Promise<BakePlan> {
-  return resolveBake(parseBakeDefinition(await loadBakeFile(file), file), file, selected);
+  const plan = resolveBake(parseBakeDefinition(await loadBakeFile(file), file), file, selected);
+  const targets = await Promise.all(plan.targets.map(compressedDefault));
+  if (targets.some((t, i) => t !== plan.targets[i])) checkConflicts(targets);
+  return { file: plan.file, targets };
+}
+
+/**
+ * A `wbn` or `warc` target with the default output gets the name `build` would give it: `dist/<name>.wbn.gz`
+ * (`.warc.gz`) when its Sitefile's EXPORT in that format says `COMPRESSION gzip` (#151). A Sitefile that cannot
+ * be planned keeps the plain name; its build reports why.
+ */
+async function compressedDefault(t: BakeTarget): Promise<BakeTarget> {
+  const format = t.format !== null ? parseExportFormat(t.format) : undefined;
+  if (!t.defaultOutput || (format !== 'wbn' && format !== 'warc')) return t;
+  try {
+    const buildArgs = await collectBuildArgs(t.argFiles, Object.entries(t.args).map(([k, v]) => `${k}=${v}`));
+    const plan = await planBuild({ contextDir: t.context, sitefile: t.file, buildArgs });
+    if (sitefileCompression(plan, format) !== 'gzip') return t;
+    return { ...t, output: t.output + defaultOutName(format, 'gzip').slice(defaultOutName(format).length) };
+  } catch (e) {
+    if (e instanceof SitefileError) return t;
+    throw e;
+  }
 }
 
 /** `--print --json`. */

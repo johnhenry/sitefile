@@ -1,0 +1,4 @@
+# EXPORT ... AS wbn COMPRESSION gzip: bake names the default output like build (dist/<target>.wbn.gz, #151).
+FROM scratch
+COPY ./public/ /
+EXPORT / AS wbn BASE https://example.com/ COMPRESSION gzip

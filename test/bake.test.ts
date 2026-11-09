@@ -199,6 +199,30 @@ test('CLI: a failing target fails the bake (exit 1) after the others finish; --b
   assert.match(await readFile(path.join(dir, 'out', 'also', 'index.html'), 'utf8'), /<p class="env">ci<\/p>/);
 });
 
+test('CLI: a wbn target whose Sitefile says COMPRESSION gzip defaults to dist/<name>.wbn.gz, like build (#151)', async () => {
+  const work = await mkdtemp(path.join(os.tmpdir(), 'sitefile-bake-'));
+  temps.push(work);
+  const dir = path.join(work, 'bake');
+  await cp(path.join(root, 'conformance', 'cases', 'bake-wbn-gzip'), dir, { recursive: true, filter: (s) => path.basename(s) !== 'case.json' });
+  const home = path.join(work, '.home');
+  const printed = await sitefile(['bake', '--print', '--json'], dir, home);
+  assert.equal(printed.code, 0, printed.stderr);
+  const outputs = (JSON.parse(printed.stdout) as { targets: Array<{ name: string; output: string }> }).targets.map((t) => [t.name, t.output]);
+  assert.deepEqual(outputs, [
+    ['gz', 'dist/gz.wbn.gz'],
+    ['named', 'dist/named.wbn'], // an explicit output is kept
+    ['plain', 'dist/plain.wbn'],
+    ['zip', 'dist/zip.zip'], // COMPRESSION belongs to the EXPORT's own format
+  ]);
+  const r = await sitefile(['bake'], dir, home);
+  assert.equal(r.code, 0, r.stderr);
+  assert.match(r.stdout, /^\[gz\] Exported 1 file to dist\/gz\.wbn\.gz \(wbn, /m);
+  const gz = await readFile(path.join(dir, 'dist', 'gz.wbn.gz'));
+  assert.deepEqual([...gz.subarray(0, 2)], [0x1f, 0x8b], 'the bytes are gzip, as the name says');
+  const plain = await readFile(path.join(dir, 'dist', 'plain.wbn'));
+  assert.notDeepEqual([...plain.subarray(0, 2)], [0x1f, 0x8b]);
+});
+
 test('CLI: --print builds nothing; usage errors', async () => {
   const { dir, home } = await example();
   const r = await sitefile(['bake', '--print', '--json', 'en'], dir, home);
