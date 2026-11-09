@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.0.4 (2026-11-09)
 
 - **`.tar.zst` / `.tzst` archives** (johnhenry/sitefile#221): `IMPORT … AS tree`, `serve`, `verify` and
   `diff` read Zstandard-compressed tars (detected by magic bytes, like gzip), with the same entry,
