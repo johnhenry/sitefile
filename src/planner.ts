@@ -1,5 +1,5 @@
 import { SitefileError, type SourceSpan } from './errors.js';
-import { importedStage, isFragment, isImageBase, isInline, stageNames, type ImageBase, type EscapeMode, type RedirectStatus, type ExportFormat, type InlineBody, type ImportKind, type OciCompression, type Operand, type PrecompressFormat, type Program, type StageRef, type ValueType } from './language/ast.js';
+import { importedStage, isFragment, isImageBase, isInline, stageNames, type ImageBase, type EscapeMode, type RedirectStatus, type ExportFormat, type ExportHost, type InlineBody, type ImportKind, type OciCompression, type Operand, type PrecompressFormat, type Program, type StageRef, type ValueType } from './language/ast.js';
 import { normalizeLocal, normalizeVirtual } from './paths.js';
 import { parseRef } from './ref.js';
 import { checkPattern } from './fingerprint.js';
@@ -288,6 +288,8 @@ export interface Plan {
   readonly exportCompression: OciCompression | undefined;
   /** `KEY <secret-id>` of EXPORT ... AS swbn: the --secret holding the signing key. */
   readonly exportKey?: string;
+  /** `FOR <host>` of EXPORT: which host's files the REDIRECT and HEADER rules become (undefined: `_redirects`/`_headers`). */
+  readonly exportFor?: { readonly host: ExportHost; readonly span: SourceSpan };
   /** REDIRECT lines in source order (any stage); EXPORT writes them to `/_redirects`. */
   readonly redirects: readonly RedirectSpec[];
   /** HEADER lines in source order (any stage); EXPORT writes them to `/_headers`. */
@@ -340,6 +342,7 @@ export function plan(program: Program, buildArgs: Readonly<Record<string, string
   let exportRoot: string | undefined;
   let exportCompression: OciCompression | undefined;
   let exportKey: string | undefined;
+  let exportFor: { host: ExportHost; span: SourceSpan } | undefined;
 
   const bind = (name: string, raw: string, type: ValueType, span: SourceSpan, what: string): void => {
     vars.set(name, coerce(raw, type, span, what));
@@ -624,6 +627,10 @@ export function plan(program: Program, buildArgs: Readonly<Record<string, string
         if (ins.key && ins.format !== 'swbn') throw new SitefileError('E_VALIDATION', 'EXPORT ... KEY applies only to AS swbn', ins.key.span);
         if (ins.format === 'swbn' && !ins.key) throw new SitefileError('E_VALIDATION', 'EXPORT ... AS swbn needs KEY <secret-id>: the --secret that holds the Ed25519 signing key', ins.span);
         exportKey = ins.key?.id;
+        if (ins.forHost && !['directory', 'zip', 'tar', 'tgz'].includes(ins.format)) {
+          throw new SitefileError('E_VALIDATION', `EXPORT ... FOR applies only to AS directory, zip, tar and tgz, not ${ins.format}`, ins.forHost.span);
+        }
+        exportFor = ins.forHost ? { host: ins.forHost.value, span: ins.forHost.span } : undefined;
         break;
     }
   }
@@ -676,6 +683,7 @@ export function plan(program: Program, buildArgs: Readonly<Record<string, string
     exportRoot,
     exportCompression,
     ...(exportKey !== undefined ? { exportKey } : {}),
+    ...(exportFor ? { exportFor } : {}),
     redirects,
     headers,
     ...(cacheHeaders ? { cacheHeaders } : {}),

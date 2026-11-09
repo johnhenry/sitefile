@@ -209,6 +209,18 @@ export interface ExportInstruction {
   readonly compression?: { readonly value: OciCompression; readonly span: SourceSpan };
   /** `KEY <secret-id>` (`swbn` only): the build secret holding the Ed25519 signing key. */
   readonly key?: { readonly id: string; readonly span: SourceSpan };
+  /** `FOR <host>`: write the host's own files for the REDIRECT and HEADER rules (docs/LANGUAGE.md). */
+  readonly forHost?: { readonly value: ExportHost; readonly span: SourceSpan };
+}
+
+/** `EXPORT ... FOR <host>`: whose config files the REDIRECT and HEADER rules become. */
+export type ExportHost = 'netlify' | 'cloudflare' | 'vercel' | 'firebase' | 'azure' | 'github-pages' | 's3';
+export const EXPORT_HOSTS: readonly ExportHost[] = ['netlify', 'cloudflare', 'vercel', 'firebase', 'azure', 'github-pages', 's3'];
+
+/** An EXPORT host name (case-insensitive), or undefined. */
+export function parseExportHost(name: string): ExportHost | undefined {
+  const n = name.toLowerCase();
+  return (EXPORT_HOSTS as readonly string[]).includes(n) ? (n as ExportHost) : undefined;
 }
 
 /**

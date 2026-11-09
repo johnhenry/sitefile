@@ -25,6 +25,7 @@ export const KEYWORDS = {
   fragmentType: 'html',
   exportFormats: ['directory', 'zip', 'tar', 'tgz', 'tar.gz', 'wbn', 'oci', 'car', 'html', 'mhtml', 'warc', 'swbn'],
   compressions: ['gzip', 'none'],
+  exportHosts: ['netlify', 'cloudflare', 'vercel', 'firebase', 'azure', 'github-pages', 's3'],
   escapeModes: ['none', 'html'],
   /** `${file "…" | helper}` (src/media.ts FILE_HELPERS). */
   fileHelpers: ['url', 'width', 'height', 'type', 'size', 'integrity', 'datauri', 'srcset', 'img', 'video', 'audio', 'source', 'script', 'stylesheet', 'preload', 'modulepreload', 'pre', 'svg'],
@@ -415,6 +416,7 @@ export function buildGrammar() {
           instruction('EXPORT', [
             valueAfter('AS', KEYWORDS.exportFormats, 'support.type.export-format', 'invalid.illegal.export-format'),
             valueAfter('COMPRESSION', KEYWORDS.compressions, 'constant.language.compression', 'invalid.illegal.compression'),
+            valueAfter('FOR', KEYWORDS.exportHosts, 'constant.language.export-host', 'invalid.illegal.export-host'),
             kw(['BASE', 'AT', 'KEY']),
             { include: '#operands' },
           ]),

@@ -208,6 +208,7 @@ const CLAUSES: &[(&str, &str, &str)] = &[
     ("EXPORT", "AT", "`AT <root>` (oci only): the directory the files occupy in the image (default /srv/www)."),
     ("EXPORT", "COMPRESSION", "`COMPRESSION gzip|none` (oci, wbn and warc only): how the oci site layer is stored, whether the wbn is gzipped, or whether each warc record is."),
     ("EXPORT", "KEY", "`KEY <secret-id>` (swbn only): the build secret (`--secret id=<id>,src=key.pem`) holding the Ed25519 private key (PEM, PKCS #8) that signs the bundle."),
+    ("EXPORT", "FOR", "`FOR <host>`: write the REDIRECT and HEADER rules as that host reads them: netlify (`_redirects`, `_headers`), cloudflare, vercel (Build Output API v3), firebase, azure (staticwebapp.config.json), github-pages (.nojekyll, CNAME) or s3. A rule the host cannot express is an error (a warning with --lossy)."),
 ];
 
 const FLAGS: &[(&str, &str)] = &[

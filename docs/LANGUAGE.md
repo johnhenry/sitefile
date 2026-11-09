@@ -308,7 +308,7 @@ These pin down what the draft above leaves open. Tests cover each rule.
     plugin as its source, byte for byte; an html LET's body is its template);
     elsewhere it is plain text, so `LET a = <<EOF` is still the string `<<EOF`.
   - See `examples/inline/`.
-- `EXPORT <path> [AS directory|zip|tar|tgz|wbn|oci|car|html|mhtml|warc|swbn] [BASE <url>] [AT <root>] [COMPRESSION gzip|none] [KEY <secret-id>]` must be the last
+- `EXPORT <path> [AS directory|zip|tar|tgz|wbn|oci|car|html|mhtml|warc|swbn] [BASE <url>] [AT <root>] [COMPRESSION gzip|none] [KEY <secret-id>] [FOR <host>]` must be the last
   instruction, exactly once; it exports from the last stage (`--target <stage>` exports a named stage's whole
   tree instead; see [CLI.md](CLI.md#build-target---target-stage)). The format
   defaults to `directory`; `tar.gz` is accepted as an alias for `tgz`; names
@@ -1744,6 +1744,39 @@ checked:
   extremely well). Inflation is bounded with zlib's `maxOutputLength`, so a
   bomb is stopped at the limit, never fully inflated; zip entries are never
   inflated beyond their declared size. The download cap still applies first.
+
+### Host files: EXPORT … FOR <host>
+
+`EXPORT <path> … FOR netlify|cloudflare|vercel|firebase|azure|github-pages|s3` (the last clause; the host
+name is case-insensitive, any other word is `E_SYNTAX`) writes the REDIRECT and HEADER rules,
+FINGERPRINT's `Cache-Control` lines and CSP's `Content-Security-Policy` lines as that host reads them
+(a CSP line the host cannot carry is an error at the CSP line, like a HEADER). It works with `AS directory`, `zip`, `tar`
+and `tgz` (`E_VALIDATION` otherwise), and not with `--target`, which exports the stage's raw tree. It is
+the reverse of `sitefile import-config` (CLI.md).
+
+**A rule the host cannot express as Netlify (and `sitefile serve`) apply it is an error**: `E_EXPORT` at
+the rule's line, for example `EXPORT … FOR firebase: REDIRECT /old /new 303: Firebase Hosting redirects
+are 301 or 302 (build with --lossy to leave it out)`. With `build --lossy`, the rule is left out with a
+warning instead. FINGERPRINT's own cache headers are never an error: when the host cannot carry them,
+they are left out with a warning.
+
+Netlify applies a redirect only when no file answers the path, a file at the path itself, its
+`/index.html` or its `.html` clean URL (`REDIRECT` has no `!`). Cloudflare Pages, Firebase, Azure and S3
+apply redirects first. So on those hosts a redirect that a file in the export answers (for `/blog/*`,
+any file below `/blog/`) is refused: the site would behave differently there.
+
+| Host | Writes | Refused (or left out with `--lossy`) |
+| --- | --- | --- |
+| `netlify` | `_redirects` and `_headers`, as without `FOR` | nothing |
+| `cloudflare` | `_redirects` and `_headers` | redirects a file answers first; more than 2,000 static or 100 dynamic redirects, more than 100 header patterns |
+| `vercel` | the files under `.vercel/output/static/` and `.vercel/output/config.json` (Build Output API v3, for `vercel deploy --prebuilt`). In `routes`, every header pattern comes first as `{src, headers, continue: true}` (`*` becomes `.*`, `:name` becomes `[^/]+`), then `{handle: "filesystem"}`, then each redirect as `{src, headers: {Location}, status}` (an exact path also matches with a trailing slash; `/*` becomes `(?<splat>.*)` and `:name` becomes `(?<name>[^/]+)`, used as `$splat` and `$name` in the target), then `/404.html` for misses when the export has one | `*` other than a trailing `/*`, a `:name` in the target that the source does not have |
+| `firebase` | the files under `public/` and `firebase.json` with `hosting.public`, `redirects` (`/*` becomes `/:splat*`) and `headers` (`*` becomes `**`) | statuses other than 301 and 302, header patterns with `:placeholders`, redirects a file answers first |
+| `azure` | `staticwebapp.config.json` next to the files: `routes` (redirects, then header routes), `globalHeaders` (the `/*` pattern) and `responseOverrides.404` for `/404.html` | statuses other than 301 and 302; `:placeholders`; `:splat` in a target; patterns that are not exact or a trailing `/*`; two routes for the same paths (only the first applies there); a route header that is also in `/*` (Azure replaces rather than adds); redirects a file answers first |
+| `github-pages` | `.nojekyll`, and `CNAME` with the host of `BASE` when it is a custom domain (not `*.github.io`; it must have no path). `/404.html` is used as it is | every REDIRECT and HEADER |
+| `s3` | `_s3/website.json`, the bucket website configuration (`IndexDocument`, `ErrorDocument` for `/404.html`, `RoutingRules` for `/prefix/*` redirects: `KeyPrefixEquals`, `ReplaceKeyPrefixWith` for a target ending in `/:splat`, else `ReplaceKeyWith`, `HostName`/`Protocol` for absolute targets). `_s3/objects.json` lists per-object metadata (`Key`, then `CacheControl`, `ContentType`, …, from HEADER, and `WebsiteRedirectLocation` for exact-path redirects: create an empty object with it). Leave `_s3/` out of the upload (`aws s3 sync … --exclude '_s3/*'`) | exact redirects that are not 301; redirecting `/` or every key; `:placeholders`; a target that keeps the path anywhere but at the end; headers other than Cache-Control, Content-Type, Content-Disposition, Content-Encoding, Content-Language and Expires; redirects a file answers first |
+
+A file the host step writes (`CNAME`, `firebase.json`, …) that the tree already has with different
+content is `E_CONFLICT`, as for any other write.
 
 ### Export formats
 `--out` is a directory for `directory` and a **file** for every other format.

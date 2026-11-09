@@ -427,6 +427,16 @@
           }
         ]
       },
+      "host": {
+        "multiple": false,
+        "required": false,
+        "types": [
+          {
+            "type": "export_host",
+            "named": true
+          }
+        ]
+      },
       "key": {
         "multiple": false,
         "required": false,
@@ -3341,6 +3351,10 @@
   },
   {
     "type": "export_format",
+    "named": true
+  },
+  {
+    "type": "export_host",
     "named": true
   },
   {
