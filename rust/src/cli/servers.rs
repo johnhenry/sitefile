@@ -169,6 +169,25 @@ fn site_url(host: &str, port: u16, base: Option<&str>) -> String {
     format!("{}{}", format_url(host, port), &base.unwrap_or("/")[1..])
 }
 
+/// `--host-profile` and `--html-handling`, checked: (profile, handling).
+fn profile_options(v: &Parsed) -> Result<(Option<String>, Option<String>)> {
+    let p = v.str("host-profile");
+    let h = v.str("html-handling");
+    if let Some(p) = p.filter(|p| !crate::server::HOST_PROFILES.contains(p)) {
+        return usage(format!(
+            "--host-profile expects one of {}, got '{p}'",
+            crate::server::HOST_PROFILES.join(", ")
+        ));
+    }
+    if let Some(h) = h.filter(|h| crate::server::HtmlHandling::parse(h).is_none()) {
+        return usage(format!(
+            "--html-handling expects one of {}, got '{h}'",
+            crate::server::HtmlHandling::NAMES.join(", ")
+        ));
+    }
+    Ok((p.map(str::to_string), h.map(str::to_string)))
+}
+
 /// `--country`: an ISO 3166-1 alpha-2 code (any case).
 fn parse_country(v: Option<&str>) -> Result<Option<String>> {
     match v {
@@ -192,6 +211,8 @@ const SERVE_OPTS: &[OptSpec] = &[
     strings("spa-exclude"),
     string("spa-fallback"),
     string("base"),
+    string("host-profile"),
+    string("html-handling"),
     string("rewrite-base"),
     flag("no-rewrite-base"),
     string("country"),
@@ -246,6 +267,8 @@ pub const SERVE: Command = Command {
         "--base <path>     serve the site under this path, e.g. /repo/ for a GitHub Pages project site (--watch: default the EXPORT BASE URL's path)",
         "--rewrite-base <url>         replace this production URL with the local one in served HTML, CSS and XML (--watch: on by default, from EXPORT/SITEMAP/FEED BASE)",
         "--no-rewrite-base            --watch: leave production URLs as they are",
+        "--host-profile <host>        route like netlify, cloudflare, vercel, github-pages or firebase (clean URLs, site files, 404s)",
+        "--html-handling <mode>       auto, force-slash, drop-slash or none: canonical page URLs (Cloudflare's modes)",
         "--country <code>  the country _redirects Country= conditions match (there is no geolocation locally)",
         "--strict-site-files  refuse to serve when a _redirects or _headers line would be ignored",
         "--keep-os-metadata  serve __MACOSX, ._*, Thumbs.db and desktop.ini of a directory or archive (default: skipped)",
@@ -288,6 +311,8 @@ fn run_serve(v: &Parsed) -> Result<i32> {
     let (spa, spa_exclude, spa_fallback) = spa_options(v)?;
     let base = parse_base(v.str("base"))?;
     let rewrite_base = parse_rewrite_base(v.str("rewrite-base"))?;
+    let (host_profile, html_handling) = profile_options(v)?;
+    let profile = crate::server::routing_for(host_profile.as_deref(), html_handling.as_deref());
     let country = parse_country(v.str("country"))?;
     let strict_site_files = v.flag("strict-site-files");
     let name = v.str("name");
@@ -315,7 +340,9 @@ fn run_serve(v: &Parsed) -> Result<i32> {
             },
         )?;
         let tree = site.tree;
-        check_site_files(&tree, strict_site_files, &warn, site.content.as_deref())?;
+        if profile.is_none_or(|p| p.site_files) {
+            check_site_files(&tree, strict_site_files, &warn, site.content.as_deref())?;
+        }
         warn_spa_fallback(&tree, spa_fallback.as_deref(), &warn);
         let modified = served_last_modified(&store, &source);
         let n = tree.len();
@@ -329,6 +356,7 @@ fn run_serve(v: &Parsed) -> Result<i32> {
                 spa_fallback,
                 base: base.clone().map(|b| -> crate::server::BaseFn { Arc::new(move || Some(b.clone())) }),
                 rewrite_base: rewrite_base.clone().map(|b| -> crate::server::BaseFn { Arc::new(move || Some(b.clone())) }),
+                profile,
                 country: country.clone(),
                 log: Some(log),
                 server_id: None,
@@ -363,6 +391,8 @@ fn run_serve(v: &Parsed) -> Result<i32> {
             spa_fallback,
             base,
             rewrite_base,
+            host_profile,
+            html_handling,
             keep_os_metadata,
             country,
             strict_site_files,
@@ -415,6 +445,8 @@ fn serve_watch(v: &Parsed) -> Result<i32> {
     if no_rewrite && rewrite_flag.is_some() {
         return usage("--rewrite-base and --no-rewrite-base cannot be combined");
     }
+    let (host_profile, html_handling) = profile_options(v)?;
+    let profile = crate::server::routing_for(host_profile.as_deref(), html_handling.as_deref());
     // `--rewrite-base`, else (unless --no-rewrite-base) the last good build's production URL.
     let rewrite_base: Arc<RwLock<Option<String>>> = Arc::new(RwLock::new(if no_rewrite {
         None
@@ -426,6 +458,9 @@ fn serve_watch(v: &Parsed) -> Result<i32> {
     // The site-file warnings last printed: a rebuild repeats them only when they change.
     let last_site_warnings = std::cell::RefCell::new(String::new());
     let site_files = |tree: &Tree| -> Result<()> {
+        if profile.is_some_and(|p| !p.site_files) {
+            return Ok(());
+        }
         let shown = crate::server::site_file_warnings(tree, None);
         let text = shown.join("\n");
         if text != *last_site_warnings.borrow() {
@@ -586,6 +621,7 @@ fn serve_watch(v: &Parsed) -> Result<i32> {
                 let rb = rewrite_base.clone();
                 move || rb.read().ok().and_then(|b| b.clone())
             })),
+            profile,
             country: country.clone(),
             log: Some(log),
             server_id: None,
@@ -659,12 +695,16 @@ pub fn serve_worker(id: &str) -> i32 {
             },
         )?;
         let tree = site.tree;
-        check_site_files(
-            &tree,
-            state.strict_site_files,
-            &warn,
-            site.content.as_deref(),
-        )?;
+        let routing =
+            crate::server::routing_for(state.host_profile.as_deref(), state.html_handling.as_deref());
+        if routing.is_none_or(|p| p.site_files) {
+            check_site_files(
+                &tree,
+                state.strict_site_files,
+                &warn,
+                site.content.as_deref(),
+            )?;
+        }
         let modified = served_last_modified(&reg.store, &state.source);
         let n = tree.len();
         let log: crate::server::LogFn = Arc::new(|l: &str| out(&format!("{} {l}\n", now_iso())));
@@ -676,6 +716,7 @@ pub fn serve_worker(id: &str) -> i32 {
                 spa_fallback: state.spa_fallback.clone(),
                 base: state.base.clone().map(|b| -> crate::server::BaseFn { Arc::new(move || Some(b.clone())) }),
                 rewrite_base: state.rewrite_base.clone().map(|b| -> crate::server::BaseFn { Arc::new(move || Some(b.clone())) }),
+                profile: crate::server::routing_for(state.host_profile.as_deref(), state.html_handling.as_deref()),
                 country: state.country.clone(),
                 log: Some(log),
                 server_id: Some(id.to_string()),

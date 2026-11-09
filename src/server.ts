@@ -44,6 +44,8 @@ export interface SiteServerOptions {
    * responses have replaced by this server's origin and `--base`, so absolute self-links stay local.
    */
   readonly rewriteBase?: string | (() => string | undefined);
+  /** `--host-profile` / `--html-handling`: behave like a static host ({@link hostProfile}). Absent: sitefile's own rules. */
+  readonly profile?: RoutingProfile;
   /** `--country`: what `_redirects` `Country=` conditions match (there is no geolocation locally). */
   readonly country?: string;
   /**
@@ -510,6 +512,58 @@ export function spaFallback(segs: readonly string[], trailingSlash: boolean, isF
   return undefined;
 }
 
+/** `--html-handling` (Cloudflare's names): `auto`, `force-slash`, `drop-slash` or `none`. */
+export type HtmlHandling = 'auto' | 'force-slash' | 'drop-slash' | 'none';
+export const HTML_HANDLINGS: readonly HtmlHandling[] = ['auto', 'force-slash', 'drop-slash', 'none'];
+export const HOST_PROFILES = ['netlify', 'cloudflare', 'vercel', 'github-pages', 'firebase'] as const;
+export type HostProfileName = (typeof HOST_PROFILES)[number];
+
+/** How a server routes like a static host (`--host-profile`, `--html-handling`). */
+export interface RoutingProfile {
+  /** Canonical page URLs; undefined keeps sitefile's own rules (clean URLs plus both spellings). */
+  readonly htmlHandling?: HtmlHandling;
+  /** The status of a canonicalizing redirect. */
+  readonly redirectStatus: number;
+  /** Whether `/_redirects` and `/_headers` are read (and hidden). */
+  readonly siteFiles: boolean;
+  /** Which 404.html answers a miss: the nearest, only the root one, or (no 404.html) `/index.html` with 200. */
+  readonly notFound: 'nearest' | 'root' | 'index';
+  /** Sitefile's own rules only: `/about/` with only `about.html` redirects to `/about`, or is 404. */
+  readonly slashHtml: 'redirect' | 'not-found';
+}
+
+/**
+ * The routing of a host profile, with `--html-handling` replacing its HTML handling (the profile
+ * undefined: sitefile's rules, a 307 for the canonical redirects as on Cloudflare).
+ *
+ * | profile | HTML handling | redirect | `_redirects`/`_headers` | 404 |
+ * | netlify | auto | 301 | yes | nearest 404.html |
+ * | cloudflare | auto | 307 | yes | nearest 404.html, else /index.html (200) |
+ * | vercel | none | 308 | no | /404.html |
+ * | github-pages | sitefile's, `/about/` 404 | 301 | no | /404.html |
+ * | firebase | none | 301 | no | /404.html |
+ */
+export function hostProfile(name: HostProfileName | undefined, htmlHandling?: HtmlHandling): RoutingProfile {
+  const base: RoutingProfile =
+    name === 'netlify'
+      ? { htmlHandling: 'auto', redirectStatus: 301, siteFiles: true, notFound: 'nearest', slashHtml: 'redirect' }
+      : name === 'cloudflare'
+        ? { htmlHandling: 'auto', redirectStatus: 307, siteFiles: true, notFound: 'index', slashHtml: 'redirect' }
+        : name === 'vercel'
+          ? { htmlHandling: 'none', redirectStatus: 308, siteFiles: false, notFound: 'root', slashHtml: 'redirect' }
+          : name === 'github-pages'
+            ? { redirectStatus: 301, siteFiles: false, notFound: 'root', slashHtml: 'not-found' }
+            : name === 'firebase'
+              ? { htmlHandling: 'none', redirectStatus: 301, siteFiles: false, notFound: 'root', slashHtml: 'redirect' }
+              : { redirectStatus: 307, siteFiles: true, notFound: 'nearest', slashHtml: 'redirect' };
+  return htmlHandling === undefined ? base : { ...base, htmlHandling };
+}
+
+/** The server's routing profile for the flags (undefined: sitefile's own rules). */
+export function routingFor(o: { hostProfile?: HostProfileName | undefined; htmlHandling?: HtmlHandling | undefined }): RoutingProfile | undefined {
+  return o.hostProfile === undefined && o.htmlHandling === undefined ? undefined : hostProfile(o.hostProfile, o.htmlHandling);
+}
+
 /** A `Host` header safe to write into a page: a name, IPv4 or bracketed IPv6 address, and a port. */
 const SAFE_HOST = /^(?:[A-Za-z0-9.-]+|\[[0-9A-Fa-f:.]+\])(?::[0-9]{1,5})?$/;
 
@@ -669,8 +723,10 @@ export function createSiteServer(site: Tree | (() => Tree), options: SiteServerO
     }
     if (method !== 'GET' && method !== 'HEAD') return page(405, METHOD_PAGE, { allow: 'GET, HEAD' });
     const tree = current();
-    const { redirects, headers: headerRules } = rulesFor(tree);
-    const isFile = (p: string): boolean => tree.isFile(p) && p !== '/_redirects' && p !== '/_headers';
+    const profile = options.profile;
+    const siteFiles = profile?.siteFiles !== false;
+    const { redirects, headers: headerRules } = siteFiles ? rulesFor(tree) : { redirects: [], headers: [] };
+    const isFile = (p: string): boolean => tree.isFile(p) && !(siteFiles && (p === '/_redirects' || p === '/_headers'));
 
     const q = url.indexOf('?');
     const hash = url.indexOf('#');
@@ -798,15 +854,49 @@ export function createSiteServer(site: Tree | (() => Tree), options: SiteServerO
     };
 
     if (redirect(true)) return;
-    let served = resolve(vpath, trailingSlash);
-    if (served === undefined && !trailingSlash && tree.isDirectory(vpath)) {
+    const handling = profile?.htmlHandling;
+    let served: string | undefined;
+    if (handling !== undefined) {
+      // `--html-handling` (Cloudflare's modes): one canonical spelling per page, the others redirect to it.
+      const go = (to: readonly string[], slash: boolean): void => {
+        const path = to.length === 0 ? '/' : '/' + to.map(encodeURIComponent).join('/') + (slash ? '/' : '');
+        finish(profile!.redirectStatus, { location: mount + path + search, 'content-length': 0 }, undefined);
+      };
+      const last = segs[segs.length - 1];
+      const index = vpath === '/' ? '/index.html' : `${vpath}/index.html`;
+      const hasIndex = isFile(index);
+      const hasHtml = segs.length > 0 && isFile(`${vpath}.html`);
+      if (!trailingSlash && last !== undefined && last.endsWith('.html') && isFile(vpath) && handling !== 'none') {
+        // `/x.html` and `/x/index.html` are spelled out: send them to the clean form.
+        const dir = segs.slice(0, -1);
+        if (last === 'index.html') return go(dir, dir.length > 0 && handling !== 'drop-slash');
+        return go([...dir, last.slice(0, -'.html'.length)], handling === 'force-slash');
+      }
+      if (!trailingSlash && isFile(vpath)) served = vpath;
+      else if (handling === 'none') served = trailingSlash && hasIndex ? index : undefined;
+      else if (segs.length === 0) served = hasIndex ? index : undefined;
+      else if (handling === 'auto') {
+        if (hasIndex) {
+          if (!trailingSlash) return go(segs, true);
+          served = index;
+        } else if (hasHtml) {
+          if (trailingSlash) return go(segs, false);
+          served = `${vpath}.html`;
+        }
+      } else if (hasIndex || hasHtml) {
+        const slash = handling === 'force-slash';
+        if (trailingSlash !== slash) return go(segs, slash);
+        served = slash ? (hasIndex ? index : `${vpath}.html`) : hasHtml ? `${vpath}.html` : index;
+      }
+    } else served = resolve(vpath, trailingSlash);
+    if (handling === undefined && served === undefined && !trailingSlash && tree.isDirectory(vpath)) {
       const location = mount + '/' + segs.map(encodeURIComponent).join('/') + '/' + search;
       return finish(301, { location, 'content-length': 0 }, undefined);
     }
     if (served === undefined && redirect(false)) return;
     // `/about/` when only `/about.html` answers: redirect to the clean URL `/about` (relative links in the
     // page then resolve as they do at `/about`). `_redirects` rules for the path come first.
-    if (served === undefined && trailingSlash && segs.length > 0 && isFile(`${vpath}.html`)) {
+    if (handling === undefined && profile?.slashHtml !== 'not-found' && served === undefined && trailingSlash && segs.length > 0 && isFile(`${vpath}.html`)) {
       const location = mount + '/' + segs.map(encodeURIComponent).join('/') + search;
       return finish(301, { location, 'content-length': 0 }, undefined);
     }
@@ -814,12 +904,15 @@ export function createSiteServer(site: Tree | (() => Tree), options: SiteServerO
       served = spaFallback(segs, trailingSlash, isFile, options.spaFallback);
     }
     if (served !== undefined) return sendFile(200, served);
-    // The nearest 404.html: in the request's directory, then each parent up to the root.
+    // The nearest 404.html: in the request's directory, then each parent up to the root (only the
+    // root one for a profile whose host does not look further).
     const dirs = trailingSlash ? segs : segs.slice(0, -1);
-    for (let n = dirs.length; n >= 0; n--) {
+    for (let n = profile?.notFound === 'root' ? 0 : dirs.length; n >= 0; n--) {
       const notFound = `/${dirs.slice(0, n).map((d) => d + '/').join('')}404.html`;
       if (isFile(notFound)) return sendFile(404, notFound);
     }
+    // Cloudflare Pages: a site without a 404.html is taken for a single-page app.
+    if (profile?.notFound === 'index' && isFile('/index.html')) return sendFile(200, '/index.html');
     page(404, NOT_FOUND_PAGE, custom);
   };
 

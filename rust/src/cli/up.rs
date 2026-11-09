@@ -132,6 +132,8 @@ fn run_up(v: &Parsed) -> Result<i32> {
             spa_fallback: None,
             base: None,
             rewrite_base: None,
+            host_profile: None,
+            html_handling: None,
             keep_os_metadata: false,
             country: None,
             strict_site_files: false,

@@ -4,7 +4,8 @@ import http from 'node:http';
 import net from 'node:net';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
-import { byteRange, closeServer, createSiteServer, earlyHints, httpDate, parseHttpDate, listen, LiveReload, normalizeBase, normalizeProductionUrl, rewriteBaseUrls, originForm, RELOAD_SCRIPT, safeSegments } from '../src/server.js';
+import { byteRange, closeServer, createSiteServer, earlyHints, httpDate, parseHttpDate, listen, LiveReload, hostProfile, normalizeBase, normalizeProductionUrl, rewriteBaseUrls, originForm, RELOAD_SCRIPT, safeSegments } from '../src/server.js';
+import type { RoutingProfile } from '../src/server.js';
 import { makeFile, Tree } from '../src/tree.js';
 import { siteFileWarnings } from '../src/serve-rules.js';
 import { makeSite, runCli, tmpDir } from './helpers/cli.js';
@@ -481,7 +482,7 @@ test('run: bad -p values, unknown images, registries, port in use, foreground --
 
 // ---------------------------------------------------------------- 404.html, clean URLs, _redirects, _headers
 
-async function withTree(files: Record<string, string>, opts: { spa?: boolean; spaExclude?: string[]; spaFallback?: string; base?: string; rewriteBase?: string }, fn: (port: number) => Promise<void>): Promise<void> {
+async function withTree(files: Record<string, string>, opts: { spa?: boolean; spaExclude?: string[]; spaFallback?: string; base?: string; rewriteBase?: string; profile?: RoutingProfile }, fn: (port: number) => Promise<void>): Promise<void> {
   const t = Tree.fromFiles(Object.entries(files).map(([p, c]) => [p, makeFile(enc(c), 't')] as const));
   const s = createSiteServer(t, opts);
   const { port } = await listen(s, '127.0.0.1', 0);
@@ -759,6 +760,38 @@ test('serve --rewrite-base: the production URL becomes the local origin in HTML,
     assert.equal((await req(port, '/t.txt')).body, 'https://e.x/b/', 'other types are left alone');
     r = await req(port, '/', 'GET', { host: 'evil"><script>' });
     assert.equal(r.body, files['/index.html'], 'an unsafe Host is never written into a page');
+  });
+});
+
+// johnhenry/sitefile#192
+test('serve --host-profile and --html-handling: canonical URLs, site files and 404s per host', async () => {
+  const files = { '/index.html': 'home', '/about.html': 'about', '/docs/index.html': 'docs', '/_redirects': '/old /about 301\n' };
+  const loc = async (port: number, p: string): Promise<string> => {
+    const r = await req(port, p);
+    return `${r.status}${r.headers.location ? ' ' + r.headers.location : ''}`;
+  };
+  await withTree(files, { profile: hostProfile('cloudflare') }, async (port) => {
+    assert.equal(await loc(port, '/about.html'), '307 /about');
+    assert.equal(await loc(port, '/about/'), '307 /about');
+    assert.equal(await loc(port, '/docs'), '307 /docs/');
+    assert.equal(await loc(port, '/docs/index.html'), '307 /docs/');
+    assert.equal(await loc(port, '/old'), '301 /about');
+    assert.equal((await req(port, '/nope')).body, 'home', 'no 404.html: the SPA shell');
+  });
+  await withTree(files, { profile: hostProfile('github-pages') }, async (port) => {
+    assert.equal(await loc(port, '/about'), '200');
+    assert.equal(await loc(port, '/about/'), '404');
+    assert.equal(await loc(port, '/old'), '404', '_redirects is not read');
+    assert.equal(await loc(port, '/_redirects'), '200', 'and is served as a file');
+  });
+  await withTree(files, { profile: hostProfile(undefined, 'drop-slash') }, async (port) => {
+    assert.equal(await loc(port, '/docs'), '200');
+    assert.equal(await loc(port, '/docs/'), '307 /docs');
+    assert.equal(await loc(port, '/about.html'), '307 /about');
+  });
+  await withTree(files, { profile: hostProfile('vercel', 'force-slash') }, async (port) => {
+    assert.equal(await loc(port, '/about'), '308 /about/', '--html-handling replaces the profile\'s');
+    assert.equal(await loc(port, '/about/'), '200');
   });
 });
 

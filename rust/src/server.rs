@@ -47,6 +47,9 @@ pub struct SiteServerOptions {
     /// `--rewrite-base`: the production URL ([`normalize_production_url`]) that HTML, CSS and XML
     /// responses have replaced by this server's origin and `--base`, so absolute self-links stay local.
     pub rewrite_base: Option<BaseFn>,
+    /// `--host-profile` / `--html-handling`: behave like a static host ([`host_profile`]). `None`:
+    /// sitefile's own rules.
+    pub profile: Option<RoutingProfile>,
     /// `--country`: what `_redirects` `Country=` conditions match (there is no geolocation locally).
     pub country: Option<String>,
     /// Where file contents come from when the tree holds only digests (a zip served in
@@ -1078,6 +1081,99 @@ pub fn spa_fallback(
     None
 }
 
+/// `--html-handling` (Cloudflare's names).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HtmlHandling {
+    Auto,
+    ForceSlash,
+    DropSlash,
+    None,
+}
+
+impl HtmlHandling {
+    pub const NAMES: [&'static str; 4] = ["auto", "force-slash", "drop-slash", "none"];
+    pub fn parse(s: &str) -> Option<HtmlHandling> {
+        match s {
+            "auto" => Some(HtmlHandling::Auto),
+            "force-slash" => Some(HtmlHandling::ForceSlash),
+            "drop-slash" => Some(HtmlHandling::DropSlash),
+            "none" => Some(HtmlHandling::None),
+            _ => None,
+        }
+    }
+}
+
+pub const HOST_PROFILES: [&str; 5] = ["netlify", "cloudflare", "vercel", "github-pages", "firebase"];
+
+/// Which 404.html answers a miss: the nearest, only the root one, or (no 404.html) `/index.html` with 200.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NotFound {
+    Nearest,
+    Root,
+    Index,
+}
+
+/// Sitefile's own rules only: `/about/` with only `about.html` redirects to `/about`, or is 404.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SlashHtml {
+    Redirect,
+    NotFound,
+}
+
+/// How a server routes like a static host (port of `RoutingProfile`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RoutingProfile {
+    /// Canonical page URLs; `None` keeps sitefile's own rules.
+    pub html_handling: Option<HtmlHandling>,
+    pub redirect_status: u16,
+    /// Whether `/_redirects` and `/_headers` are read (and hidden).
+    pub site_files: bool,
+    pub not_found: NotFound,
+    pub slash_html: SlashHtml,
+}
+
+/// The routing of a host profile, with `--html-handling` replacing its HTML handling (port of
+/// `hostProfile`, which has the table).
+pub fn host_profile(name: Option<&str>, html_handling: Option<HtmlHandling>) -> RoutingProfile {
+    use HtmlHandling as H;
+    let p = |h, status, site_files, not_found, slash_html| RoutingProfile {
+        html_handling: h,
+        redirect_status: status,
+        site_files,
+        not_found,
+        slash_html,
+    };
+    let base = match name {
+        Some("netlify") => p(Some(H::Auto), 301, true, NotFound::Nearest, SlashHtml::Redirect),
+        Some("cloudflare") => p(Some(H::Auto), 307, true, NotFound::Index, SlashHtml::Redirect),
+        Some("vercel") => p(Some(H::None), 308, false, NotFound::Root, SlashHtml::Redirect),
+        Some("github-pages") => p(None, 301, false, NotFound::Root, SlashHtml::NotFound),
+        Some("firebase") => p(Some(H::None), 301, false, NotFound::Root, SlashHtml::Redirect),
+        _ => p(None, 307, true, NotFound::Nearest, SlashHtml::Redirect),
+    };
+    match html_handling {
+        Some(h) => RoutingProfile {
+            html_handling: Some(h),
+            ..base
+        },
+        None => base,
+    }
+}
+
+/// The server's routing profile for the flags (`None`: sitefile's own rules).
+pub fn routing_for(
+    host_profile_name: Option<&str>,
+    html_handling: Option<&str>,
+) -> Option<RoutingProfile> {
+    if host_profile_name.is_none() && html_handling.is_none() {
+        return None;
+    }
+    Some(host_profile(
+        host_profile_name,
+        html_handling.and_then(HtmlHandling::parse),
+    ))
+}
+
 /// A `Host` header safe to write into a page: a name, IPv4 or bracketed IPv6 address, and a port.
 fn is_safe_host(h: &str) -> bool {
     let (name, port) = if let Some(rest) = h.strip_prefix('[') {
@@ -1919,6 +2015,10 @@ pub fn respond(
     url: &str,
     headers: &HashMap<String, String>,
 ) -> Response {
+    // A profile whose host has no `_redirects`/`_headers` neither reads nor hides them.
+    let site_files = options.profile.is_none_or(|p| p.site_files);
+    let no_rules = SiteRules::default();
+    let rules = if site_files { rules } else { &no_rules };
     let mut base: Vec<(String, String)> = vec![
         ("x-content-type-options".into(), "nosniff".into()),
         ("cache-control".into(), "no-cache".into()),
@@ -2055,7 +2155,7 @@ pub fn respond(
             }
         ),
     );
-    let is_file = |p: &str| tree.is_file(p) && p != "/_redirects" && p != "/_headers";
+    let is_file = |p: &str| tree.is_file(p) && !(site_files && (p == "/_redirects" || p == "/_headers"));
 
     let send_file = |status: u16, served: &str| -> Response {
         let file = tree.get(served).cloned().expect("resolved file");
@@ -2271,8 +2371,86 @@ pub fn respond(
     if let Some(res) = redirect(true) {
         return res;
     }
-    let mut served = resolve(&vpath, trailing);
-    if served.is_none() && !trailing && tree.is_directory(&vpath) {
+    let handling = options.profile.as_ref().and_then(|p| p.html_handling);
+    let mut served: Option<String> = None;
+    if let (Some(handling), Some(profile)) = (handling, options.profile.as_ref()) {
+        // `--html-handling` (Cloudflare's modes): one canonical spelling per page, the others redirect to it.
+        let go = |to: &[String], slash: bool| -> Response {
+            let path = if to.is_empty() {
+                "/".to_string()
+            } else {
+                let enc: Vec<String> = to.iter().map(|s| encode_uri_component(s)).collect();
+                format!("/{}{}", enc.join("/"), if slash { "/" } else { "" })
+            };
+            finish(
+                profile.redirect_status,
+                owned(vec![
+                    ("location", format!("{mount}{path}{search}")),
+                    ("content-length", "0".into()),
+                ]),
+                None,
+            )
+        };
+        let last = segs.last().map(String::as_str);
+        let index = if vpath == "/" {
+            "/index.html".to_string()
+        } else {
+            format!("{vpath}/index.html")
+        };
+        let has_index = is_file(&index);
+        let html = format!("{vpath}.html");
+        let has_html = !segs.is_empty() && is_file(&html);
+        if let Some(last) = last.filter(|l| {
+            !trailing && l.ends_with(".html") && is_file(&vpath) && handling != HtmlHandling::None
+        }) {
+            // `/x.html` and `/x/index.html` are spelled out: send them to the clean form.
+            let dir = &segs[..segs.len() - 1];
+            if last == "index.html" {
+                return go(dir, !dir.is_empty() && handling != HtmlHandling::DropSlash);
+            }
+            let mut to = dir.to_vec();
+            to.push(last[..last.len() - ".html".len()].to_string());
+            return go(&to, handling == HtmlHandling::ForceSlash);
+        }
+        if !trailing && is_file(&vpath) {
+            served = Some(vpath.clone());
+        } else if handling == HtmlHandling::None {
+            served = (trailing && has_index).then(|| index.clone());
+        } else if segs.is_empty() {
+            served = has_index.then(|| index.clone());
+        } else if handling == HtmlHandling::Auto {
+            if has_index {
+                if !trailing {
+                    return go(&segs, true);
+                }
+                served = Some(index.clone());
+            } else if has_html {
+                if trailing {
+                    return go(&segs, false);
+                }
+                served = Some(html.clone());
+            }
+        } else if has_index || has_html {
+            let slash = handling == HtmlHandling::ForceSlash;
+            if trailing != slash {
+                return go(&segs, slash);
+            }
+            served = Some(if slash {
+                if has_index {
+                    index.clone()
+                } else {
+                    html.clone()
+                }
+            } else if has_html {
+                html.clone()
+            } else {
+                index.clone()
+            });
+        }
+    } else {
+        served = resolve(&vpath, trailing);
+    }
+    if handling.is_none() && served.is_none() && !trailing && tree.is_directory(&vpath) {
         let enc: Vec<String> = segs.iter().map(|s| encode_uri_component(s)).collect();
         let location = format!("{mount}/{}/{search}", enc.join("/"));
         return finish(
@@ -2288,7 +2466,17 @@ pub fn respond(
     }
     // `/about/` when only `/about.html` answers: redirect to the clean URL `/about` (relative links in
     // the page then resolve as they do at `/about`). `_redirects` rules for the path come first.
-    if served.is_none() && trailing && !segs.is_empty() && is_file(&format!("{vpath}.html")) {
+    let slash_html_redirects = options
+        .profile
+        .as_ref()
+        .is_none_or(|p| p.slash_html == SlashHtml::Redirect);
+    if handling.is_none()
+        && slash_html_redirects
+        && served.is_none()
+        && trailing
+        && !segs.is_empty()
+        && is_file(&format!("{vpath}.html"))
+    {
         let enc: Vec<String> = segs.iter().map(|s| encode_uri_component(s)).collect();
         let location = format!("{mount}/{}{search}", enc.join("/"));
         return finish(
@@ -2313,18 +2501,29 @@ pub fn respond(
     if let Some(served) = served {
         return send_file(200, &served);
     }
-    // The nearest 404.html: in the request's directory, then each parent up to the root.
+    // The nearest 404.html: in the request's directory, then each parent up to the root (only the
+    // root one for a profile whose host does not look further).
     let dirs = if trailing {
         &segs[..]
     } else {
         &segs[..segs.len().saturating_sub(1)]
     };
-    for n in (0..=dirs.len()).rev() {
+    let not_found_mode = options.profile.as_ref().map(|p| p.not_found);
+    let deepest = if not_found_mode == Some(NotFound::Root) {
+        0
+    } else {
+        dirs.len()
+    };
+    for n in (0..=deepest).rev() {
         let not_found: String = dirs[..n].iter().map(|d| format!("/{d}")).collect();
         let not_found = format!("{not_found}/404.html");
         if is_file(&not_found) {
             return send_file(404, &not_found);
         }
+    }
+    // Cloudflare Pages: a site without a 404.html is taken for a single-page app.
+    if not_found_mode == Some(NotFound::Index) && is_file("/index.html") {
+        return send_file(200, "/index.html");
     }
     page(404, NOT_FOUND_PAGE, custom.clone())
 }
@@ -3442,6 +3641,54 @@ mod tests {
             assert_eq!(at(&t, path).status, 404, "{path}");
         }
         assert_eq!(reason(308), "Permanent Redirect");
+    }
+
+    // johnhenry/sitefile#192 (test/server.test.ts)
+    #[test]
+    fn host_profiles_and_html_handling() {
+        let t = Tree::from_files(
+            [
+                ("/index.html", "home"),
+                ("/about.html", "about"),
+                ("/docs/index.html", "docs"),
+                ("/_redirects", "/old /about 301\n"),
+            ]
+            .map(|(p, c)| (p.to_string(), make_file(c.as_bytes().to_vec(), "t", 0o644))),
+        )
+        .unwrap();
+        let with = |profile: RoutingProfile| SiteServerOptions {
+            profile: Some(profile),
+            ..Default::default()
+        };
+        let loc = |o: &SiteServerOptions, u: &str| {
+            let r = handle_request(&t, o, "GET", u, &HashMap::new());
+            match r.header("location") {
+                Some(l) => format!("{} {l}", r.status),
+                None => r.status.to_string(),
+            }
+        };
+        let cf = with(host_profile(Some("cloudflare"), None));
+        assert_eq!(loc(&cf, "/about.html"), "307 /about");
+        assert_eq!(loc(&cf, "/about/"), "307 /about");
+        assert_eq!(loc(&cf, "/docs"), "307 /docs/");
+        assert_eq!(loc(&cf, "/docs/index.html"), "307 /docs/");
+        assert_eq!(loc(&cf, "/old"), "301 /about");
+        assert_eq!(
+            body(&handle_request(&t, &cf, "GET", "/nope", &HashMap::new())),
+            "home"
+        );
+        let gh = with(host_profile(Some("github-pages"), None));
+        assert_eq!(loc(&gh, "/about"), "200");
+        assert_eq!(loc(&gh, "/about/"), "404");
+        assert_eq!(loc(&gh, "/old"), "404");
+        assert_eq!(loc(&gh, "/_redirects"), "200");
+        let drop = with(host_profile(None, Some(HtmlHandling::DropSlash)));
+        assert_eq!(loc(&drop, "/docs"), "200");
+        assert_eq!(loc(&drop, "/docs/"), "307 /docs");
+        assert_eq!(loc(&drop, "/about.html"), "307 /about");
+        let v = with(host_profile(Some("vercel"), Some(HtmlHandling::ForceSlash)));
+        assert_eq!(loc(&v, "/about"), "308 /about/");
+        assert_eq!(loc(&v, "/about/"), "200");
     }
 
     // johnhenry/sitefile#196 (test/server.test.ts)
