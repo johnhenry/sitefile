@@ -50,6 +50,7 @@ pub mod integrity;
 pub mod links;
 pub mod mime_data;
 pub mod precompress;
+pub mod qr;
 pub mod refs;
 pub mod server;
 pub mod servers;
