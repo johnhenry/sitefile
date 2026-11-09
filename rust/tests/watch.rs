@@ -401,8 +401,15 @@ impl Events {
             self.1.push_str(&String::from_utf8_lossy(&chunk[..n]));
         }
     }
+    /// The next event, skipping `: ping` heartbeats, which can arrive at
+    /// any point on a slow runner.
     fn next(&mut self) -> String {
-        self.until("\n\n")
+        loop {
+            let ev = self.until("\n\n");
+            if ev != ": ping" {
+                return ev;
+            }
+        }
     }
 }
 
