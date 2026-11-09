@@ -130,6 +130,7 @@ fn run_up(v: &Parsed) -> Result<i32> {
             spa: s.spa,
             spa_exclude: Vec::new(),
             spa_fallback: None,
+            base: None,
             keep_os_metadata: false,
             country: None,
             strict_site_files: false,

@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { SitefileError } from '../errors.js';
 import { collectBuildArgs } from '../build-args.js';
 import { build } from '../executor.js';
-import { BUILDING_EVENT, closeServer, createSiteServer, errorEvent, formatUrl, listen, LiveReload, OK_EVENT, reloadEventFor, safeSegments } from '../server.js';
+import { BUILDING_EVENT, closeServer, createSiteServer, errorEvent, formatUrl, listen, LiveReload, OK_EVENT, normalizeBase, reloadEventFor, safeSegments } from '../server.js';
 import { checkSiteFiles, isRunning, loadDirectoryTree, loadServedSite, pidAlive, servedLastModified, ServerRegistry, type ServerState } from '../servers.js';
 import { Store } from '../store.js';
 import { Tree } from '../tree.js';
@@ -51,6 +51,24 @@ export function spaOptions(v: ParsedValues): { spa: boolean; spaExclude?: string
 /** A warning when `--spa-fallback` names a file the site does not have. */
 function warnSpaFallback(tree: Tree, fallback: string | undefined, warn: (m: string) => void): void {
   if (fallback !== undefined && !tree.isFile(fallback)) warn(`--spa-fallback ${fallback} is not a file of the site, so navigations to missing paths get 404`);
+}
+
+/** `--base`: the path prefix to serve under (`/repo/`), or undefined for `/`. */
+export function parseBase(v: string | undefined): string | undefined {
+  if (v === undefined) return undefined;
+  const b = normalizeBase(v);
+  if (b === undefined) usage(`--base expects a path such as /repo/, got '${v}'`);
+  return b === '/' ? undefined : b;
+}
+
+/** The URL a server answers at: its origin and `--base`. */
+const siteUrl = (host: string, port: number, base: string | undefined): string => formatUrl(host, port) + (base ?? '/').slice(1);
+
+/** The path of an EXPORT BASE that is an http(s) URL (`https://user.github.io/repo/` → `/repo/`), else undefined. */
+export function exportBasePath(exportBase: string | undefined): string | undefined {
+  if (exportBase === undefined || !/^https?:\/\//i.test(exportBase)) return undefined;
+  const b = normalizeBase(exportBase);
+  return b === '/' ? undefined : b;
 }
 
 /** `--country`: an ISO 3166-1 alpha-2 code (any case). */
@@ -144,6 +162,7 @@ const run: Command = {
     '--spa             answer page navigations to missing paths with the nearest 200.html or index.html',
     '--spa-exclude <glob>         paths that never fall back to the app shell (* matches anything; repeatable)',
     '--spa-fallback <path>        the file every --spa fallback serves, e.g. /app.html (implies --spa)',
+    '--base <path>     serve the site under this path, e.g. /repo/ for a GitHub Pages project site (--watch: default the EXPORT BASE URL\'s path)',
     '--country <code>  the country _redirects Country= conditions match (there is no geolocation locally)',
     '--strict-site-files  refuse to serve when a _redirects or _headers line would be ignored',
     '--keep-os-metadata  serve __MACOSX, ._*, Thumbs.db and desktop.ini of a directory or archive (default: skipped)',
@@ -170,6 +189,7 @@ const run: Command = {
     spa: { type: 'boolean' },
     'spa-exclude': { type: 'string', multiple: true },
     'spa-fallback': { type: 'string' },
+    base: { type: 'string' },
     country: { type: 'string' },
     'strict-site-files': { type: 'boolean' },
     'keep-os-metadata': { type: 'boolean' },
@@ -195,6 +215,7 @@ const run: Command = {
     requireArgs(pos, 1, 1, 'an image reference, ./directory or archive file');
     const bind = parsePublish(str(v.publish));
     const spa = spaOptions(v);
+    const base = parseBase(str(v.base));
     const country = parseCountry(str(v.country));
     const strictSiteFiles = !!v['strict-site-files'];
     const name = str(v.name);
@@ -210,9 +231,9 @@ const run: Command = {
       checkSiteFiles(tree, strictSiteFiles, warn, content);
       warnSpaFallback(tree, spa.spaFallback, warn);
       const modified = await servedLastModified(store, source);
-      const server = createSiteServer(tree, { ...spa, ...(country !== undefined ? { country } : {}), lastModified: () => modified, log: (l) => process.stdout.write(`${l}\n`), ...(content ? { content } : {}) });
+      const server = createSiteServer(tree, { ...spa, ...(base !== undefined ? { base } : {}), ...(country !== undefined ? { country } : {}), lastModified: () => modified, log: (l) => process.stdout.write(`${l}\n`), ...(content ? { content } : {}) });
       const addr = await listen(server, bind.host, bind.port);
-      process.stdout.write(`Serving ${label} (${tree.size} files) at ${formatUrl(addr.host, addr.port)}  (Ctrl-C to stop)\n`);
+      process.stdout.write(`Serving ${label} (${tree.size} files) at ${siteUrl(addr.host, addr.port, base)}  (Ctrl-C to stop)\n`);
       await waitForSignal();
       await closeServer(server);
       close();
@@ -220,8 +241,8 @@ const run: Command = {
     }
 
     const reg = await ServerRegistry.open(store);
-    const up = await serveDetached(reg, { label, source, name, bind, ...spa, keepOsMetadata, country, strictSiteFiles }, warn);
-    process.stdout.write(`Started ${up.name} (${up.id}) serving ${label} at ${formatUrl(up.host, up.port)}\n`);
+    const up = await serveDetached(reg, { label, source, name, bind, ...spa, base, keepOsMetadata, country, strictSiteFiles }, warn);
+    process.stdout.write(`Started ${up.name} (${up.id}) serving ${label} at ${siteUrl(up.host, up.port, up.base)}\n`);
     return 0;
   },
 };
@@ -237,6 +258,8 @@ export interface DetachedServe {
   readonly spaExclude?: readonly string[] | undefined;
   /** `--spa-fallback`. */
   readonly spaFallback?: string | undefined;
+  /** `--base` (normalized; undefined for `/`). */
+  readonly base?: string | undefined;
   /** `--keep-os-metadata`. */
   readonly keepOsMetadata?: boolean | undefined;
   /** `--country`. */
@@ -268,6 +291,7 @@ export async function serveDetached(reg: ServerRegistry, d: DetachedServe, warn?
     spa: d.spa,
     ...(d.spaExclude !== undefined && d.spaExclude.length > 0 ? { spaExclude: [...d.spaExclude] } : {}),
     ...(d.spaFallback !== undefined ? { spaFallback: d.spaFallback } : {}),
+    ...(d.base !== undefined ? { base: d.base } : {}),
     ...(d.keepOsMetadata ? { keepOsMetadata: true } : {}),
     ...(d.country !== undefined ? { country: d.country } : {}),
     ...(d.strictSiteFiles ? { strictSiteFiles: true } : {}),
@@ -330,6 +354,9 @@ async function serveWatch(v: ParsedValues, pos: string[]): Promise<number> {
   const navigate = !!v['navigate-to-changed'];
   const reloadMode = str(v.reload) ?? 'morph';
   const spa = spaOptions(v);
+  const baseFlag = parseBase(str(v.base));
+  /** `--base`, else the path of the last good build's EXPORT BASE URL. */
+  let base = baseFlag;
   const country = parseCountry(str(v.country));
   const strictSiteFiles = !!v['strict-site-files'];
   /** The site-file warnings last printed: a rebuild repeats them only when they change. */
@@ -357,7 +384,7 @@ async function serveWatch(v: ParsedValues, pos: string[]): Promise<number> {
     builtAt = Math.floor(Date.now() / 1000);
     if (event !== undefined) live.send(event);
   };
-  const server = createSiteServer(() => current, { ...spa, ...(country !== undefined ? { country } : {}), liveReload: live, lastModified: () => builtAt, log: (l) => process.stdout.write(`${l}\n`), warn: (m) => process.stderr.write(`warning: ${m}\n`) });
+  const server = createSiteServer(() => current, { ...spa, base: () => base, ...(country !== undefined ? { country } : {}), liveReload: live, lastModified: () => builtAt, log: (l) => process.stdout.write(`${l}\n`), warn: (m) => process.stderr.write(`warning: ${m}\n`) });
   try {
     return await watchLoop({
       context,
@@ -390,6 +417,7 @@ async function serveWatch(v: ParsedValues, pos: string[]): Promise<number> {
           });
           process.stdout.write(`Built ${r.output.size} file${r.output.size === 1 ? '' : 's'} (${r.output.digest()})\n`);
           siteFiles(r.output);
+          if (baseFlag === undefined) base = exportBasePath(r.plan.exportBase);
           swap(r.output);
           return { code: 0 };
         } catch (e) {
@@ -403,7 +431,7 @@ async function serveWatch(v: ParsedValues, pos: string[]): Promise<number> {
       onStarted: async () => {
         const addr = await listen(server, bind.host, bind.port);
         started = true;
-        process.stdout.write(`Serving ${context} (${current.size} files) at ${formatUrl(addr.host, addr.port)}  (Ctrl-C to stop)\n`);
+        process.stdout.write(`Serving ${context} (${current.size} files) at ${siteUrl(addr.host, addr.port, base)}  (Ctrl-C to stop)\n`);
       },
     });
   } finally {
@@ -589,7 +617,7 @@ const restart: Command = {
     const reg = await ServerRegistry.open();
     const s = await reg.find(pos[0] as string);
     const up = await restartDetached(reg, s, graceOf(v));
-    process.stdout.write(`Restarted ${up.name} (${up.id}) serving ${up.image} at ${formatUrl(up.host, up.port)}\n`);
+    process.stdout.write(`Restarted ${up.name} (${up.id}) serving ${up.image} at ${siteUrl(up.host, up.port, up.base)}\n`);
     return 0;
   },
 };

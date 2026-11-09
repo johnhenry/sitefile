@@ -3351,6 +3351,51 @@ mod tests {
         assert_eq!(reason(308), "Permanent Redirect");
     }
 
+    // johnhenry/sitefile#195 (test/server.test.ts)
+    #[test]
+    fn base_path_mount() {
+        assert_eq!(normalize_base("repo").as_deref(), Some("/repo/"));
+        assert_eq!(normalize_base("/a b//c/").as_deref(), Some("/a%20b/c/"));
+        assert_eq!(
+            normalize_base("https://user.github.io/repo/?x").as_deref(),
+            Some("/repo/")
+        );
+        assert_eq!(normalize_base("https://example.com").as_deref(), Some("/"));
+        assert_eq!(normalize_base("/../x"), None);
+        let t = Tree::from_files(
+            [
+                ("/index.html", "home"),
+                ("/docs/index.html", "docs"),
+                ("/about.html", "about"),
+                ("/404.html", "site 404"),
+                ("/_redirects", "/old /about 301\n/ext https://e.x/ 302\n"),
+            ]
+            .map(|(p, c)| (p.to_string(), make_file(c.as_bytes().to_vec(), "t", 0o644))),
+        )
+        .unwrap();
+        let opts = SiteServerOptions {
+            base: Some(Arc::new(|| Some("/repo/".to_string()))),
+            ..Default::default()
+        };
+        let get = |u: &str| handle_request(&t, &opts, "GET", u, &HashMap::new());
+        let r = get("/?q=1");
+        assert_eq!((r.status, r.header("location")), (302, Some("/repo/?q=1")));
+        let r = get("/repo");
+        assert_eq!((r.status, r.header("location")), (301, Some("/repo/")));
+        assert_eq!(body(&get("/repo/")), "home");
+        assert_eq!(body(&get("/repo/about")), "about");
+        assert_eq!(get("/repo/docs").header("location"), Some("/repo/docs/"));
+        assert_eq!(get("/repo/about/").header("location"), Some("/repo/about"));
+        assert_eq!(get("/repo/old").header("location"), Some("/repo/about"));
+        assert_eq!(get("/repo/ext").header("location"), Some("https://e.x/"));
+        let r = get("/repo/missing");
+        assert_eq!((r.status, body(&r)), (404, "site 404"));
+        let r = get("/about");
+        assert_eq!(r.status, 404);
+        assert!(body(&r).contains("404 Not Found"));
+        assert_eq!(get("/repository/").status, 404);
+    }
+
     // johnhenry/sitefile#193 (the same site as test/server.test.ts)
     #[test]
     fn redirects_placeholders_queries_conditions_and_warnings() {

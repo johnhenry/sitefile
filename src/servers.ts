@@ -39,6 +39,8 @@ export interface ServerState {
   readonly spaExclude?: readonly string[];
   /** `--spa-fallback`: the file every fallback serves (absent: the nearest 200.html or index.html). */
   readonly spaFallback?: string;
+  /** `--base`: the path prefix the site is served under, `/repo/` (absent: `/`). */
+  readonly base?: string;
   /** `--keep-os-metadata`: serve a directory's or archive's OS metadata files too (absent: false). */
   readonly keepOsMetadata?: boolean;
   /** `--country`: what `_redirects` `Country=` conditions match (absent: none matches). */
@@ -149,7 +151,7 @@ export class ServerRegistry {
 
   async view(s: ServerState): Promise<ServerView> {
     const running = await isRunning(s);
-    return { ...s, status: running ? 'running' : 'exited', url: s.ready ? urlOf(s) : '' };
+    return { ...s, status: running ? 'running' : 'exited', url: s.ready ? urlOf(s) + (s.base ?? '/').slice(1) : '' };
   }
 }
 function urlOf(s: Pick<ServerState, 'host' | 'port'>): string {

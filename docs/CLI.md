@@ -1126,7 +1126,7 @@ Surge's `200.html` needs no import: `/* /200.html 200` in `_redirects` does the 
 ## Site servers
 
 ```
-sitefile serve [--name n] [-p [host:]port] [-d] [--spa] [--spa-exclude glob]... [--spa-fallback path] [--country cc] [--strict-site-files] <ref|id|./dir|file>
+sitefile serve [--name n] [-p [host:]port] [-d] [--spa] [--spa-exclude glob]... [--spa-fallback path] [--base /path/] [--country cc] [--strict-site-files] <ref|id|./dir|file>
 sitefile serve --watch [-p [host:]port] [--spa] [build options] [context]   # see Watch mode
 sitefile servers [-a] [--json]                   # also: sitefile server ls
 sitefile server stop [--time secs] <name|id>...
@@ -1222,6 +1222,15 @@ on disk after the server started answers `500` for the entries that changed (`se
   serves, e.g. `--spa-fallback /app.html`; a path the site lacks is warned about at start. A fallback comes
   after files, clean URLs, directories and `_redirects` rules; the server record keeps `spaExclude` and
   `spaFallback`.
+- **`--base /repo/`** serves the site under a path prefix, as a GitHub Pages project site lives at
+  `https://user.github.io/repo/`: `/repo/x` answers the site's `/x`, `/` redirects (`302`, query kept) to
+  `/repo/`, `/repo` gets its slash (`301`), and any other path is `404` (the built-in page). The
+  server's own redirects (directories, clean URLs) and `_redirects` targets that are paths are under the
+  prefix too (`/old /new` redirects `/repo/old` to `/repo/new`); `_redirects`/`_headers` patterns match the
+  path inside it. A URL is accepted and its path used (`--base https://user.github.io/repo/`). With
+  `--watch` and no `--base`, the path of the Sitefile's `EXPORT … BASE` URL is the default (re-read after
+  each good build), so a site exported for `https://user.github.io/repo/` previews at `/repo/`. The printed
+  URL, `servers` and the server record (`base`) include it.
 - **`_redirects` and `_headers`** at the site root (the Netlify / Cloudflare Pages files, which `REDIRECT` and
   `HEADER` write; see LANGUAGE.md "Site files") are read once at start and never served themselves.
   - `_redirects`: one `from [name=value...] to [status[!]] [Key=values...]` per line (`#` comments), as on
