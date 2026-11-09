@@ -41,6 +41,8 @@ export interface ServerState {
   readonly spaFallback?: string;
   /** `--base`: the path prefix the site is served under, `/repo/` (absent: `/`). */
   readonly base?: string;
+  /** `--rewrite-base`: the production URL replaced by the local one in HTML, CSS and XML (absent: none). */
+  readonly rewriteBase?: string;
   /** `--keep-os-metadata`: serve a directory's or archive's OS metadata files too (absent: false). */
   readonly keepOsMetadata?: boolean;
   /** `--allowed-host` names (absent: none; localhost names and IP addresses are always allowed). */

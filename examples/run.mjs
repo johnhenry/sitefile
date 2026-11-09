@@ -85,6 +85,11 @@ const examples = {
   data() {
     assert.ok(files(build('data')).length > 0, 'YAML, CSV and Web Bundle data render');
   },
+  robots() {
+    const site = build('robots');
+    assert.match(read(site, 'robots.txt'), /^User-agent: \*\nDisallow: \/drafts\/\n\nSitemap: https:\/\/example.com\/sitemap.xml\n$/, 'ROBOTS points at the sitemap');
+    assert.match(read(site, '.well-known/security.txt'), /^Contact: mailto:security@example.com\nExpires: 2099-01-01T00:00:00Z\n/, 'SECURITY_TXT writes RFC 9116 fields');
+  },
   motion() {
     assert.throws(() => build('motion'), 'a JavaScript plugin does not run without --allow-plugin');
     assert.ok(files(build('motion', ['--allow-plugin', 'motion'])).some((p) => p.endsWith('.svg')), 'the plugin writes SVG');
@@ -107,6 +112,13 @@ const examples = {
       (e) => /E_PLUGIN/.test(e.stderr) && /cannot start processes/.test(e.stderr),
       "fileable's cmd attribute fails clearly in the sandbox",
     );
+  },
+  precache() {
+    const site = build('precache');
+    const manifest = JSON.parse(read(site, 'precache-manifest.json'));
+    assert.deepEqual(manifest.map((e) => e.url).slice(0, 2), ['/index.html', '/offline.html'], 'PRECACHE lists the files');
+    assert.ok(manifest.some((e) => e.url.startsWith('/style.') && e.revision === null), 'a fingerprinted file needs no revision');
+    assert.match(read(site, 'sw.js'), /precacheAndRoute\(\[/, 'the manifest is injected into the service worker');
   },
   wasm() {
     assert.ok(files(build('wasm')).some((p) => p.endsWith('.svg')), 'an import-free WebAssembly plugin runs with no flag');

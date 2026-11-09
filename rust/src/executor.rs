@@ -46,6 +46,7 @@ use crate::plugins::host::{
     PluginResult, DEFAULT_PLUGIN_POLICY,
 };
 use crate::plugins::wasm::check_wasm_plugin_in;
+use crate::precache::{precache, PrecacheOp};
 use crate::precompress::{precompress, PrecompressOp};
 use crate::profile::{begin, Profiler};
 use crate::registry::RegistryOptions;
@@ -1390,6 +1391,9 @@ fn with_site_rules(
 /// Overrides for where and how the export is written.
 #[derive(Debug, Clone, Default)]
 pub struct ExportTarget {
+    /// `--experimental-dictionary`: the previous build's files; the export gets `.dcz` deltas
+    /// against them and `Use-As-Dictionary` headers (crate::dictionary).
+    pub dictionary_from: Option<Tree>,
     /// Overrides the Sitefile's EXPORT format.
     pub format: Option<ExportFormat>,
     /// Overrides the Sitefile's EXPORT ... BASE (wbn).
@@ -1429,6 +1433,8 @@ pub struct ExportedBuild {
     pub root_cid: Option<String>,
     /// Watch mode: set when the directory export applied only the changes (export::incremental).
     pub incremental: Option<crate::export::incremental::Applied>,
+    /// `--experimental-dictionary`: the paths that got a `.dcz` delta.
+    pub dictionary_deltas: Option<Vec<String>>,
 }
 
 /// The attestations (`--provenance`, `--sbom`) of an image built from
@@ -1641,6 +1647,24 @@ pub fn build_to_directory(
 }
 
 fn export_build(
+    mut result: BuildResult,
+    format: ExportFormat,
+    options: &BuildOptions,
+    out_dir: &str,
+    target: &ExportTarget,
+) -> Result<ExportedBuild> {
+    let mut deltas = None;
+    if let Some(previous) = &target.dictionary_from {
+        let (tree, d) = crate::dictionary::add_dictionary_deltas(&result.output, previous)?;
+        result.output = tree;
+        deltas = Some(d);
+    }
+    let mut exported = export_build_inner(result, format, options, out_dir, target)?;
+    exported.dictionary_deltas = deltas;
+    Ok(exported)
+}
+
+fn export_build_inner(
     result: BuildResult,
     format: ExportFormat,
     options: &BuildOptions,
@@ -1705,6 +1729,7 @@ fn export_build(
                 manifest_digest: Some(img.manifest_digest.clone()),
                 root_cid: None,
                 incremental: None,
+                dictionary_deltas: None,
             });
         }
         let written = export_directory(
@@ -1721,6 +1746,7 @@ fn export_build(
             manifest_digest: Some(img.manifest_digest.clone()),
             root_cid: None,
             incremental: None,
+            dictionary_deltas: None,
         });
     }
     if !is_archive_format(format) {
@@ -1738,6 +1764,7 @@ fn export_build(
             manifest_digest: None,
             root_cid: None,
             incremental: written.incremental,
+            dictionary_deltas: None,
         });
     }
     if format == ExportFormat::Car {
@@ -1752,6 +1779,7 @@ fn export_build(
             manifest_digest: None,
             root_cid: Some(root),
             incremental: None,
+            dictionary_deltas: None,
         });
     }
     let data = encode_tree(
@@ -1786,6 +1814,7 @@ fn export_build(
         manifest_digest: None,
         root_cid: None,
         incremental: None,
+        dictionary_deltas: None,
     })
 }
 
@@ -4387,6 +4416,10 @@ impl<'a> Exec<'a> {
                 let out = self.precompress(op, tree, &*self.warn.clone())?;
                 return Ok((out, String::new(), None));
             }
+            if let Operation::Precache { .. } = op {
+                let out = self.precache(op, tree, &*self.warn.clone())?;
+                return Ok((out, String::new(), None));
+            }
             if let Operation::CheckLinks { .. } = op {
                 self.check_links(op, &tree, &*self.warn.clone())?;
                 return Ok((tree, String::new(), None));
@@ -4501,6 +4534,30 @@ impl<'a> Exec<'a> {
                 outer(m)
             };
             let out = self.precompress(op, tree, &record)?;
+            let warnings = printed.lock().map(|v| v.clone()).unwrap_or_default();
+            lock_memo(memo).set(key.clone(), (out.clone(), warnings), Vec::new());
+            return Ok((out, key, Some("miss")));
+        }
+        if let Operation::Precache { .. } = op {
+            // The chain key covers the stage's earlier steps, so also what its FINGERPRINTs renamed.
+            let key = memo_key(&["chain", prev, &op_id]);
+            type Hit = (Tree, Vec<String>);
+            if let Some((hit, warnings)) = lock_memo(memo).get::<Hit>(&key) {
+                for w in &warnings {
+                    (self.warn)(w);
+                }
+                return Ok((hit, key, Some("hit")));
+            }
+            let printed: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+            let outer = self.warn.clone();
+            let p2 = printed.clone();
+            let record = move |m: &str| {
+                if let Ok(mut v) = p2.lock() {
+                    v.push(m.to_string());
+                }
+                outer(m)
+            };
+            let out = self.precache(op, tree, &record)?;
             let warnings = printed.lock().map(|v| v.clone()).unwrap_or_default();
             lock_memo(memo).set(key.clone(), (out.clone(), warnings), Vec::new());
             return Ok((out, key, Some("miss")));
@@ -4639,6 +4696,31 @@ impl<'a> Exec<'a> {
         precompress(tree, &op, &origin, warn)
     }
 
+    fn precache(&self, op: &Operation, tree: Tree, warn: &dyn Fn(&str)) -> Result<Tree> {
+        let Operation::Precache {
+            patterns,
+            dest,
+            into,
+            root,
+            overwrite,
+            span,
+        } = op
+        else {
+            unreachable!()
+        };
+        let origin = format!("{}:{} PRECACHE", self.label, span.line);
+        let fingerprinted: HashSet<String> = self.renames.values().cloned().collect();
+        let op = PrecacheOp {
+            patterns,
+            dest: dest.as_deref(),
+            into: into.as_deref(),
+            root,
+            overwrite: *overwrite,
+            span,
+        };
+        precache(tree, &op, &fingerprinted, &origin, warn)
+    }
+
     fn sitemap(&self, op: &Operation, tree: Tree) -> Result<Tree> {
         let Operation::Sitemap {
             base,
@@ -4676,6 +4758,18 @@ impl<'a> Exec<'a> {
                 let files = self.feed_files(op)?;
                 Ok(self.memo_store(key, files, Vec::new(), true))
             }
+            Operation::TextFile { dest, text, .. } => {
+                // The planner wrote the text; it reads nothing.
+                let key = memoized.then(|| memo_key(&["text", op_id]));
+                if let Some(hit) = self.memo_lookup(&key) {
+                    return Ok(hit);
+                }
+                let files: Files = vec![(
+                    dest.clone(),
+                    make_file(text.clone().into_bytes(), origin, 0o644),
+                )];
+                Ok(self.memo_store(key, files, Vec::new(), true))
+            }
             Operation::Sitemap { .. } => unreachable!("SITEMAP reads the tree: execute_op runs it"),
             Operation::Fingerprint { .. } => {
                 unreachable!("FINGERPRINT reads the tree: execute_op runs it")
@@ -4685,6 +4779,9 @@ impl<'a> Exec<'a> {
             }
             Operation::Precompress { .. } => {
                 unreachable!("PRECOMPRESS reads the tree: execute_op runs it")
+            }
+            Operation::Precache { .. } => {
+                unreachable!("PRECACHE reads the tree: execute_op runs it")
             }
             Operation::CheckLinks { .. } => {
                 unreachable!("CHECKLINKS reads the tree: execute_op runs it")
@@ -5974,7 +6071,9 @@ fn op_overwrite(op: &Operation) -> bool {
         | Operation::Feed { overwrite, .. }
         | Operation::Sitemap { overwrite, .. }
         | Operation::Fingerprint { overwrite, .. }
-        | Operation::Precompress { overwrite, .. } => *overwrite,
+        | Operation::Precompress { overwrite, .. }
+        | Operation::TextFile { overwrite, .. }
+        | Operation::Precache { overwrite, .. } => *overwrite,
         Operation::CheckLinks { .. } | Operation::Canonical { .. } => false,
     }
 }

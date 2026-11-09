@@ -880,6 +880,39 @@ stored blob against its digest. The manifest itself is checked first: its root m
 `--json` prints `{ ok, root, files, missing: [path], changed: [{ path, expected: { size, digest },
 actual: { size, digest } }], extra: [path] }`.
 
+## Compression Dictionary Transport (experimental)
+
+`sitefile build --experimental-dictionary <previous>` prepares a build for
+[Compression Dictionary Transport](https://datatracker.ietf.org/doc/draft-ietf-httpbis-compression-dictionary/):
+browsers that have the previous version of a file use it as a dictionary, and the update downloads as
+a small delta. `<previous>` is the previous build: an image reference or ID, a directory or an archive
+(read as `sitefile verify` reads them).
+
+```sh
+sitefile build . -o dist-v2 --experimental-dictionary dist-v1     # or: --experimental-dictionary mysite:1
+```
+
+- Every `.js`, `.mjs`, `.css`, `.json`, `.wasm` and `.html` file whose path is plain (letters, digits,
+  `/ . _ ~ -`) gets `Use-As-Dictionary: match="<path>"` in `/_headers` (appended under a comment), so
+  a browser keeps it as the dictionary for the next version of that URL.
+- Each of those files that also exists in `<previous>` with other content gets `<path>.dcz`: the new
+  file as a `dcz` delta (a Zstandard frame against the previous version, after the 40-byte `dcz` header
+  with the dictionary's SHA-256). A delta is written only when it is smaller than the file and the two
+  versions together fit in 8 MiB (the window browsers accept). An existing `<path>.dcz` in the output
+  fails the build (`E_CONFLICT`). `build` prints `Dictionary deltas: N (.dcz)`.
+- `sitefile serve` (both implementations) answers a request for `<path>` that sends
+  `Accept-Encoding: dcz` (any non-zero quality) and `Available-Dictionary: :<base64 SHA-256>:` matching
+  the delta's dictionary with the `.dcz` bytes, `Content-Encoding: dcz` and an ETag ending in `-dcz`;
+  responses for files with a delta carry `Vary: accept-encoding, available-dictionary`. Other requests
+  get the file as before.
+- The encoder is sitefile's own (`src/zstd.ts`, ported as `rust/src/zstd.rs`, byte for byte): greedy
+  matching against the dictionary, raw literals and the predefined FSE tables. Its frames are standard
+  Zstandard (tests decode them with libzstd); the ratio is below libzstd's, but a small edit to a large
+  file still gives a delta of tens of bytes. `dcb` (Brotli) deltas are not written: there is no shared Brotli encoder.
+- Hosts must serve the `.dcz` themselves for this to help outside `sitefile serve`; most do not
+  negotiate it yet. Fingerprinted assets (new name per version) need a `match` pattern across names,
+  which this flag does not write.
+
 ## Comparing builds: `sitefile diff`
 
 `sitefile diff <a> <b> [--json] [--exit-code]` lists what changed going from `<a>` to `<b>`. Each side is
@@ -1127,7 +1160,7 @@ Surge's `200.html` needs no import: `/* /200.html 200` in `_redirects` does the 
 ## Site servers
 
 ```
-sitefile serve [--name n] [-p [host:]port] [-d] [--spa] [--spa-exclude glob]... [--spa-fallback path] [--base /path/] [--country cc] [--strict-site-files] <ref|id|./dir|file>
+sitefile serve [--name n] [-p [host:]port] [-d] [--spa] [--spa-exclude glob]... [--spa-fallback path] [--base /path/] [--rewrite-base url] [--country cc] [--strict-site-files] [--open[=path]] [--qr] <ref|id|./dir|file>
 sitefile serve --watch [-p [host:]port] [--spa] [build options] [context]   # see Watch mode
 sitefile servers [-a] [--json]                   # also: sitefile server ls
 sitefile server stop [--time secs] <name|id>...
@@ -1196,6 +1229,22 @@ on disk after the server started answers `500` for the entries that changed (`se
   checks only when `allowedHosts` is given.
 - Foreground by default: prints the URL and one access-log line per request (`GET /path 200 1234 1.2ms`); Ctrl-C
   stops it. Foreground servers are not listed by `servers`; `--name` needs `-d`.
+- **In a terminal** (a foreground `serve` or `serve --watch` whose stdin is a terminal), single keys act
+  at once (`Press h for keys` is printed under the URL): `o` opens the site in the browser (at the
+  `--open` path, if one was given), `u` prints the URLs (`  Local:   …`, and with `-p 0.0.0.0:…` or `-p
+  [::]:…` also `  Network: …`, this machine's address on its default route, with a QR code of it), `r`
+  rebuilds (`--watch`, as if a file had changed) or re-reads a served directory (an image or archive file
+  is read only at start: `Nothing to re-read: …`), `c` clears the screen, `q` (or Ctrl-C, Ctrl-D) quits,
+  and `h` lists the keys. Reading keys puts the terminal in raw mode for the session; it is restored on
+  exit. Without a terminal nothing is read from stdin (`SITEFILE_SERVE_KEYS=1` reads keys from a pipe
+  anyway, for tests and scripts).
+- `--open` opens the site in the browser once it is served; `--open=/docs/` opens that path (the path is
+  written with `=`, so `serve --open ./site` serves `./site`). The browser is `$BROWSER` when set, run
+  with the URL as its only argument and no shell, else `open` (macOS), `rundll32
+  url.dll,FileProtocolHandler` (Windows, TypeScript CLI) or `xdg-open`. A browser that fails to start is a
+  warning. `--qr` prints a QR code (byte mode, error correction M, in half-block characters with a quiet
+  zone) of the network URL when bound to every interface, else of the local URL, under the URL line. Both
+  are for a foreground server: with `-d` they are a usage error.
 - Behaviour: `GET` and `HEAD` only (`405` with `Allow` otherwise); `/` and `/dir/` serve `index.html`; clean
   URLs: `/about` serves `/about.html` when there is no file `/about`, and `/about/` redirects (`301`, query kept) to
   `/about` when only `/about.html` answers it (after any `_redirects` rule for the path); `/about.html` and
@@ -1252,6 +1301,15 @@ on disk after the server started answers `500` for the entries that changed (`se
   `--watch` and no `--base`, the path of the Sitefile's `EXPORT … BASE` URL is the default (re-read after
   each good build), so a site exported for `https://user.github.io/repo/` previews at `/repo/`. The printed
   URL, `servers` and the server record (`base`) include it.
+- **`--rewrite-base <url>`** replaces the production URL (`https://example.com/blog/`: scheme, host and
+  path, without the trailing slash) with the local origin and `--base` (`http://<Host>/repo`) in served
+  HTML, CSS and XML (feeds, sitemaps, SVG), so absolute self-links, canonical links and sitemap entries
+  stay on the preview. A match must end where a URL part ends (`https://example.com` does not rewrite
+  `https://example.com.evil`, `/blog` not `/blogroll`). Only responses change, never exports or other
+  types; a rewritten file gets its own `ETag` (`…-rebased`), and the `Host` header is used only when it
+  is a plain host name or address with a port (otherwise nothing is rewritten). Under `serve --watch` it is
+  **on by default** with the build's EXPORT BASE URL, else its first SITEMAP or FEED BASE (re-read after each
+  good build); `--no-rewrite-base` turns that off. Kept in the server record as `rewriteBase`.
 - **`_redirects` and `_headers`** at the site root (the Netlify / Cloudflare Pages files, which `REDIRECT` and
   `HEADER` write; see LANGUAGE.md "Site files") are read once at start and never served themselves.
   - `_redirects`: one `from [name=value...] to [status[!]] [Key=values...]` per line (`#` comments), as on

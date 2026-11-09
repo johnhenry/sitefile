@@ -9,12 +9,14 @@
 pub mod casefold_data;
 pub mod cbor;
 pub mod deflate;
+pub mod dictionary;
 pub mod digest;
 pub mod error;
 pub mod paths;
 pub mod sha1;
 pub mod tree;
 pub mod values;
+pub mod zstd;
 
 // Language
 pub mod build_args;
@@ -47,7 +49,9 @@ pub mod fingerprint;
 pub mod integrity;
 pub mod links;
 pub mod mime_data;
+pub mod precache;
 pub mod precompress;
+pub mod qr;
 pub mod refs;
 pub mod server;
 pub mod servers;

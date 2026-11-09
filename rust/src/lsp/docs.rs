@@ -88,6 +88,21 @@ const INSTRUCTIONS: &[(&str, &str, &str)] = &[
         "Writes a gzip sidecar `<file>.gz` next to each matching compressible file (text, scripts, data, SVG, fonts) of at least MIN bytes (default 1024), when it is smaller, for servers that send it in place of the file (nginx `gzip_static`, Caddy `precompressed`). Deterministic: the shared deflate encoder, a fixed header. `br` and `zstd` are not supported yet.",
     ),
     (
+        "ROBOTS",
+        "ROBOTS [--overwrite] [ALLOW <path> | DISALLOW <path>]… [SITEMAP] [TO <dest>]",
+        "Writes `/robots.txt` for every user agent (`User-agent: *`) with the ALLOW and DISALLOW rules in source order (an empty `Disallow:` allows everything). `SITEMAP` adds a `Sitemap:` line for each SITEMAP of the Sitefile (its BASE and destination).",
+    ),
+    (
+        "SECURITY_TXT",
+        "SECURITY_TXT [--overwrite] CONTACT <uri>… EXPIRES <date> [ENCRYPTION <uri>]… [POLICY <uri>]… [TO <dest>]",
+        "Writes an RFC 9116 `/.well-known/security.txt`. CONTACT (`mailto:`, `tel:` or `https:`) and EXPIRES (a date or RFC 3339 date-time, not a duration) are required; a date in the past or less than 30 days away warns.",
+    ),
+    (
+        "PRECACHE",
+        "PRECACHE [--overwrite] <pattern>… [TO <dest>] [INTO <service-worker>]",
+        "Writes a Workbox-style precache manifest, `[{url, revision}]`, of the matching files below the EXPORT path (default `/sw-manifest.json`); `revision` is 10 hex digits of the SHA-256, or null for a fingerprinted file. `INTO` replaces `self.__WB_MANIFEST` in a service worker of the stage with it.",
+    ),
+    (
         "CHECKLINKS",
         "CHECKLINKS [--warn] [--external]",
         "Checks every reference in the stage's HTML and CSS files at this point: a link to a file that is not there (and that no REDIRECT covers) fails the build with `E_BROKEN_LINK`, listing each with its file and line. Clean URLs (`/about` → `/about.html`) and directory indexes count as found.",
@@ -164,6 +179,17 @@ const CLAUSES: &[(&str, &str, &str)] = &[
     ("CANONICAL", "PRETTY", "`PRETTY`: canonical URLs without `.html` (`/about.html` → `<base>/about`)."),
     ("PRECOMPRESS", "MIN", "`MIN <bytes>`: the smallest file compressed (a whole number; default 1024)."),
     ("PRECOMPRESS", "gzip", "`gzip`: write `<file>.gz` (the default, and the only format so far)."),
+    ("ROBOTS", "ALLOW", "`ALLOW <path>`: an `Allow:` rule (an absolute path; `*` and `$` work as robots.txt wildcards)."),
+    ("ROBOTS", "DISALLOW", "`DISALLOW <path>`: a `Disallow:` rule (an absolute path; `/` keeps crawlers out of everything)."),
+    ("ROBOTS", "SITEMAP", "`SITEMAP`: a `Sitemap:` line for each SITEMAP of the Sitefile (an error when there is none)."),
+    ("ROBOTS", "TO", "`TO <dest>`: the file (default `/robots.txt`)."),
+    ("SECURITY_TXT", "CONTACT", "`CONTACT <uri>` (required, repeatable): how to report a vulnerability: `mailto:`, `tel:` or `https:`."),
+    ("SECURITY_TXT", "EXPIRES", "`EXPIRES <date>` (required): when the file is stale: `YYYY-MM-DD` or an RFC 3339 date-time."),
+    ("SECURITY_TXT", "ENCRYPTION", "`ENCRYPTION <uri>` (repeatable): a key for encrypted reports: `https:`, `openpgp4fpr:` or `dns:`."),
+    ("SECURITY_TXT", "POLICY", "`POLICY <uri>` (repeatable): the disclosure policy, an `https:` URL."),
+    ("SECURITY_TXT", "TO", "`TO <dest>`: the file (default `/.well-known/security.txt`)."),
+    ("PRECACHE", "TO", "`TO <dest>`: the manifest file (default `/sw-manifest.json`; with only INTO, none is written)."),
+    ("PRECACHE", "INTO", "`INTO <service-worker>`: a file of the stage whose first `self.__WB_MANIFEST` becomes the manifest (Workbox `injectManifest`)."),
     ("REDIRECT", "STATUS", "`STATUS 301|302|303|307|308`: the redirect's status (default 301)."),
     ("EXPORT", "AS", "`AS format`: directory (default), zip, tar, tgz (alias tar.gz), wbn, oci, car (an IPFS CARv1 file; its root CID is the one `ipfs add -r --hidden --cid-version=1` prints), html (index.html with its assets inlined as data: URIs), mhtml (index.html and its assets as one MHTML file) or epub (an EPUB 3 book of the XHTML pages)."),
     ("EXPORT", "BASE", "`BASE <url>`: for wbn, the https URL the files are mounted at; for oci, a container image to build on."),
@@ -408,6 +434,12 @@ mod tests {
                 "PRECOMPRESS",
                 &crate::language::parser::PRECOMPRESS_CLAUSES[..],
             ),
+            ("ROBOTS", &crate::language::parser::ROBOTS_CLAUSES[..]),
+            (
+                "SECURITY_TXT",
+                &crate::language::parser::SECURITY_TXT_CLAUSES[..],
+            ),
+            ("PRECACHE", &crate::language::parser::PRECACHE_CLAUSES[..]),
         ] {
             for c in clauses {
                 assert!(clause(kw, c).is_some(), "{kw} {c}");

@@ -59,6 +59,23 @@ function dosDateTime(epoch: number | undefined): { time: number; date: number } 
   };
 }
 
+/** File extensions (ASCII, lowercase) whose content is already compressed; zip stores them without deflating. */
+export const COMPRESSED_MEDIA = [
+  'png', 'jpg', 'jpeg', 'gif', 'webp', 'avif', 'heic', 'jxl',
+  'woff', 'woff2',
+  'mp3', 'm4a', 'aac', 'ogg', 'oga', 'opus', 'flac',
+  'mp4', 'm4v', 'webm', 'mov', 'mkv',
+  'zip', 'gz', 'tgz', 'br', 'zst', 'xz', 'bz2', '7z', 'rar', 'wbn',
+];
+const COMPRESSED = new Set(COMPRESSED_MEDIA);
+
+/** Whether a zip entry name ends in an already-compressed media extension ({@link COMPRESSED_MEDIA}), ASCII case-insensitively. */
+export function isCompressedMedia(name: string): boolean {
+  const base = name.slice(name.lastIndexOf('/') + 1);
+  const dot = base.lastIndexOf('.');
+  return dot > 0 && COMPRESSED.has(base.slice(dot + 1).replace(/[A-Z]/g, (c) => c.toLowerCase()));
+}
+
 /**
  * The extended-timestamp extra field (0x5455 "UT", APPNOTE 4.4.6, Info-ZIP extrafld.txt) with the
  * modification time only: unlike the DOS time, which unzippers read as local time, it is UTC
@@ -97,8 +114,9 @@ export function writeZip(tree: Tree, options: WriterOptions = {}, first: readonl
   for (const e of entries) {
     if (e.nameBytes.length > 0xffff) throw new SitefileError('E_EXPORT', `zip entry name is too long (${e.nameBytes.length} bytes): '${e.name.slice(0, 60)}…'`);
     const isPlain = plain.has(e.name);
-    const deflated = isPlain ? e.bytes : deflateRaw(e.bytes);
-    const stored = isPlain || deflated.length >= e.bytes.length;
+    // Already-compressed media is stored as is: deflate would only spend time to gain nothing (#203).
+    const deflated = isPlain || isCompressedMedia(e.name) ? undefined : deflateRaw(e.bytes);
+    const stored = deflated === undefined || deflated.length >= e.bytes.length;
     const extra = isPlain ? Buffer.alloc(0) : ut;
     const data: Uint8Array = stored ? e.bytes : deflated;
     if (e.bytes.length > ZIP_MAX || data.length > ZIP_MAX) {
