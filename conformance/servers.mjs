@@ -256,8 +256,9 @@ export async function startServers(root, dir) {
 // every request in `requests` over its own connection (`connection: close`), and
 // requires the same answer from both: interim (1xx) and final status lines, every
 // header but `date`, `connection` and `keep-alive` (sorted by name), and the body
-// bytes. A request is `{ method = "GET", target, headers = {}, version = "1.1", expect }`;
-// `target` is sent as written (so an absolute-form target works); a `host` header replaces the default one. `expect` checks both
+// bytes. A request is `{ method = "GET", target, headers = {}, version = "1.1", expect }`
+// (`headers.host` replaces the default `host: 127.0.0.1:<port>`);
+// `target` is sent as written (so an absolute-form target works). `expect` checks both
 // answers: `status`, `headers` (name → exact value, null for absent, true for present), `body`
 // (exact text) and `interim` (the list of 1xx statuses). With `"log": true` the CLIs'
 // stdout and stderr (the Serving line, warnings and access log) must match too, after
@@ -271,7 +272,8 @@ function rawRequest(port, { method = 'GET', target, headers = {}, version = '1.1
   return new Promise((resolve, reject) => {
     const sock = net.connect(port, '127.0.0.1');
     const chunks = [];
-    const lines = [`${method} ${target} HTTP/${version}`, ...('host' in headers ? [] : [`host: 127.0.0.1:${port}`]), ...Object.entries(headers).map(([k, v]) => `${k}: ${v}`), 'connection: close', '', ''];
+    const hasHost = Object.keys(headers).some((k) => k.toLowerCase() === 'host');
+    const lines = [`${method} ${target} HTTP/${version}`, ...(hasHost ? [] : [`host: 127.0.0.1:${port}`]), ...Object.entries(headers).map(([k, v]) => `${k}: ${v}`), 'connection: close', '', ''];
     sock.on('connect', () => sock.write(lines.join('\r\n')));
     sock.on('data', (d) => chunks.push(d));
     sock.on('error', reject);
