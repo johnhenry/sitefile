@@ -14,6 +14,10 @@
   (`encode="wbn"`), `@johnhenry/packfile`'s `toArchive()` and `EXPORT … AS wbn COMPRESSION
   gzip` import. Checked-in fixtures from both tools (`test/fixtures/gzip-wbn`) are read
   by both implementations and a conformance case.
+- **`bake` names a gzip Web Bundle target's default output like `build`** (johnhenry/sitefile#151):
+  a target with `format: wbn` (or `warc`) and no `output`, whose Sitefile exports in that format
+  with `COMPRESSION gzip`, now writes `dist/<target>.wbn.gz` (`.warc.gz`) instead of
+  `dist/<target>.wbn`. Both implementations, with a conformance case.
 
 ## 0.0.3 (2026-11-09)
 

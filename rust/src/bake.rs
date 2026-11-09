@@ -31,6 +31,8 @@ pub struct BakeTarget {
     pub arg_files: Vec<String>,
     pub target: Option<String>,
     pub output: String,
+    /// No `output` in the bake file: `output` is the default name, `dist/<name>` plus the format's extension.
+    pub default_output: bool,
     pub format: Option<String>,
     pub tags: Vec<String>,
     pub matrix: Option<Vec<(String, String)>>,
@@ -529,6 +531,7 @@ fn expand(def: &Definition, bake_dir: &str) -> Result<Vec<(String, Vec<BakeTarge
                 arg_files,
                 target,
                 output,
+                default_output: fields.output.is_none(),
                 format,
                 tags,
                 matrix: raw.matrix.as_ref().map(|_| combo.clone()),
@@ -689,11 +692,51 @@ fn check_conflicts(targets: &[BakeTarget]) -> Result<()> {
 
 /// Read, check and resolve a bake file.
 pub fn bake_plan(file: &str, selected: &[String]) -> Result<BakePlan> {
-    resolve_bake(
+    let mut plan = resolve_bake(
         &parse_bake_definition(&load_bake_file(file)?, file)?,
         file,
         selected,
-    )
+    )?;
+    let mut changed = false;
+    for t in &mut plan.targets {
+        if let Some(out) = compressed_default(t) {
+            t.output = out;
+            changed = true;
+        }
+    }
+    if changed {
+        check_conflicts(&plan.targets)?;
+    }
+    Ok(plan)
+}
+
+/// A `wbn` or `warc` target with the default output gets the name `build` would give it:
+/// `dist/<name>.wbn.gz` (`.warc.gz`) when its Sitefile's EXPORT in that format says
+/// `COMPRESSION gzip` (#151); `None` keeps the name. A Sitefile that cannot be planned keeps the
+/// plain name; its build reports why (port of `compressedDefault` in src/bake.ts).
+fn compressed_default(t: &BakeTarget) -> Option<String> {
+    use crate::language::ast::OciCompression;
+    if !t.default_output {
+        return None;
+    }
+    let format = ExportFormat::parse(t.format.as_deref()?)?;
+    if !matches!(format, ExportFormat::Wbn | ExportFormat::Warc) {
+        return None;
+    }
+    let flags: Vec<String> = t.args.iter().map(|(k, v)| format!("{k}={v}")).collect();
+    let options = crate::executor::BuildOptions {
+        context_dir: t.context.clone(),
+        sitefile: Some(t.file.clone()),
+        build_args: crate::build_args::collect_build_args(&t.arg_files, &flags).ok()?,
+        ..Default::default()
+    };
+    let plan = crate::executor::plan_build(&options).ok()?;
+    if crate::executor::sitefile_compression(&plan, format) != Some(OciCompression::Gzip) {
+        return None;
+    }
+    let plain = default_out_name(format, None);
+    let gzip = default_out_name(format, Some(OciCompression::Gzip));
+    Some(format!("{}{}", t.output, &gzip[plain.len()..]))
 }
 
 fn pairs(p: &[(String, String)]) -> Value {

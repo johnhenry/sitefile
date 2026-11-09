@@ -1,0 +1,3 @@
+FROM scratch
+COPY ./public/ /
+EXPORT / AS wbn BASE https://example.com/

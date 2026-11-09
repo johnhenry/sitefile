@@ -463,7 +463,7 @@ targets:
   | `args` | mapping of ARG name to a string, number or boolean (`--build-arg`) | none |
   | `arg-files` | list of `.json`/`.yaml`/`.env` files (`--build-arg-file`) | none |
   | `target` | stop at this stage (`--target`) | the whole build |
-  | `output` | export destination (`-o`) | `dist/<target name>`, with the format's extension (`dist/<name>.zip`) when `format` is set |
+  | `output` | export destination (`-o`) | `dist/<target name>`, with the format's extension (`dist/<name>.zip`) when `format` is set; `dist/<name>.wbn.gz` (`.warc.gz`) for `format: wbn` (`warc`) when the Sitefile's `EXPORT … AS wbn` (`warc`) says `COMPRESSION gzip`, as `build` names it |
   | `format` | `--format` (`directory`, `zip`, `tar`, `tgz`/`tar.gz`, `wbn`, `oci`) | from `output`'s extension, else the Sitefile's `EXPORT ... AS` |
   | `tags` | list of `name[:tag]`: also store the build as an image (`-t`; the output is still written) | none |
   | `inherits` | a target name or a list: start from those targets' fields, in order | none |

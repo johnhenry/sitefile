@@ -1,0 +1,14 @@
+targets:
+  gz:
+    context: ./gz
+    format: wbn
+  named:
+    context: ./gz
+    format: wbn
+    output: dist/named.wbn
+  plain:
+    context: ./plain
+    format: wbn
+  zip:
+    context: ./gz
+    format: zip
