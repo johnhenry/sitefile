@@ -31,7 +31,7 @@ use crate::export::oci::{
     blob_path_of, decode_index, extract_image_files, media, parse_config, parse_manifest,
     site_layer_index,
 };
-use crate::resources::archive::extract_archive;
+use crate::resources::archive::{extract_archive, os_metadata_warning, without_os_metadata};
 use crate::resources::local::{LocalContext, LocalContextOptions};
 use crate::resources::types::{ArchiveLimits, Resource, DEFAULT_ARCHIVE_LIMITS};
 use crate::store::Store;
@@ -76,6 +76,13 @@ pub struct ServerState {
     pub image: String,
     pub source: ServerSource,
     pub spa: bool,
+    /// `--keep-os-metadata`: serve a directory's or archive's OS metadata files too.
+    #[serde(
+        default,
+        rename = "keepOsMetadata",
+        skip_serializing_if = "std::ops::Not::not"
+    )]
+    pub keep_os_metadata: bool,
     /// The requested bind address (port 0 = pick a free port).
     pub bind: Bind,
     pub host: String,
@@ -368,6 +375,37 @@ pub fn is_running(s: &ServerState) -> bool {
 /// must stay inside, hard-linked and special files are refused, `.git` is
 /// skipped, `.sitefileignore` is not read); hidden files (except `.well-known`) are not served.
 pub fn load_directory_tree(dir: &Path) -> Result<Tree> {
+    load_directory_tree_with(dir, &ServedTreeOptions::default())
+}
+
+/// How a directory or archive is read for serving.
+#[derive(Default, Clone, Copy)]
+pub struct ServedTreeOptions<'a> {
+    /// Serve OS metadata files (`__MACOSX/`, `._*`, `Thumbs.db`, `desktop.ini`, ...) too.
+    pub keep_os_metadata: bool,
+    /// Told how many OS metadata files were skipped.
+    pub warn: Option<&'a dyn Fn(&str)>,
+}
+
+/// `tree` as served: without OS metadata (unless kept; with a warning naming
+/// `origin`) and hidden files except `.well-known`.
+fn served(tree: Tree, origin: &str, options: &ServedTreeOptions) -> Result<Tree> {
+    let tree = if options.keep_os_metadata {
+        tree
+    } else {
+        let (tree, skipped) = without_os_metadata(tree)?;
+        if skipped > 0 {
+            if let Some(warn) = options.warn {
+                warn(&os_metadata_warning(origin, skipped));
+            }
+        }
+        tree
+    };
+    visible(&tree)
+}
+
+/// [`load_directory_tree`] with `options`.
+pub fn load_directory_tree_with(dir: &Path, options: &ServedTreeOptions) -> Result<Tree> {
     let ctx = LocalContext::open(
         dir,
         &LocalContextOptions {
@@ -378,7 +416,7 @@ pub fn load_directory_tree(dir: &Path) -> Result<Tree> {
     let Resource::Tree { tree, .. } = ctx.read_tree("", "serve", None)? else {
         unreachable!("read_tree returns a tree")
     };
-    visible(&tree)
+    served(tree, &dir.display().to_string(), options)
 }
 
 /// Paths of `tree` a directory or archive serves: no hidden files except `.well-known`.
@@ -407,15 +445,34 @@ pub fn load_archive_tree(file: &Path) -> Result<Tree> {
 /// OCI archive serves its first image's files, like that image from the store,
 /// after checking every blob's digest and its site layer against `limits`.
 pub fn load_archive_tree_with(file: &Path, limits: &ArchiveLimits) -> Result<Tree> {
-    load_archive(file, limits, false)
+    load_archive_tree_opts(file, limits, &ServedTreeOptions::default())
 }
 
-/// [`load_archive_tree`] with hidden files kept (`verify` and `diff` compare every file).
+/// [`load_archive_tree`] with hidden files and OS metadata kept (`verify` and `diff` compare every file).
 pub fn load_archive_tree_all(file: &Path) -> Result<Tree> {
-    load_archive(file, &DEFAULT_ARCHIVE_LIMITS, true)
+    load_archive(
+        file,
+        &DEFAULT_ARCHIVE_LIMITS,
+        true,
+        &ServedTreeOptions::default(),
+    )
 }
 
-fn load_archive(file: &Path, limits: &ArchiveLimits, hidden: bool) -> Result<Tree> {
+/// [`load_archive_tree_with`] with `options` (OS metadata files are dropped unless kept).
+pub fn load_archive_tree_opts(
+    file: &Path,
+    limits: &ArchiveLimits,
+    options: &ServedTreeOptions,
+) -> Result<Tree> {
+    load_archive(file, limits, false, options)
+}
+
+fn load_archive(
+    file: &Path,
+    limits: &ArchiveLimits,
+    hidden: bool,
+    options: &ServedTreeOptions,
+) -> Result<Tree> {
     let origin = file.display().to_string();
     let unreadable = || SitefileError::plain(E_ARCHIVE, format!("cannot read '{origin}'"));
     let meta = fs::metadata(file).map_err(|e| {
@@ -452,7 +509,7 @@ fn load_archive(file: &Path, limits: &ArchiveLimits, hidden: bool) -> Result<Tre
     if hidden {
         return Ok(tree);
     }
-    visible(&tree)
+    served(tree, &origin, options)
 }
 
 /// The files of the first image in an extracted OCI layout.
@@ -497,10 +554,21 @@ fn oci_archive_tree(layout: &Tree, origin: &str, limits: &ArchiveLimits) -> Resu
 
 /// The tree a server state serves.
 pub fn load_served_tree(store: &Store, source: &ServerSource) -> Result<Tree> {
+    load_served_tree_with(store, source, &ServedTreeOptions::default())
+}
+
+/// [`load_served_tree`] with `options` (for a directory or archive).
+pub fn load_served_tree_with(
+    store: &Store,
+    source: &ServerSource,
+    options: &ServedTreeOptions,
+) -> Result<Tree> {
     match source {
         ServerSource::Image { image_id } => store.load_tree(image_id),
-        ServerSource::Dir { path } => load_directory_tree(Path::new(path)),
-        ServerSource::Archive { path } => load_archive_tree(Path::new(path)),
+        ServerSource::Dir { path } => load_directory_tree_with(Path::new(path), options),
+        ServerSource::Archive { path } => {
+            load_archive_tree_opts(Path::new(path), &DEFAULT_ARCHIVE_LIMITS, options)
+        }
     }
 }
 
@@ -638,6 +706,8 @@ pub struct DetachedServe {
     pub bind: Bind,
     /// `--spa`.
     pub spa: bool,
+    /// `--keep-os-metadata`.
+    pub keep_os_metadata: bool,
 }
 
 impl DetachedServe {
@@ -651,6 +721,7 @@ impl DetachedServe {
             name: None,
             bind: parse_publish(None)?,
             spa: false,
+            keep_os_metadata: false,
         })
     }
 }
@@ -668,7 +739,21 @@ pub fn serve_detached(
     serve: &DetachedServe,
     worker_exe: Option<&Path>,
 ) -> Result<ServerState> {
-    load_served_tree(&reg.store, &serve.source)?; // fail fast on a bad image, directory or archive
+    serve_detached_with(reg, serve, worker_exe, &|_| {})
+}
+
+/// [`serve_detached`], telling `warn` how many OS metadata files the directory or archive skips.
+pub fn serve_detached_with(
+    reg: &ServerRegistry,
+    serve: &DetachedServe,
+    worker_exe: Option<&Path>,
+    warn: &dyn Fn(&str),
+) -> Result<ServerState> {
+    let options = ServedTreeOptions {
+        keep_os_metadata: serve.keep_os_metadata,
+        warn: Some(warn),
+    };
+    load_served_tree_with(&reg.store, &serve.source, &options)?; // fail fast on a bad image, directory or archive
     let (id, final_name) = reg.allocate(serve.name.as_deref())?;
     let state = ServerState {
         id: id.clone(),
@@ -676,6 +761,7 @@ pub fn serve_detached(
         image: serve.label.clone(),
         source: serve.source.clone(),
         spa: serve.spa,
+        keep_os_metadata: serve.keep_os_metadata,
         host: serve.bind.host.clone(),
         port: serve.bind.port,
         bind: serve.bind.clone(),
@@ -706,7 +792,11 @@ pub fn restart_detached(
     worker_exe: Option<&Path>,
 ) -> Result<ServerState> {
     stop_server(reg, s, grace)?;
-    load_served_tree(&reg.store, &s.source)?;
+    let options = ServedTreeOptions {
+        keep_os_metadata: s.keep_os_metadata,
+        warn: None,
+    };
+    load_served_tree_with(&reg.store, &s.source, &options)?;
     let mut fresh = s.clone();
     fresh.host = s.bind.host.clone();
     fresh.port = s.bind.port;
@@ -878,6 +968,7 @@ mod tests {
                 path: "/tmp/site".into(),
             },
             spa: false,
+            keep_os_metadata: false,
             bind: Bind {
                 host: "127.0.0.1".into(),
                 port: 0,
@@ -1124,6 +1215,57 @@ mod tests {
                 assert_eq!(&*t.get("/index.html").unwrap().bytes, b"hi");
             }
         }
+    }
+
+    #[test]
+    fn os_metadata_is_not_served_unless_kept() {
+        let d = TmpDir::new("servers");
+        let zip = d.path().join("site.zip");
+        fs::write(&zip, crate::resources::archive::tests::finder_zip()).unwrap();
+        let dir = d.path().join("d");
+        fs::create_dir_all(dir.join("__MACOSX")).unwrap();
+        for (p, c) in [
+            ("index.html", "hi"),
+            ("Thumbs.db", "x"),
+            ("__MACOSX/._index.html", "x"),
+            ("desktop.ini", "x"),
+        ] {
+            fs::write(dir.join(p), c).unwrap();
+        }
+        let warnings = std::cell::RefCell::new(Vec::<String>::new());
+        let warn = |m: &str| warnings.borrow_mut().push(m.to_string());
+        let opts = ServedTreeOptions {
+            keep_os_metadata: false,
+            warn: Some(&warn),
+        };
+        let keep = ServedTreeOptions {
+            keep_os_metadata: true,
+            warn: None,
+        };
+        let t = load_archive_tree_opts(&zip, &DEFAULT_ARCHIVE_LIMITS, &opts).unwrap();
+        assert_eq!(paths(&t), ["/site/img/a.png", "/site/index.html"]);
+        // Hidden files (.DS_Store, ._*) are still not served.
+        assert_eq!(
+            load_archive_tree_opts(&zip, &DEFAULT_ARCHIVE_LIMITS, &keep)
+                .unwrap()
+                .len(),
+            5
+        );
+        assert_eq!(
+            paths(&load_directory_tree_with(&dir, &opts).unwrap()),
+            ["/index.html"]
+        );
+        assert_eq!(load_directory_tree_with(&dir, &keep).unwrap().len(), 3);
+        let w = warnings.borrow();
+        assert_eq!(w.len(), 2);
+        assert!(
+            w[0].contains("site.zip: skipped 6 OS metadata files"),
+            "{}",
+            w[0]
+        );
+        assert!(w[1].contains(": skipped 3 OS metadata files"), "{}", w[1]);
+        // The default loaders filter too.
+        assert_eq!(load_archive_tree(&zip).unwrap().len(), 2);
     }
 
     #[test]

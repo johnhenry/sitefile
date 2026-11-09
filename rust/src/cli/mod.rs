@@ -180,6 +180,8 @@ Options:
       --allow-http             permit plain http:// imports
       --allow-private-network  permit loopback/private network addresses
       --allow-hardlinks        permit hard-linked files in the context (you assert they are safe)
+      --keep-os-metadata       keep __MACOSX, ._*, .DS_Store, Thumbs.db and desktop.ini in archives
+                               imported AS tree (default: skipped with a warning)
       --max-download-bytes <n> per-resource size limit (default {})
       --timeout <ms>           per-resource fetch timeout (default {})
 {network}
@@ -245,6 +247,7 @@ const BUILD_OPTS: &[OptSpec] = &[
     flag("allow-http"),
     flag("allow-private-network"),
     flag("allow-hardlinks"),
+    flag("keep-os-metadata"),
     string("max-download-bytes"),
     string("timeout"),
     string("proxy"),
@@ -861,6 +864,7 @@ fn run_build_command(
     let notice: Callback = Arc::new(|m: &str| err(&format!("{m}\n")));
     options.on_notice = Some(notice);
     options.allow_hardlinks = o.flag("allow-hardlinks");
+    options.keep_os_metadata = o.flag("keep-os-metadata");
     options.platform = o.str("platform").map(str::to_string);
     options.base_image = o.str("base").map(str::to_string);
     let tags = o.strs("tag");

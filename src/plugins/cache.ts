@@ -335,6 +335,31 @@ export class TransformCache {
   }
 }
 
+/**
+ * What INTEGRITY on a JavaScript plugin pins: `sha256:` + digestFolder of the plugin's folder.
+ * Refused (a message, not a digest) when the folder holds anything but regular files and
+ * directories (a symlink could change what an import resolves to without changing any file) or
+ * is over digestFolder's limits.
+ */
+export async function pluginFolderIntegrity(dir: string): Promise<{ digest: string } | { problem: string }> {
+  const other = async (rel: string): Promise<string | undefined> => {
+    const entries = (await readdir(path.join(dir, rel), { withFileTypes: true })).sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+    for (const e of entries) {
+      const r = rel ? `${rel}/${e.name}` : e.name;
+      if (e.isDirectory()) {
+        const found = await other(r);
+        if (found !== undefined) return found;
+      } else if (!e.isFile()) return r;
+    }
+    return undefined;
+  };
+  const odd = await other('');
+  if (odd !== undefined) return { problem: `contains ${odd}, which is not a regular file or directory (a pinned folder can hold only those)` };
+  const hex = await digestFolder(dir);
+  if (hex === undefined) return { problem: 'is too large to pin (more than 2000 files or 128 MiB)' };
+  return { digest: `sha256:${hex}` };
+}
+
 /** Digest of every regular file under `dir` (a plugin can read all of them, so any may change its output). */
 export async function digestFolder(dir: string, limits = { files: 2000, bytes: 128 * 1024 * 1024 }): Promise<string | undefined> {
   const h = createHash('sha256');
