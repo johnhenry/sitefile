@@ -324,7 +324,6 @@ fn run_serve(v: &Parsed) -> Result<i32> {
                 spa: v.flag("spa"),
                 log: Some(log_writer(log_json)),
                 country: country.clone(),
-                log: Some(log),
                 server_id: None,
                 live_reload: None,
                 last_modified: Some(Arc::new(move || modified)),
@@ -570,7 +569,6 @@ fn serve_watch(v: &Parsed) -> Result<i32> {
             spa: v.flag("spa"),
             log: Some(log_writer(log_json)),
             country: country.clone(),
-            log: Some(log),
             server_id: None,
             live_reload: Some(live.clone()),
             last_modified: Some(Arc::new({
