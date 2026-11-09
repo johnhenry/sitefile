@@ -2,6 +2,7 @@ import http from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { SitefileError } from './errors.js';
 import { globMatch, headersFor, isRewriteStatus, matchRule, parseHeaderRules, parseRedirectRules, substituteTarget } from './serve-rules.js';
+import { deltaFor } from './dictionary.js';
 import type { Tree } from './tree.js';
 import { nfc } from './paths.js';
 import { mimeTypeFor } from './wbn.js';
@@ -39,8 +40,27 @@ export interface SiteServerOptions {
    * redirects to it, `/repo` gets its slash, everything else is 404. Normalized by {@link normalizeBase}.
    */
   readonly base?: string | (() => string | undefined);
+  /**
+   * `--rewrite-base`: the production URL ({@link normalizeProductionUrl}) that HTML, CSS and XML
+   * responses have replaced by this server's origin and `--base`, so absolute self-links stay local.
+   */
+  readonly rewriteBase?: string | (() => string | undefined);
   /** `--country`: what `_redirects` `Country=` conditions match (there is no geolocation locally). */
   readonly country?: string;
+  /**
+   * DNS-rebinding guard: when set, a request whose `Host` is not `localhost`, a `*.localhost` name,
+   * an IP address or a name this list allows gets `403` ({@link hostAllowed}). `*` allows every
+   * host; unset: no check (the CLI always sets it).
+   */
+  readonly allowedHosts?: readonly string[];
+  /** `--cors`: `Access-Control-Allow-Origin: *` on every response (`_headers` still wins) and `OPTIONS` preflights answered with `204`. */
+  readonly cors?: boolean;
+  /**
+   * `--isolate`: cross-origin isolation (SharedArrayBuffer, wasm threads) on every response:
+   * `Cross-Origin-Opener-Policy: same-origin`, this `Cross-Origin-Embedder-Policy` and
+   * `Cross-Origin-Resource-Policy: same-origin`. `_headers` still wins.
+   */
+  readonly isolate?: 'require-corp' | 'credentialless';
   /**
    * Where file contents come from when the tree holds only digests (a zip served in place,
    * `openZipFile`): `read` returns a file's bytes (undefined: use the node's), `deflated` a
@@ -363,6 +383,8 @@ export function injectReloadScript(html: Uint8Array): Uint8Array {
 
 const NOT_FOUND_PAGE = '<!doctype html><meta charset="utf-8"><title>404 Not Found</title><h1>404 Not Found</h1>\n';
 const BAD_REQUEST_PAGE = '<!doctype html><meta charset="utf-8"><title>400 Bad Request</title><h1>400 Bad Request</h1>\n';
+const FORBIDDEN_HOST_PAGE =
+  '<!doctype html><meta charset="utf-8"><title>403 Forbidden</title><h1>403 Forbidden</h1><p>This server answers requests for localhost and IP addresses only. To allow another host name, restart it with <code>--allowed-host &lt;name&gt;</code>.</p>\n';
 const ERROR_PAGE = '<!doctype html><meta charset="utf-8"><title>500 Internal Server Error</title><h1>500 Internal Server Error</h1>\n';
 const METHOD_PAGE = '<!doctype html><meta charset="utf-8"><title>405 Method Not Allowed</title><h1>405 Method Not Allowed</h1>\n';
 
@@ -391,11 +413,57 @@ export function safeSegments(rawPath: string): string[] | undefined {
  * section 3.2.2, sent by proxies and some clients) loses its scheme and authority (`/path?q`, or
  * `/` for an empty path); any other target is returned as it is. The authority is not checked.
  */
+/** `Access-Control-Request-Headers` echoed in a preflight answer, when it is a plain list of header names. */
+export function preflightHeaders(value: string | undefined): string | undefined {
+  const v = value?.trim();
+  return v !== undefined && v !== '' && /^[A-Za-z0-9 \t,!#$%&'*+\-.^_`|~]+$/.test(v) ? v : undefined;
+}
+
+/** Whether `s` is a dotted-decimal IPv4 address. */
+function isIpv4(s: string): boolean {
+  const parts = s.split('.');
+  return parts.length === 4 && parts.every((p) => /^[0-9]{1,3}$/.test(p) && Number(p) <= 255);
+}
+
+/**
+ * The DNS-rebinding guard of {@link SiteServerOptions.allowedHosts}: whether a `Host` header value
+ * may be answered. Always allowed: no list, `*` in the list, no `Host`, an IP address (a rebinding
+ * attack needs a name), `localhost` and `*.localhost`. Otherwise the name (ASCII lowercase, without
+ * port and trailing dot) must equal an entry, or end with an entry that starts with `.` (or equal
+ * it without the dot).
+ */
+export function hostAllowed(allowed: readonly string[] | undefined, host: string | undefined): boolean {
+  if (allowed === undefined || allowed.includes('*') || host === undefined) return true;
+  const h = host.trim();
+  if (h === '') return true;
+  if (h.startsWith('[')) {
+    const close = h.indexOf(']');
+    return close > 1 && /^[0-9A-Fa-f:.]+$/.test(h.slice(1, close)) && /^(:[0-9]*)?$/.test(h.slice(close + 1));
+  }
+  const m = /^(.*?)(:[0-9]*)?$/.exec(h)!;
+  let name = m[1]!.replace(/[A-Z]/g, (c) => c.toLowerCase());
+  if (name.endsWith('.')) name = name.slice(0, -1);
+  if (isIpv4(name) || name === 'localhost' || name.endsWith('.localhost')) return true;
+  return allowed.some((e) => (e.startsWith('.') ? name === e.slice(1) || name.endsWith(e) : name === e));
+}
+
+/** An `--allowed-host` value, lowercased: `*`, or a host name (letters, digits, `-`, `.`; a leading `.` for subdomains). */
+export function parseAllowedHost(value: string): string | undefined {
+  const v = value.trim().replace(/[A-Z]/g, (c) => c.toLowerCase());
+  if (v === '*') return v;
+  return /^\.?[a-z0-9-]+(\.[a-z0-9-]+)*\.?$/.test(v) ? v.replace(/\.$/, '') : undefined;
+}
+
 export function originForm(target: string): string {
   const m = /^https?:\/\/[^/?#]*/i.exec(target);
   if (!m) return target;
   const rest = target.slice(m[0].length);
   return rest.startsWith('/') ? rest : '/' + rest;
+}
+
+/** A request header as one string (repeated headers joined with `, `). */
+function header(v: string | string[] | undefined): string | undefined {
+  return Array.isArray(v) ? v.join(', ') : v;
 }
 
 const DAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
@@ -505,6 +573,45 @@ export function spaFallback(segs: readonly string[], trailingSlash: boolean, isF
   return undefined;
 }
 
+/** A `Host` header safe to write into a page: a name, IPv4 or bracketed IPv6 address, and a port. */
+const SAFE_HOST = /^(?:[A-Za-z0-9.-]+|\[[0-9A-Fa-f:.]+\])(?::[0-9]{1,5})?$/;
+
+/** Types `--rewrite-base` rewrites: HTML, CSS and any XML (feeds, sitemaps, SVG). */
+export function isRebasedType(type: string): boolean {
+  return type.startsWith('text/html') || type.startsWith('text/css') || type.split(';', 1)[0]!.includes('xml');
+}
+
+/**
+ * A production URL for `--rewrite-base`: `scheme://host[/path]` without a trailing slash, query or
+ * fragment (`https://example.com/blog/` → `https://example.com/blog`), or undefined when it is not an
+ * http(s) URL with a host.
+ */
+export function normalizeProductionUrl(raw: string): string | undefined {
+  const m = /^(https?:\/\/[^/?#\s]+)(\/[^?#\s]*)?$/i.exec(raw.replace(/[?#].*$/, ''));
+  if (!m) return undefined;
+  return m[1]! + (m[2] ?? '').replace(/\/+$/, '');
+}
+
+/**
+ * `body` with every `from` (a production URL) replaced by `to` (the local origin and base), where
+ * the next byte cannot continue a host or path segment (a letter, digit, `.`, `-`, `_`, `~`, `:` or `%`),
+ * so `https://example.com` does not match `https://example.com.evil` and `/blog` not `/blogroll`.
+ */
+export function rewriteBaseUrls(body: Uint8Array, from: string, to: string): Uint8Array {
+  const text = Buffer.from(body.buffer, body.byteOffset, body.byteLength).toString('latin1');
+  let out = '';
+  let i = 0;
+  for (;;) {
+    const at = text.indexOf(from, i);
+    if (at === -1) break;
+    const next = text[at + from.length];
+    out += text.slice(i, at) + (next !== undefined && /[A-Za-z0-9._~:%-]/.test(next) ? from : to);
+    i = at + from.length;
+  }
+  if (i === 0) return body;
+  return Buffer.from(out + text.slice(i), 'latin1');
+}
+
 /**
  * A `--base` value as `/a/b/` (segments percent-encoded like encodeURIComponent, NFC), `/` for none, or undefined when it is not a
  * safe absolute path. The path of a URL (`https://user.github.io/repo/`) is taken as well.
@@ -538,6 +645,12 @@ export function createSiteServer(site: Tree | (() => Tree), options: SiteServerO
   const current = typeof site === 'function' ? site : (): Tree => site;
   const base: Record<string, string> = { 'x-content-type-options': 'nosniff', 'cache-control': 'no-cache' };
   if (options.serverId) base['x-sitefile-server'] = options.serverId;
+  if (options.cors) base['access-control-allow-origin'] = '*';
+  if (options.isolate !== undefined) {
+    base['cross-origin-opener-policy'] = 'same-origin';
+    base['cross-origin-embedder-policy'] = options.isolate;
+    base['cross-origin-resource-policy'] = 'same-origin';
+  }
   // `_redirects` / `_headers` are parsed once per tree (a watched server gets a new tree per rebuild).
   let rulesTree: Tree | undefined;
   let rules: { redirects: ReturnType<typeof parseRedirectRules>; headers: ReturnType<typeof parseHeaderRules> } = { redirects: [], headers: [] };
@@ -597,6 +710,10 @@ export function createSiteServer(site: Tree | (() => Tree), options: SiteServerO
     const page = (status: number, html: string, extra: Record<string, string> = {}): void =>
       finish(status, { 'content-type': 'text/html; charset=utf-8', 'content-length': Buffer.byteLength(html), ...extra }, html);
 
+    // DNS rebinding: a page on another name must not read this server (before anything else).
+    const hostHeader = req.headers.host;
+    if (!hostAllowed(options.allowedHosts, hostHeader)) return page(403, FORBIDDEN_HOST_PAGE);
+
     const live = options.liveReload;
     if (live && url.split(/[?#]/, 1)[0] === CONSOLE_PATH) {
       // Browser console messages (the client script sends them; not access-logged).
@@ -623,7 +740,16 @@ export function createSiteServer(site: Tree | (() => Tree), options: SiteServerO
       });
       return;
     }
-    if (method !== 'GET' && method !== 'HEAD') return page(405, METHOD_PAGE, { allow: 'GET, HEAD' });
+    if (options.cors && method === 'OPTIONS') {
+      // A CORS preflight: any path, nothing is looked up.
+      const allowHeaders = preflightHeaders(req.headers['access-control-request-headers']);
+      return finish(
+        204,
+        { 'access-control-allow-methods': 'GET, HEAD', ...(allowHeaders !== undefined ? { 'access-control-allow-headers': allowHeaders } : {}), 'access-control-max-age': '600' },
+        undefined,
+      );
+    }
+    if (method !== 'GET' && method !== 'HEAD') return page(405, METHOD_PAGE, { allow: options.cors ? 'GET, HEAD, OPTIONS' : 'GET, HEAD' });
     const tree = current();
     const { redirects, headers: headerRules } = rulesFor(tree);
     const isFile = (p: string): boolean => tree.isFile(p) && p !== '/_redirects' && p !== '/_headers';
@@ -667,9 +793,15 @@ export function createSiteServer(site: Tree | (() => Tree), options: SiteServerO
       const type = mimeTypeFor(served);
       const live = options.liveReload !== undefined && type.startsWith('text/html') && isNavigation(req.headers);
       if (live) warnCsp(served, custom['content-security-policy']);
+      const prodNow = typeof options.rewriteBase === 'function' ? options.rewriteBase() : options.rewriteBase;
+      const host = req.headers.host;
+      const rebase = prodNow !== undefined && isRebasedType(type) && host !== undefined && SAFE_HOST.test(host) ? { from: prodNow, to: `http://${host}${mount}` } : undefined;
+      // A `.dcz` sidecar (build --experimental-dictionary): sent when the request offers its dictionary.
+      const delta = live || rebase ? undefined : deltaFor(tree, served, header(req.headers['available-dictionary']), header(req.headers['accept-encoding']));
+      const dictionaryVary = tree.isFile(`${served}.dcz`);
       // A deflated zip entry goes to a gzip client as is, wrapped in a gzip header and trailer (not for a
       // range request: ranges are served from the identity body).
-      const deflated = !live && req.headers.range === undefined && acceptsGzip(req.headers['accept-encoding']) ? options.content?.deflated?.(served) : undefined;
+      const deflated = !live && !delta && !rebase && req.headers.range === undefined && acceptsGzip(req.headers['accept-encoding']) ? options.content?.deflated?.(served) : undefined;
       let body: Uint8Array;
       try {
         body = deflated ? gzipMember(deflated.deflate, deflated.crc, deflated.size) : (options.content?.read(served) ?? file.bytes);
@@ -677,18 +809,23 @@ export function createSiteServer(site: Tree | (() => Tree), options: SiteServerO
         options.log?.(`error: ${e instanceof SitefileError ? e.message : String(e)}`);
         return page(500, ERROR_PAGE);
       }
+      if (rebase) body = rewriteBaseUrls(body, rebase.from, rebase.to);
       if (live) body = injectReloadScript(body);
-      const encoding: Record<string, string> = deflated ? { 'content-encoding': 'gzip', vary: 'accept-encoding' } : {};
+      const varyOn = dictionaryVary ? 'accept-encoding, available-dictionary' : 'accept-encoding';
+      const encoding: Record<string, string> = deflated ? { 'content-encoding': 'gzip', vary: varyOn } : {};
+      const vary: Record<string, string> = !deflated && dictionaryVary ? { vary: varyOn } : {};
       if (status !== 200) return finish(status, { 'content-type': type, 'content-length': body.byteLength, ...encoding, ...custom }, body);
-      // An injected page and a gzip response are other representations of the file: they get their own ETags.
-      const etag = `"${file.digest.replace(/^sha256:/, '')}${live ? '-live' : ''}${deflated ? '-gzip' : ''}"`;
+      // An injected page, a gzip response and a delta are other representations of the file: they get their own ETags.
+      const etag = `"${file.digest.replace(/^sha256:/, '')}${rebase ? '-rebased' : ''}${live ? '-live' : ''}${deflated ? '-gzip' : ''}${delta ? '-dcz' : ''}"`;
       const modified = options.lastModified?.();
       const lm: Record<string, string> = modified === undefined ? {} : { 'last-modified': httpDate(modified) };
-      if (etagMatches(req.headers['if-none-match'], etag)) return finish(304, { ...encoding, ...custom, etag, ...lm }, undefined);
+      if (etagMatches(req.headers['if-none-match'], etag)) return finish(304, { ...encoding, ...custom, ...vary, etag, ...lm }, undefined);
       // If-Modified-Since only counts without If-None-Match (RFC 9110 section 13.2.2).
       const ims = req.headers['if-none-match'] === undefined ? req.headers['if-modified-since'] : undefined;
       const since = ims === undefined ? undefined : parseHttpDate(ims);
-      if (modified !== undefined && since !== undefined && modified <= since) return finish(304, { ...encoding, ...custom, etag, ...lm }, undefined);
+      if (modified !== undefined && since !== undefined && modified <= since) return finish(304, { ...encoding, ...custom, ...vary, etag, ...lm }, undefined);
+      // The delta is sent whole (no byte ranges of an encoded body).
+      if (delta) return finish(200, { 'content-type': type, 'content-length': delta.byteLength, ...custom, ...vary, 'content-encoding': 'dcz', etag, ...lm }, delta);
       // A single byte range of a GET (`If-Range` must name this ETag); anything else gets the whole file.
       const ifRange = req.headers['if-range'] as string | undefined;
       const range = method === 'GET' && (ifRange === undefined || ifRange.trim() === etag) ? byteRange(req.headers.range, body.byteLength) : undefined;
@@ -700,11 +837,11 @@ export function createSiteServer(site: Tree | (() => Tree), options: SiteServerO
         const part = body.subarray(start, end + 1);
         return finish(
           206,
-          { 'content-type': type, 'content-length': part.byteLength, ...custom, etag, ...lm, 'accept-ranges': 'bytes', 'content-range': `bytes ${start}-${end}/${body.byteLength}` },
+          { 'content-type': type, 'content-length': part.byteLength, ...custom, ...vary, etag, ...lm, 'accept-ranges': 'bytes', 'content-range': `bytes ${start}-${end}/${body.byteLength}` },
           part,
         );
       }
-      finish(200, { 'content-type': type, 'content-length': body.byteLength, ...encoding, ...custom, etag, ...lm, 'accept-ranges': 'bytes' }, body);
+      finish(200, { 'content-type': type, 'content-length': body.byteLength, ...encoding, ...custom, ...vary, etag, ...lm, 'accept-ranges': 'bytes' }, body);
     };
     /** The file for a path: exact, `<path>.html` (clean URLs), or `<dir>/index.html` with a trailing slash. */
     const resolve = (p: string, slash: boolean): string | undefined => {

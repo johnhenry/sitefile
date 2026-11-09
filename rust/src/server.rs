@@ -40,10 +40,24 @@ pub struct SiteServerOptions {
     /// Problems a person should know about (without the `warning: ` prefix), e.g. a CSP that
     /// blocks live reload.
     pub warn: Option<LogFn>,
+    /// DNS-rebinding guard: when set, a request whose `Host` is not `localhost`, a `*.localhost`
+    /// name, an IP address or a name this list allows gets `403` ([`host_allowed`]). `*` allows
+    /// every host; `None`: no check (the CLI always sets it).
+    pub allowed_hosts: Option<Vec<String>>,
+    /// `--cors`: `Access-Control-Allow-Origin: *` on every response (`_headers` still wins) and
+    /// `OPTIONS` preflights answered with `204`.
+    pub cors: bool,
+    /// `--isolate`: cross-origin isolation on every response: `Cross-Origin-Opener-Policy:
+    /// same-origin`, this `Cross-Origin-Embedder-Policy` (`require-corp` or `credentialless`) and
+    /// `Cross-Origin-Resource-Policy: same-origin`. `_headers` still wins.
+    pub isolate: Option<String>,
     /// `--base /repo/`: serve the site under this path prefix (a GitHub Pages project site); `/`
     /// redirects to it, `/repo` gets its slash, everything else is 404. Read per request (a
     /// watched server takes it from the last good build); [`normalize_base`] makes the value.
     pub base: Option<BaseFn>,
+    /// `--rewrite-base`: the production URL ([`normalize_production_url`]) that HTML, CSS and XML
+    /// responses have replaced by this server's origin and `--base`, so absolute self-links stay local.
+    pub rewrite_base: Option<BaseFn>,
     /// `--country`: what `_redirects` `Country=` conditions match (there is no geolocation locally).
     pub country: Option<String>,
     /// Where file contents come from when the tree holds only digests (a zip served in
@@ -512,13 +526,7 @@ impl LiveReload {
         body_len: u64,
         chunked: bool,
     ) -> Response {
-        let mut h: Vec<(String, String)> = vec![
-            ("x-content-type-options".into(), "nosniff".into()),
-            ("cache-control".into(), "no-cache".into()),
-        ];
-        if let Some(id) = options.server_id.as_deref().filter(|s| !s.is_empty()) {
-            h.push(("x-sitefile-server".into(), id.to_string()));
-        }
+        let h = base_headers(options);
         let res = |status: u16, mut h: Vec<(String, String)>, extra: &[(&str, &str)]| {
             h.extend(extra.iter().map(|(k, v)| (k.to_string(), v.to_string())));
             Response {
@@ -623,6 +631,12 @@ impl LiveReload {
         if let Some(id) = options.server_id.as_deref().filter(|s| !s.is_empty()) {
             head.push_str(&format!("x-sitefile-server: {id}\r\n"));
         }
+        if options.cors {
+            head.push_str("access-control-allow-origin: *\r\n");
+        }
+        for (k, v) in isolation_headers(options) {
+            head.push_str(&format!("{k}: {v}\r\n"));
+        }
         for (k, v) in STREAM_HEADERS {
             head.push_str(&format!("{k}: {v}\r\n"));
         }
@@ -701,6 +715,85 @@ pub fn inject_reload_script(html: &[u8]) -> Vec<u8> {
 /// The origin form of a request target: an absolute-form target (`http://host/path?q`, RFC 9112
 /// section 3.2.2) loses its scheme and authority (`/path?q`, or `/` for an empty path); any other
 /// target is returned as it is. The authority is not checked.
+/// Whether `s` is a dotted-decimal IPv4 address.
+fn is_ipv4(s: &str) -> bool {
+    let parts: Vec<&str> = s.split('.').collect();
+    parts.len() == 4
+        && parts.iter().all(|p| {
+            !p.is_empty()
+                && p.len() <= 3
+                && p.bytes().all(|b| b.is_ascii_digit())
+                && p.parse::<u32>().is_ok_and(|n| n <= 255)
+        })
+}
+
+/// The DNS-rebinding guard of [`SiteServerOptions::allowed_hosts`] (`hostAllowed` in
+/// src/server.ts): whether a `Host` header value may be answered.
+pub fn host_allowed(allowed: Option<&[String]>, host: Option<&str>) -> bool {
+    let (Some(allowed), Some(host)) = (allowed, host) else {
+        return true;
+    };
+    if allowed.iter().any(|e| e == "*") {
+        return true;
+    }
+    // Node keeps the first of repeated Host headers; ours are joined with ", ".
+    let h = host.split(',').next().unwrap_or("").trim();
+    if h.is_empty() {
+        return true;
+    }
+    let port_ok = |p: &str| {
+        p.is_empty() || (p.starts_with(':') && p[1..].bytes().all(|b| b.is_ascii_digit()))
+    };
+    if let Some(rest) = h.strip_prefix('[') {
+        return match rest.find(']') {
+            Some(close) => {
+                close > 0
+                    && rest[..close]
+                        .bytes()
+                        .all(|b| b.is_ascii_hexdigit() || b == b':' || b == b'.')
+                    && port_ok(&rest[close + 1..])
+            }
+            None => false,
+        };
+    }
+    // `^(.*?)(:[0-9]*)?$`: the port is the shortest `:digits` suffix that leaves the rest.
+    let name = h
+        .match_indices(':')
+        .map(|(i, _)| i)
+        .find(|&i| port_ok(&h[i..]))
+        .map_or(h, |i| &h[..i]);
+    let mut name = name.to_ascii_lowercase();
+    if name.ends_with('.') {
+        name.pop();
+    }
+    if is_ipv4(&name) || name == "localhost" || name.ends_with(".localhost") {
+        return true;
+    }
+    allowed.iter().any(|e| match e.strip_prefix('.') {
+        Some(base) => name == base || name.ends_with(e.as_str()),
+        None => name == *e,
+    })
+}
+
+/// An `--allowed-host` value, lowercased: `*`, or a host name (letters, digits, `-`, `.`; a
+/// leading `.` for subdomains). `None` when invalid.
+pub fn parse_allowed_host(value: &str) -> Option<String> {
+    let v = value.trim().to_ascii_lowercase();
+    if v == "*" {
+        return Some(v);
+    }
+    let body = v.strip_prefix('.').unwrap_or(&v);
+    let body = body.strip_suffix('.').unwrap_or(body);
+    let ok = !body.is_empty()
+        && body.split('.').all(|label| {
+            !label.is_empty()
+                && label
+                    .bytes()
+                    .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+        });
+    ok.then(|| v.strip_suffix('.').unwrap_or(&v).to_string())
+}
+
 pub fn origin_form(target: &str) -> std::borrow::Cow<'_, str> {
     let b = target.as_bytes();
     let scheme = if b.len() >= 7 && b[..7].eq_ignore_ascii_case(b"http://") {
@@ -728,6 +821,45 @@ fn raw_path_of(url: &str) -> &str {
 const NOT_FOUND_PAGE: &str =
     "<!doctype html><meta charset=\"utf-8\"><title>404 Not Found</title><h1>404 Not Found</h1>\n";
 const BAD_REQUEST_PAGE: &str = "<!doctype html><meta charset=\"utf-8\"><title>400 Bad Request</title><h1>400 Bad Request</h1>\n";
+/// The headers every response starts with (`base` in src/server.ts).
+fn base_headers(options: &SiteServerOptions) -> Vec<(String, String)> {
+    let mut base: Vec<(String, String)> = vec![
+        ("x-content-type-options".into(), "nosniff".into()),
+        ("cache-control".into(), "no-cache".into()),
+    ];
+    if let Some(id) = options.server_id.as_deref().filter(|s| !s.is_empty()) {
+        base.push(("x-sitefile-server".into(), id.to_string()));
+    }
+    if options.cors {
+        base.push(("access-control-allow-origin".into(), "*".into()));
+    }
+    base.extend(isolation_headers(options));
+    base
+}
+
+/// The `--isolate` headers ([`SiteServerOptions::isolate`]).
+fn isolation_headers(options: &SiteServerOptions) -> Vec<(String, String)> {
+    match &options.isolate {
+        Some(coep) => vec![
+            ("cross-origin-opener-policy".into(), "same-origin".into()),
+            ("cross-origin-embedder-policy".into(), coep.clone()),
+            ("cross-origin-resource-policy".into(), "same-origin".into()),
+        ],
+        None => Vec::new(),
+    }
+}
+
+/// `Access-Control-Request-Headers` echoed in a preflight answer, when it is a plain list of
+/// header names (`preflightHeaders` in src/server.ts).
+fn preflight_headers(value: Option<&str>) -> Option<String> {
+    let v = value?.trim();
+    let ok = !v.is_empty()
+        && v.bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b" \t,!#$%&'*+-.^_`|~".contains(&b));
+    ok.then(|| v.to_string())
+}
+
+const FORBIDDEN_HOST_PAGE: &str = "<!doctype html><meta charset=\"utf-8\"><title>403 Forbidden</title><h1>403 Forbidden</h1><p>This server answers requests for localhost and IP addresses only. To allow another host name, restart it with <code>--allowed-host &lt;name&gt;</code>.</p>\n";
 const ERROR_PAGE: &str = "<!doctype html><meta charset=\"utf-8\"><title>500 Internal Server Error</title><h1>500 Internal Server Error</h1>\n";
 const METHOD_PAGE: &str = "<!doctype html><meta charset=\"utf-8\"><title>405 Method Not Allowed</title><h1>405 Method Not Allowed</h1>\n";
 
@@ -1075,6 +1207,87 @@ pub fn spa_fallback(
     None
 }
 
+/// A `Host` header safe to write into a page: a name, IPv4 or bracketed IPv6 address, and a port.
+fn is_safe_host(h: &str) -> bool {
+    let (name, port) = if let Some(rest) = h.strip_prefix('[') {
+        let Some(end) = rest.find(']') else {
+            return false;
+        };
+        let inner = &rest[..end];
+        if inner.is_empty()
+            || !inner
+                .bytes()
+                .all(|b| b.is_ascii_hexdigit() || b == b':' || b == b'.')
+        {
+            return false;
+        }
+        ("x", &rest[end + 1..])
+    } else {
+        match h.find(':') {
+            Some(i) => (&h[..i], &h[i..]),
+            None => (h, ""),
+        }
+    };
+    let name_ok = !name.is_empty()
+        && name
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'.' || b == b'-');
+    let port_ok = port.is_empty()
+        || port
+            .strip_prefix(':')
+            .is_some_and(|p| (1..=5).contains(&p.len()) && p.bytes().all(|b| b.is_ascii_digit()));
+    name_ok && port_ok
+}
+
+/// Types `--rewrite-base` rewrites: HTML, CSS and any XML (feeds, sitemaps, SVG).
+pub fn is_rebased_type(mime: &str) -> bool {
+    mime.starts_with("text/html")
+        || mime.starts_with("text/css")
+        || mime.split(';').next().unwrap_or("").contains("xml")
+}
+
+/// A production URL for `--rewrite-base`: `scheme://host[/path]` without a trailing slash, query
+/// or fragment, or `None` when it is not an http(s) URL with a host (port of `normalizeProductionUrl`).
+pub fn normalize_production_url(raw: &str) -> Option<String> {
+    let raw = &raw[..raw.find(['?', '#']).unwrap_or(raw.len())];
+    let n = http_prefix(raw);
+    if n == 0 || raw.chars().any(char::is_whitespace) {
+        return None;
+    }
+    let rest = &raw[n..];
+    let host_end = rest.find('/').unwrap_or(rest.len());
+    if host_end == 0 {
+        return None;
+    }
+    let path = rest[host_end..].trim_end_matches('/');
+    Some(format!("{}{}{path}", &raw[..n], &rest[..host_end]))
+}
+
+/// `body` with every `from` (a production URL) replaced by `to` (the local origin and base), where
+/// the next byte cannot continue a host or path segment (port of `rewriteBaseUrls`).
+pub fn rewrite_base_urls(body: &[u8], from: &str, to: &str) -> Vec<u8> {
+    let f = from.as_bytes();
+    if f.is_empty() {
+        return body.to_vec();
+    }
+    let mut out = Vec::with_capacity(body.len());
+    let mut i = 0;
+    while i < body.len() {
+        if body[i..].starts_with(f) {
+            let next = body.get(i + f.len()).copied();
+            let continues = next.is_some_and(|b| {
+                b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'~' | b':' | b'%' | b'-')
+            });
+            out.extend_from_slice(if continues { f } else { to.as_bytes() });
+            i += f.len();
+        } else {
+            out.push(body[i]);
+            i += 1;
+        }
+    }
+    out
+}
+
 /// The `--base` of a server, read per request.
 pub type BaseFn = Arc<dyn Fn() -> Option<String> + Send + Sync>;
 
@@ -1149,6 +1362,7 @@ impl Response {
 fn reason(status: u16) -> &'static str {
     match status {
         200 => "OK",
+        204 => "No Content",
         301 => "Moved Permanently",
         302 => "Found",
         303 => "See Other",
@@ -1157,6 +1371,7 @@ fn reason(status: u16) -> &'static str {
         206 => "Partial Content",
         304 => "Not Modified",
         400 => "Bad Request",
+        403 => "Forbidden",
         404 => "Not Found",
         405 => "Method Not Allowed",
         500 => "Internal Server Error",
@@ -1839,13 +2054,7 @@ pub fn respond(
     url: &str,
     headers: &HashMap<String, String>,
 ) -> Response {
-    let mut base: Vec<(String, String)> = vec![
-        ("x-content-type-options".into(), "nosniff".into()),
-        ("cache-control".into(), "no-cache".into()),
-    ];
-    if let Some(id) = options.server_id.as_deref().filter(|s| !s.is_empty()) {
-        base.push(("x-sitefile-server".into(), id.to_string()));
-    }
+    let base = base_headers(options);
     let finish = |status: u16, extra: Vec<(String, String)>, body: Option<Vec<u8>>| -> Response {
         let mut headers = base.clone();
         for (k, v) in extra {
@@ -1876,8 +2085,33 @@ pub fn respond(
         finish(status, h, Some(html.as_bytes().to_vec()))
     };
 
+    // DNS rebinding: a page on another name must not read this server (before anything else).
+    if !host_allowed(
+        options.allowed_hosts.as_deref(),
+        headers.get("host").map(String::as_str),
+    ) {
+        return page(403, FORBIDDEN_HOST_PAGE, vec![]);
+    }
+    if options.cors && method == "OPTIONS" {
+        // A CORS preflight: any path, nothing is looked up.
+        let mut h = owned(vec![("access-control-allow-methods", "GET, HEAD".into())]);
+        if let Some(v) = preflight_headers(
+            headers
+                .get("access-control-request-headers")
+                .map(String::as_str),
+        ) {
+            h.push(("access-control-allow-headers".into(), v));
+        }
+        h.push(("access-control-max-age".into(), "600".into()));
+        return finish(204, h, None);
+    }
     if method != "GET" && method != "HEAD" {
-        return page(405, METHOD_PAGE, owned(vec![("allow", "GET, HEAD".into())]));
+        let allow = if options.cors {
+            "GET, HEAD, OPTIONS"
+        } else {
+            "GET, HEAD"
+        };
+        return page(405, METHOD_PAGE, owned(vec![("allow", allow.into())]));
     }
     let url = origin_form(url);
     let url = url.as_ref();
@@ -1991,9 +2225,30 @@ pub fn respond(
                 .map(|(_, v)| v.as_str());
             lr.warn_csp(options.warn.as_ref(), served, csp);
         }
+        let prod_now = options.rewrite_base.as_ref().and_then(|f| f());
+        let rebase = match (prod_now, headers.get("host")) {
+            (Some(from), Some(host)) if is_rebased_type(mime) && is_safe_host(host) => {
+                Some((from, format!("http://{host}{mount}")))
+            }
+            _ => None,
+        };
+        // A `.dcz` sidecar (build --experimental-dictionary): sent when the request offers its dictionary.
+        let delta = if live || rebase.is_some() {
+            None
+        } else {
+            crate::dictionary::delta_for(
+                tree,
+                served,
+                headers.get("available-dictionary").map(String::as_str),
+                headers.get("accept-encoding").map(String::as_str),
+            )
+        };
+        let dictionary_vary = tree.is_file(&format!("{served}.dcz"));
         // A deflated zip entry goes to a gzip client as is, wrapped in a gzip header and trailer (not for a
         // range request: ranges are served from the identity body).
         let deflated = if !live
+            && delta.is_none()
+            && rebase.is_none()
             && !headers.contains_key("range")
             && accepts_gzip(headers.get("accept-encoding").map(String::as_str))
         {
@@ -2017,16 +2272,30 @@ pub fn respond(
                 return page(500, ERROR_PAGE, vec![]);
             }
         };
+        let body = match &rebase {
+            Some((from, to)) => rewrite_base_urls(&body, from, to),
+            None => body,
+        };
         let body = if live {
             inject_reload_script(&body)
         } else {
             body
         };
+        let vary_on = if dictionary_vary {
+            "accept-encoding, available-dictionary"
+        } else {
+            "accept-encoding"
+        };
         let encoding: Vec<(String, String)> = if deflated.is_some() {
             owned(vec![
                 ("content-encoding", "gzip".into()),
-                ("vary", "accept-encoding".into()),
+                ("vary", vary_on.into()),
             ])
+        } else {
+            vec![]
+        };
+        let vary: Vec<(String, String)> = if deflated.is_none() && dictionary_vary {
+            owned(vec![("vary", vary_on.into())])
         } else {
             vec![]
         };
@@ -2039,12 +2308,14 @@ pub fn respond(
         if status != 200 {
             return finish(status, h, Some(body));
         }
-        // An injected page and a gzip response are other representations of the file: they get their own ETags.
+        // An injected page, a gzip response and a delta are other representations of the file: they get their own ETags.
         let etag = format!(
-            "\"{}{}{}\"",
+            "\"{}{}{}{}{}\"",
             file.digest.strip_prefix("sha256:").unwrap_or(&file.digest),
+            if rebase.is_some() { "-rebased" } else { "" },
             if live { "-live" } else { "" },
-            if deflated.is_some() { "-gzip" } else { "" }
+            if deflated.is_some() { "-gzip" } else { "" },
+            if delta.is_some() { "-dcz" } else { "" }
         );
         let modified = options.last_modified.as_ref().and_then(|f| f());
         let lm: Vec<(String, String)> = modified
@@ -2053,6 +2324,7 @@ pub fn respond(
         let not_modified = || {
             let mut h: Vec<(String, String)> = encoding.clone();
             h.extend(custom.iter().cloned());
+            h.extend(vary.iter().cloned());
             h.push(("etag".into(), etag.clone()));
             h.extend(lm.iter().cloned());
             finish(304, h, None)
@@ -2073,6 +2345,20 @@ pub fn respond(
                 return not_modified();
             }
         }
+        // The delta is sent whole (no byte ranges of an encoded body).
+        if let Some(d) = delta {
+            let mut h = owned(vec![
+                ("content-type", mime.into()),
+                ("content-length", d.len().to_string()),
+            ]);
+            h.extend(custom.iter().cloned());
+            h.extend(vary.iter().cloned());
+            h.push(("content-encoding".into(), "dcz".into()));
+            h.push(("etag".into(), etag.clone()));
+            h.extend(lm.iter().cloned());
+            return finish(200, h, Some(d.to_vec()));
+        }
+        h.extend(vary.iter().cloned());
         h.push(("etag".into(), etag.clone()));
         h.extend(lm.iter().cloned());
         // A single byte range of a GET (`If-Range` must name this ETag); anything else gets the whole file.
@@ -2366,10 +2652,14 @@ fn serve_connection(
         };
         let started = Instant::now();
         let mut keep = req.keep_alive && !req.chunked && req.body_len <= MAX_DISCARD_BODY;
+        let host_ok = host_allowed(
+            options.allowed_hosts.as_deref(),
+            req.headers.get("host").map(String::as_str),
+        );
         let console = options
             .live_reload
             .as_ref()
-            .filter(|_| raw_path_of(&req.url) == CONSOLE_PATH);
+            .filter(|_| host_ok && raw_path_of(&req.url) == CONSOLE_PATH);
         let mut body: Option<Vec<u8>> = None;
         if console.is_some()
             && req.method == "POST"
@@ -2391,11 +2681,9 @@ fn serve_connection(
         if console.is_some() && (req.chunked || req.body_len > MAX_CONSOLE_BODY) {
             keep = false;
         }
-        if let Some(live) = options
-            .live_reload
-            .as_ref()
-            .filter(|_| req.method == "GET" && raw_path_of(&origin_form(&req.url)) == RELOAD_PATH)
-        {
+        if let Some(live) = options.live_reload.as_ref().filter(|_| {
+            host_ok && req.method == "GET" && raw_path_of(&origin_form(&req.url)) == RELOAD_PATH
+        }) {
             live.stream(&mut out, options); // not access-logged: one long request per open page
             break;
         }
@@ -2978,6 +3266,123 @@ mod tests {
     }
 
     #[test]
+    fn isolate_flag() {
+        let t = site();
+        let h = HashMap::new();
+        for coep in ["require-corp", "credentialless"] {
+            let opts = SiteServerOptions {
+                isolate: Some(coep.into()),
+                ..Default::default()
+            };
+            for p in ["/", "/missing"] {
+                let r = handle_request(&t, &opts, "GET", p, &h);
+                assert_eq!(r.header("cross-origin-opener-policy"), Some("same-origin"));
+                assert_eq!(r.header("cross-origin-embedder-policy"), Some(coep));
+                assert_eq!(
+                    r.header("cross-origin-resource-policy"),
+                    Some("same-origin")
+                );
+            }
+        }
+        let r = handle_request(&t, &SiteServerOptions::default(), "GET", "/", &h);
+        assert_eq!(r.header("cross-origin-embedder-policy"), None);
+    }
+
+    #[test]
+    fn cors_flag() {
+        let t = site();
+        let opts = SiteServerOptions {
+            cors: true,
+            ..Default::default()
+        };
+        let mut h = HashMap::new();
+        let r = handle_request(&t, &opts, "GET", "/", &h);
+        assert_eq!(r.header("access-control-allow-origin"), Some("*"));
+        h.insert(
+            "access-control-request-headers".to_string(),
+            "x-a, x-b".to_string(),
+        );
+        let p = handle_request(&t, &opts, "OPTIONS", "/x", &h);
+        assert_eq!(p.status, 204);
+        assert_eq!(p.header("access-control-allow-headers"), Some("x-a, x-b"));
+        assert_eq!(p.header("content-length"), None);
+        assert_eq!(
+            handle_request(&t, &opts, "POST", "/", &h).header("allow"),
+            Some("GET, HEAD, OPTIONS")
+        );
+        let plain = SiteServerOptions::default();
+        assert_eq!(handle_request(&t, &plain, "OPTIONS", "/", &h).status, 405);
+        assert_eq!(
+            preflight_headers(Some(" x-a,x-b ")).as_deref(),
+            Some("x-a,x-b")
+        );
+        assert_eq!(preflight_headers(Some("a\"b")), None);
+    }
+
+    #[test]
+    fn host_allow_list() {
+        let allowed: Vec<String> = vec!["example.com".into(), ".dev.test".into()];
+        let a = Some(allowed.as_slice());
+        for h in [
+            None,
+            Some(""),
+            Some("localhost"),
+            Some("LocalHost:80"),
+            Some("x.localhost"),
+            Some("localhost."),
+            Some("127.0.0.1:8080"),
+            Some("10.0.0.7"),
+            Some("[::1]:8080"),
+            Some("example.com"),
+            Some("EXAMPLE.com.:1"),
+            Some("dev.test"),
+            Some("a.dev.test"),
+            Some("localhost, evil.example"),
+        ] {
+            assert!(host_allowed(a, h), "{h:?}");
+        }
+        for h in [
+            "evil.example",
+            "www.example.com",
+            "notdev.test",
+            "localhost.evil",
+            "1.2.3.4.evil",
+            "999.1.1.1",
+            "[::1",
+            "[fe80::1%25en0]",
+            "a:b:80",
+        ] {
+            assert!(!host_allowed(a, Some(h)), "{h}");
+        }
+        assert!(host_allowed(None, Some("evil.example")));
+        assert!(host_allowed(Some(&["*".to_string()]), Some("evil.example")));
+        assert_eq!(
+            parse_allowed_host("Example.COM.").as_deref(),
+            Some("example.com")
+        );
+        assert_eq!(
+            parse_allowed_host(".dev.test").as_deref(),
+            Some(".dev.test")
+        );
+        assert_eq!(parse_allowed_host("*").as_deref(), Some("*"));
+        for bad in ["", ".", "a..b", "a b", "a:80", "http://a", "*.a"] {
+            assert_eq!(parse_allowed_host(bad), None, "{bad}");
+        }
+        let t = site();
+        let opts = SiteServerOptions {
+            allowed_hosts: Some(allowed.clone()),
+            ..Default::default()
+        };
+        let mut h = HashMap::new();
+        h.insert("host".to_string(), "evil.example".to_string());
+        let r = handle_request(&t, &opts, "GET", "/", &h);
+        assert_eq!(r.status, 403);
+        assert!(body(&r).contains("--allowed-host"));
+        h.insert("host".to_string(), "www.dev.test".to_string());
+        assert_eq!(handle_request(&t, &opts, "GET", "/", &h).status, 200);
+    }
+
+    #[test]
     fn byte_ranges() {
         use ByteRange::*;
         assert_eq!(byte_range(Some("bytes=0-"), 5), Some(Bytes(0, 4)));
@@ -3350,6 +3755,57 @@ mod tests {
             assert_eq!(at(&t, path).status, 404, "{path}");
         }
         assert_eq!(reason(308), "Permanent Redirect");
+    }
+
+    // johnhenry/sitefile#196 (test/server.test.ts)
+    #[test]
+    fn rewrite_base_urls_in_text_responses() {
+        assert_eq!(
+            normalize_production_url("https://example.com/blog/?x#y").as_deref(),
+            Some("https://example.com/blog")
+        );
+        assert_eq!(
+            normalize_production_url("https://example.com").as_deref(),
+            Some("https://example.com")
+        );
+        assert_eq!(normalize_production_url("/blog"), None);
+        let r = rewrite_base_urls(
+            b"https://e.x/b/a https://e.x/bc https://e.x/b https://e.x/b.x https://e.x/b?q",
+            "https://e.x/b",
+            "http://h:1",
+        );
+        assert_eq!(
+            String::from_utf8(r).unwrap(),
+            "http://h:1/a https://e.x/bc http://h:1 https://e.x/b.x http://h:1?q"
+        );
+        assert!(is_safe_host("localhost:8000") && is_safe_host("[::1]:80"));
+        assert!(!is_safe_host("evil\"><script>") && !is_safe_host("a:b"));
+        let t = Tree::from_files(
+            [
+                ("/index.html", "<a href=\"https://e.x/b/about\">x</a>"),
+                ("/a.css", "url(https://e.x/b/i.png)"),
+                ("/t.txt", "https://e.x/b/"),
+            ]
+            .map(|(p, c)| (p.to_string(), make_file(c.as_bytes().to_vec(), "t", 0o644))),
+        )
+        .unwrap();
+        let opts = SiteServerOptions {
+            rewrite_base: Some(Arc::new(|| Some("https://e.x/b".to_string()))),
+            ..Default::default()
+        };
+        let get = |u: &str, host: &str| {
+            let h: HashMap<String, String> = [("host".to_string(), host.to_string())].into();
+            handle_request(&t, &opts, "GET", u, &h)
+        };
+        let r = get("/", "h:1");
+        assert_eq!(body(&r), "<a href=\"http://h:1/about\">x</a>");
+        assert!(r.header("etag").unwrap().ends_with("-rebased\""));
+        assert_eq!(body(&get("/a.css", "h:1")), "url(http://h:1/i.png)");
+        assert_eq!(body(&get("/t.txt", "h:1")), "https://e.x/b/");
+        assert_eq!(
+            body(&get("/", "evil\"><script>")),
+            "<a href=\"https://e.x/b/about\">x</a>"
+        );
     }
 
     // johnhenry/sitefile#195 (test/server.test.ts)

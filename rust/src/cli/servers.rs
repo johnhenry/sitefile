@@ -130,6 +130,40 @@ pub fn export_base_path(export_base: Option<&str>) -> Option<String> {
     crate::server::normalize_base(b).filter(|p| p != "/")
 }
 
+/// `--rewrite-base <url>`: the production URL, normalized.
+fn parse_rewrite_base(v: Option<&str>) -> Result<Option<String>> {
+    let Some(raw) = v else { return Ok(None) };
+    match crate::server::normalize_production_url(raw) {
+        Some(u) => Ok(Some(u)),
+        None => usage(format!(
+            "--rewrite-base expects the production URL such as https://example.com/, got '{raw}'"
+        )),
+    }
+}
+
+/// A build's production URL (`serve --watch`): its EXPORT BASE when that is an http(s) URL, else
+/// the first SITEMAP or FEED BASE (port of `productionUrl`).
+pub fn production_url(plan: &crate::planner::Plan) -> Option<String> {
+    if let Some(b) = plan.export_base.as_deref() {
+        let lower = b.get(..8).unwrap_or(b).to_ascii_lowercase();
+        if lower.starts_with("http://") || lower.starts_with("https://") {
+            return crate::server::normalize_production_url(b);
+        }
+    }
+    for st in &plan.stages {
+        for op in &st.operations {
+            match op {
+                crate::planner::Operation::Sitemap { base, .. }
+                | crate::planner::Operation::Feed { base, .. } => {
+                    return crate::server::normalize_production_url(base)
+                }
+                _ => {}
+            }
+        }
+    }
+    None
+}
+
 /// The URL a server answers at: its origin and `--base`.
 fn site_url(host: &str, port: u16, base: Option<&str>) -> String {
     format!("{}{}", format_url(host, port), &base.unwrap_or("/")[1..])
@@ -150,6 +184,35 @@ fn parse_country(v: Option<&str>) -> Result<Option<String>> {
 
 // ------------------------------------------------------------ serve
 
+/// `--allowed-host` values, validated and lowercased (the server always adds localhost names and
+/// IP addresses).
+fn isolate_of(v: &Parsed) -> Result<Option<String>> {
+    let coep = v.str("coep");
+    if coep.is_some() && !v.flag("isolate") {
+        return usage("--coep needs --isolate");
+    }
+    if let Some(c) = coep.filter(|c| *c != "require-corp" && *c != "credentialless") {
+        return usage(format!(
+            "--coep must be require-corp or credentialless, not '{c}'"
+        ));
+    }
+    Ok(v.flag("isolate")
+        .then(|| coep.unwrap_or("require-corp").to_string()))
+}
+
+fn allowed_hosts_of(v: &Parsed) -> Result<Vec<String>> {
+    let mut out: Vec<String> = Vec::new();
+    for raw in v.strs("allowed-host") {
+        let Some(h) = crate::server::parse_allowed_host(&raw) else {
+            return usage(format!("--allowed-host: invalid host name '{raw}'"));
+        };
+        if !out.contains(&h) {
+            out.push(h);
+        }
+    }
+    Ok(out)
+}
+
 const SERVE_OPTS: &[OptSpec] = &[
     string("name"),
     string_s("publish", 'p'),
@@ -158,9 +221,17 @@ const SERVE_OPTS: &[OptSpec] = &[
     strings("spa-exclude"),
     string("spa-fallback"),
     string("base"),
+    string("rewrite-base"),
+    flag("no-rewrite-base"),
     string("country"),
     flag("strict-site-files"),
     flag("keep-os-metadata"),
+    strings("allowed-host"),
+    flag("cors"),
+    string("open"),
+    flag("qr"),
+    flag("isolate"),
+    string("coep"),
     flag("watch"),
     string_s("file", 'f'),
     string("target"),
@@ -193,6 +264,7 @@ const WATCH_ONLY: &[&str] = &[
     "no-overlay",
     "navigate-to-changed",
     "reload",
+    "no-rewrite-base",
 ];
 pub const SERVE: Command = Command {
     name: "serve",
@@ -203,13 +275,22 @@ pub const SERVE: Command = Command {
         "--name <n>        name for the server (-d only; default site-<6 hex>)",
         "-p, --publish <[host:]port>  address to bind (default 127.0.0.1, a free port)",
         "-d, --detach      run in the background and print the server ID",
+        "--spa             serve /index.html for unknown paths without a file extension",
+        "--cors            Access-Control-Allow-Origin: * on every response and OPTIONS preflights (204)",
+        "--isolate         cross-origin isolation headers (COOP same-origin, COEP, CORP same-origin) on every response",
+        "--coep <require-corp|credentialless>  the Cross-Origin-Embedder-Policy of --isolate (default require-corp)",
+        "--allowed-host <name>        also answer requests for this Host (repeatable; .example.com: and subdomains; *: any)",
         "--spa             answer page navigations to missing paths with the nearest 200.html or index.html",
         "--spa-exclude <glob>         paths that never fall back to the app shell (* matches anything; repeatable)",
         "--spa-fallback <path>        the file every --spa fallback serves, e.g. /app.html (implies --spa)",
         "--base <path>     serve the site under this path, e.g. /repo/ for a GitHub Pages project site (--watch: default the EXPORT BASE URL's path)",
+        "--rewrite-base <url>         replace this production URL with the local one in served HTML, CSS and XML (--watch: on by default, from EXPORT/SITEMAP/FEED BASE)",
+        "--no-rewrite-base            --watch: leave production URLs as they are",
         "--country <code>  the country _redirects Country= conditions match (there is no geolocation locally)",
         "--strict-site-files  refuse to serve when a _redirects or _headers line would be ignored",
         "--keep-os-metadata  serve __MACOSX, ._*, Thumbs.db and desktop.ini of a directory or archive (default: skipped)",
+        "--open[=<path>]   open the site (at <path>) in the browser once it is served ($BROWSER, else the system default)",
+        "--qr              print a QR code of the network URL (with -p 0.0.0.0:...), else of the local URL",
         "--watch           build the context, serve it, rebuild on change and live-reload pages (foreground only)",
         "-f, --file <path>            Sitefile path (--watch; default <context>/Sitefile)",
         "--target <stage>             build up to this stage and serve its whole tree (--watch)",
@@ -246,8 +327,11 @@ fn run_serve(v: &Parsed) -> Result<i32> {
         "an image reference, ./directory or archive file",
     )?;
     let bind = parse_publish(v.str("publish"))?;
+    let allowed_hosts = allowed_hosts_of(v)?;
+    let isolate = isolate_of(v)?;
     let (spa, spa_exclude, spa_fallback) = spa_options(v)?;
     let base = parse_base(v.str("base"))?;
+    let rewrite_base = parse_rewrite_base(v.str("rewrite-base"))?;
     let country = parse_country(v.str("country"))?;
     let strict_site_files = v.flag("strict-site-files");
     let name = v.str("name");
@@ -281,13 +365,17 @@ fn run_serve(v: &Parsed) -> Result<i32> {
         let n = tree.len();
         catch_signals();
         let log: crate::server::LogFn = Arc::new(|l: &str| out(&format!("{l}\n")));
-        let server = listen(
-            Arc::new(tree),
+        let shared: crate::server::SharedTree = Arc::new(std::sync::RwLock::new(Arc::new(tree)));
+        let server = listen_shared(
+            shared.clone(),
             SiteServerOptions {
                 spa,
                 spa_exclude,
                 spa_fallback,
                 base: base
+                    .clone()
+                    .map(|b| -> crate::server::BaseFn { Arc::new(move || Some(b.clone())) }),
+                rewrite_base: rewrite_base
                     .clone()
                     .map(|b| -> crate::server::BaseFn { Arc::new(move || Some(b.clone())) }),
                 country: country.clone(),
@@ -296,6 +384,9 @@ fn run_serve(v: &Parsed) -> Result<i32> {
                 live_reload: None,
                 last_modified: Some(Arc::new(move || modified)),
                 warn: None,
+                allowed_hosts: Some(allowed_hosts.clone()),
+                cors: v.flag("cors"),
+                isolate: isolate.clone(),
                 content: site.content,
                 ..Default::default()
             },
@@ -306,11 +397,68 @@ fn run_serve(v: &Parsed) -> Result<i32> {
             "Serving {label} ({n} files) at {}  (Ctrl-C to stop)\n",
             site_url(&server.host, server.port, base.as_deref())
         ));
-        wait_for_signal();
+        let restart: Box<dyn Fn() + Send> = {
+            let (source, label, shared) = (source.clone(), label.clone(), shared.clone());
+            Box::new(move || {
+                if !matches!(source, crate::servers::ServerSource::Dir { .. }) {
+                    let what = if matches!(source, crate::servers::ServerSource::Image { .. }) {
+                        "an image"
+                    } else {
+                        "an archive file"
+                    };
+                    out(&format!("Nothing to re-read: {label} is {what}; start serve again to read it again\n"));
+                    return;
+                }
+                let warn = |m: &str| err(&format!("warning: {m}\n"));
+                let next = Store::open_default().and_then(|store| {
+                    load_served_site(
+                        &store,
+                        &source,
+                        &ServedTreeOptions {
+                            keep_os_metadata,
+                            warn: Some(&warn),
+                        },
+                    )
+                });
+                match next {
+                    Ok(site) => {
+                        let _ = check_site_files(&site.tree, false, &warn, site.content.as_deref());
+                        let n = site.tree.len();
+                        if let Ok(mut t) = shared.write() {
+                            *t = Arc::new(site.tree);
+                        }
+                        out(&format!("Re-read {label} ({n} files)\n"));
+                    }
+                    Err(e) => err(&format!("error[{}]: {}\n", e.code, e.message())),
+                }
+            })
+        };
+        let keys = super::serve_keys::terminal(
+            v.flag("qr"),
+            v.str("open"),
+            &server.host,
+            server.port,
+            base.as_deref(),
+            restart,
+        );
+        loop {
+            if received().is_some()
+                || keys
+                    .as_ref()
+                    .is_some_and(|k| k.quit.load(std::sync::atomic::Ordering::SeqCst))
+            {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        drop(keys);
         server.close();
         return Ok(0);
     }
 
+    if v.has("open") || v.flag("qr") {
+        return usage("--open and --qr are for a server in the foreground, not -d");
+    }
     let reg = ServerRegistry::open(Some(store))?;
     let up = serve_detached_with(
         &reg,
@@ -323,7 +471,11 @@ fn run_serve(v: &Parsed) -> Result<i32> {
             spa_exclude,
             spa_fallback,
             base,
+            rewrite_base,
             keep_os_metadata,
+            allowed_hosts,
+            cors: v.flag("cors"),
+            isolate,
             country,
             strict_site_files,
             project: None,
@@ -350,6 +502,8 @@ fn serve_watch(v: &Parsed) -> Result<i32> {
         return usage("--name needs -d (only detached servers are tracked)");
     }
     let bind = parse_publish(v.str("publish"))?;
+    let allowed_hosts = allowed_hosts_of(v)?;
+    let isolate = isolate_of(v)?;
     let context = v.positionals.first().cloned().unwrap_or_else(|| ".".into());
     let file = v.str("file").filter(|s| !s.is_empty()).map(str::to_string);
     let arg_files = v.strs("build-arg-file");
@@ -370,6 +524,17 @@ fn serve_watch(v: &Parsed) -> Result<i32> {
     let base_flag = parse_base(v.str("base"))?;
     // `--base`, else the path of the last good build's EXPORT BASE URL.
     let base: Arc<RwLock<Option<String>>> = Arc::new(RwLock::new(base_flag.clone()));
+    let rewrite_flag = parse_rewrite_base(v.str("rewrite-base"))?;
+    let no_rewrite = v.flag("no-rewrite-base");
+    if no_rewrite && rewrite_flag.is_some() {
+        return usage("--rewrite-base and --no-rewrite-base cannot be combined");
+    }
+    // `--rewrite-base`, else (unless --no-rewrite-base) the last good build's production URL.
+    let rewrite_base: Arc<RwLock<Option<String>>> = Arc::new(RwLock::new(if no_rewrite {
+        None
+    } else {
+        rewrite_flag.clone()
+    }));
     let country = parse_country(v.str("country"))?;
     let strict_site_files = v.flag("strict-site-files");
     // The site-file warnings last printed: a rebuild repeats them only when they change.
@@ -466,7 +631,7 @@ fn serve_watch(v: &Parsed) -> Result<i32> {
                 Err(e) => failed(&e),
             };
         }
-        let attempt = || -> Result<(Tree, Option<String>)> {
+        let attempt = || -> Result<(Tree, Option<String>, Option<String>)> {
             let mut options = BuildOptions {
                 context_dir: context.clone(),
                 sitefile: file.clone(),
@@ -488,10 +653,11 @@ fn serve_watch(v: &Parsed) -> Result<i32> {
             let warning: Callback = Arc::new(|m: &str| err(&format!("warning: {m}\n")));
             options.on_warning = Some(warning);
             let r = build(&options)?;
-            Ok((r.output, r.plan.export_base))
+            let prod = production_url(&r.plan);
+            Ok((r.output, r.plan.export_base, prod))
         };
         match attempt() {
-            Ok((tree, export_base)) => {
+            Ok((tree, export_base, prod)) => {
                 let n = tree.len();
                 out(&format!(
                     "Built {n} file{} ({})\n",
@@ -506,6 +672,11 @@ fn serve_watch(v: &Parsed) -> Result<i32> {
                         *b = export_base_path(export_base.as_deref());
                     }
                 }
+                if !no_rewrite && rewrite_flag.is_none() {
+                    if let Ok(mut b) = rewrite_base.write() {
+                        *b = prod;
+                    }
+                }
                 swap(tree);
                 BuildOutcome {
                     code: 0,
@@ -515,6 +686,8 @@ fn serve_watch(v: &Parsed) -> Result<i32> {
             Err(e) => failed(&e),
         }
     };
+    let keys: std::cell::RefCell<Option<super::serve_keys::Keys>> = std::cell::RefCell::new(None);
+    let rebuild = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let mut on_started = || -> Result<()> {
         let log: crate::server::LogFn = Arc::new(|l: &str| out(&format!("{l}\n")));
         let opts = SiteServerOptions {
@@ -525,6 +698,10 @@ fn serve_watch(v: &Parsed) -> Result<i32> {
                 let base = base.clone();
                 move || base.read().ok().and_then(|b| b.clone())
             })),
+            rewrite_base: Some(Arc::new({
+                let rb = rewrite_base.clone();
+                move || rb.read().ok().and_then(|b| b.clone())
+            })),
             country: country.clone(),
             log: Some(log),
             server_id: None,
@@ -534,6 +711,9 @@ fn serve_watch(v: &Parsed) -> Result<i32> {
                 move || built_at.read().ok().and_then(|t| *t)
             })),
             warn: Some(Arc::new(|m: &str| err(&format!("warning: {m}\n")))),
+            allowed_hosts: Some(allowed_hosts.clone()),
+            cors: v.flag("cors"),
+            isolate: isolate.clone(),
             content: None,
         };
         let s = listen_shared(current.clone(), opts, &bind.host, bind.port)?;
@@ -546,10 +726,26 @@ fn serve_watch(v: &Parsed) -> Result<i32> {
                 base.read().ok().and_then(|b| b.clone()).as_deref()
             )
         ));
+        let rebuild = rebuild.clone();
+        let shown_base = base.read().ok().and_then(|b| b.clone());
+        *keys.borrow_mut() = super::serve_keys::terminal(
+            v.flag("qr"),
+            v.str("open"),
+            &s.host,
+            s.port,
+            shown_base.as_deref(),
+            Box::new(move || rebuild.store(true, std::sync::atomic::Ordering::SeqCst)),
+        );
         server = Some(s);
         started.set(true);
         Ok(())
     };
+    let quit = || {
+        keys.borrow()
+            .as_ref()
+            .is_some_and(|k| k.quit.load(std::sync::atomic::Ordering::SeqCst))
+    };
+    let take_rebuild = || rebuild.swap(false, std::sync::atomic::Ordering::SeqCst);
     let code = watch_loop(
         &WatchOptions {
             context: &context,
@@ -557,11 +753,13 @@ fn serve_watch(v: &Parsed) -> Result<i32> {
             arg_files: &arg_files,
             poll,
             plain,
+            rebuild: Some(&take_rebuild),
         },
         &mut run_build,
         &mut on_started,
-        &|| received().is_some(),
+        &|| received().is_some() || quit(),
     )?;
+    drop(keys.borrow_mut().take());
     live.close();
     if let Some(s) = server {
         s.close();
@@ -621,12 +819,19 @@ pub fn serve_worker(id: &str) -> i32 {
                     .base
                     .clone()
                     .map(|b| -> crate::server::BaseFn { Arc::new(move || Some(b.clone())) }),
+                rewrite_base: state
+                    .rewrite_base
+                    .clone()
+                    .map(|b| -> crate::server::BaseFn { Arc::new(move || Some(b.clone())) }),
                 country: state.country.clone(),
                 log: Some(log),
                 server_id: Some(id.to_string()),
                 live_reload: None,
                 last_modified: Some(Arc::new(move || modified)),
                 warn: None,
+                allowed_hosts: Some(state.allowed_hosts.clone()),
+                cors: state.cors,
+                isolate: state.isolate.clone(),
                 content: site.content,
                 ..Default::default()
             },

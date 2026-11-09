@@ -1,0 +1,9 @@
+{
+  "stdout": true,
+  "steps": [
+    ["build", "${CTX}", "-o", "${OUT}/v1", "--no-lockfile"],
+    ["build", "${CTX}", "-o", "${OUT}/v2", "--no-lockfile", "--build-arg", "V=2", "--experimental-dictionary", "${OUT}/v1"],
+    ["build", "${CTX}", "-o", "${OUT}/v2.zip", "--no-lockfile", "--build-arg", "V=2", "--experimental-dictionary", "${OUT}/v1"]
+  ],
+  "outputs": [["v2", "tree"], ["v2.zip", "bytes"]]
+}

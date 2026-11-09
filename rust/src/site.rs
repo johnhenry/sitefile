@@ -531,6 +531,82 @@ pub fn cache_header_rules(
     out
 }
 
+// ---------------------------------------------------------------- robots.txt and security.txt
+
+/// `/robots.txt` (RFC 9309) for every user agent (`robotsTxt` in src/site.ts).
+pub fn robots_txt(rules: &[(bool, String)], sitemaps: &[String]) -> String {
+    let mut out = String::from("User-agent: *\n");
+    if rules.is_empty() {
+        out.push_str("Disallow:\n");
+    }
+    for (allow, path) in rules {
+        out.push_str(&format!(
+            "{}: {path}\n",
+            if *allow { "Allow" } else { "Disallow" }
+        ));
+    }
+    if !sitemaps.is_empty() {
+        out.push('\n');
+        for u in sitemaps {
+            out.push_str(&format!("Sitemap: {u}\n"));
+        }
+    }
+    out
+}
+
+/// A security.txt URI field: one of `schemes` (lowercase, with their `:` or `://`), no spaces or control characters.
+pub fn check_field_uri(
+    raw: &str,
+    field: &str,
+    schemes: &[&str],
+    span: &SourceSpan,
+) -> Result<String> {
+    let lower = raw.to_lowercase();
+    if space_or_control(raw)
+        || !schemes
+            .iter()
+            .any(|s| lower.starts_with(s) && raw.chars().count() > s.chars().count())
+    {
+        let list: Vec<String> = schemes
+            .iter()
+            .map(|s| match s.strip_suffix("//") {
+                Some(p) => format!("{p}//…"),
+                None => s.to_string(),
+            })
+            .collect();
+        return Err(SitefileError::at(
+            E_VALIDATION,
+            format!(
+                "SECURITY_TXT {field} '{raw}' must be a {} URI with no spaces",
+                list.join(", ")
+            ),
+            span,
+        ));
+    }
+    Ok(raw.to_string())
+}
+
+/// RFC 9116 `security.txt`: Contact lines, Expires, then Encryption and Policy lines, in source order.
+pub fn security_txt(
+    contact: &[String],
+    expires: &str,
+    encryption: &[String],
+    policy: &[String],
+) -> String {
+    let mut out = String::new();
+    for v in contact {
+        out.push_str(&format!("Contact: {v}\n"));
+    }
+    out.push_str(&format!("Expires: {expires}\n"));
+    for v in encryption {
+        out.push_str(&format!("Encryption: {v}\n"));
+    }
+    for v in policy {
+        out.push_str(&format!("Policy: {v}\n"));
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

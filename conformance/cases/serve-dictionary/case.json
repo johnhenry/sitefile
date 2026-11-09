@@ -1,0 +1,10 @@
+{
+  "command": "serve",
+  "requests": [
+    { "target": "/app.js", "expect": { "status": 200, "headers": { "content-encoding": null, "vary": "accept-encoding, available-dictionary", "use-as-dictionary": "match=\"/app.js\"" } } },
+    { "target": "/app.js", "headers": { "accept-encoding": "gzip, br, zstd, dcb, dcz", "available-dictionary": ":4PDhhRzBsxoN0V/OHMl+6M0j5vrPS/sDyPpErk699X8=:" }, "expect": { "status": 200, "headers": { "content-encoding": "dcz", "content-length": "66" } } },
+    { "method": "HEAD", "target": "/app.js", "headers": { "accept-encoding": "dcz", "available-dictionary": ":4PDhhRzBsxoN0V/OHMl+6M0j5vrPS/sDyPpErk699X8=:" }, "expect": { "status": 200, "headers": { "content-encoding": "dcz" } } },
+    { "target": "/app.js", "headers": { "accept-encoding": "dcz;q=0", "available-dictionary": ":4PDhhRzBsxoN0V/OHMl+6M0j5vrPS/sDyPpErk699X8=:" }, "expect": { "status": 200, "headers": { "content-encoding": null } } },
+    { "target": "/app.js", "headers": { "accept-encoding": "dcz", "available-dictionary": ":AAAA:" }, "expect": { "status": 200, "headers": { "content-encoding": null } } }
+  ]
+}
