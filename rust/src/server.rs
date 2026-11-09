@@ -1940,7 +1940,8 @@ pub fn respond(
     };
     let mut segs = all_segs.clone();
     if !base_segs.is_empty() {
-        let inside = all_segs.len() >= base_segs.len() && base_segs.iter().zip(&all_segs).all(|(b, a)| a == b);
+        let inside = all_segs.len() >= base_segs.len()
+            && base_segs.iter().zip(&all_segs).all(|(b, a)| a == b);
         let to_mount = |status: u16| {
             finish(
                 status,

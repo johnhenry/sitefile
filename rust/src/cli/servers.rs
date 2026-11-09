@@ -287,7 +287,9 @@ fn run_serve(v: &Parsed) -> Result<i32> {
                 spa,
                 spa_exclude,
                 spa_fallback,
-                base: base.clone().map(|b| -> crate::server::BaseFn { Arc::new(move || Some(b.clone())) }),
+                base: base
+                    .clone()
+                    .map(|b| -> crate::server::BaseFn { Arc::new(move || Some(b.clone())) }),
                 country: country.clone(),
                 log: Some(log),
                 server_id: None,
@@ -538,7 +540,11 @@ fn serve_watch(v: &Parsed) -> Result<i32> {
         let n = current.read().map(|t| t.len()).unwrap_or(0);
         out(&format!(
             "Serving {context} ({n} files) at {}  (Ctrl-C to stop)\n",
-            site_url(&s.host, s.port, base.read().ok().and_then(|b| b.clone()).as_deref())
+            site_url(
+                &s.host,
+                s.port,
+                base.read().ok().and_then(|b| b.clone()).as_deref()
+            )
         ));
         server = Some(s);
         started.set(true);
@@ -611,7 +617,10 @@ pub fn serve_worker(id: &str) -> i32 {
                 spa: state.spa,
                 spa_exclude: state.spa_exclude.clone(),
                 spa_fallback: state.spa_fallback.clone(),
-                base: state.base.clone().map(|b| -> crate::server::BaseFn { Arc::new(move || Some(b.clone())) }),
+                base: state
+                    .base
+                    .clone()
+                    .map(|b| -> crate::server::BaseFn { Arc::new(move || Some(b.clone())) }),
                 country: state.country.clone(),
                 log: Some(log),
                 server_id: Some(id.to_string()),
