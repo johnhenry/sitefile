@@ -83,6 +83,11 @@ const INSTRUCTIONS: &[(&str, &str, &str)] = &[
         "Adds `<link rel=\"canonical\" href=\"<base><path>\">` before `</head>` of every page of the stage below the EXPORT path that has no canonical link (`…/index.html` becomes `…/`). `PRETTY` drops `.html`. Pages without `</head>` are left alone, with a warning.",
     ),
     (
+        "PRECOMPRESS",
+        "PRECOMPRESS [--overwrite] [gzip] <pattern>… [MIN <bytes>]",
+        "Writes a gzip sidecar `<file>.gz` next to each matching compressible file (text, scripts, data, SVG, fonts) of at least MIN bytes (default 1024), when it is smaller, for servers that send it in place of the file (nginx `gzip_static`, Caddy `precompressed`). Deterministic: the shared deflate encoder, a fixed header. `br` and `zstd` are not supported yet.",
+    ),
+    (
         "CHECKLINKS",
         "CHECKLINKS [--warn] [--external]",
         "Checks every reference in the stage's HTML and CSS files at this point: a link to a file that is not there (and that no REDIRECT covers) fails the build with `E_BROKEN_LINK`, listing each with its file and line. Clean URLs (`/about` → `/about.html`) and directory indexes count as found.",
@@ -157,6 +162,8 @@ const CLAUSES: &[(&str, &str, &str)] = &[
     ("FINGERPRINT", "INTEGRITY", "`INTEGRITY`: adds `integrity=\"sha384-…\"` (Subresource Integrity) to each `<script src>` and `<link rel=stylesheet|modulepreload>` that loads a renamed file, unless it has one."),
     ("CANONICAL", "BASE", "`BASE <url>`: the absolute http(s) URL the site is published at."),
     ("CANONICAL", "PRETTY", "`PRETTY`: canonical URLs without `.html` (`/about.html` → `<base>/about`)."),
+    ("PRECOMPRESS", "MIN", "`MIN <bytes>`: the smallest file compressed (a whole number; default 1024)."),
+    ("PRECOMPRESS", "gzip", "`gzip`: write `<file>.gz` (the default, and the only format so far)."),
     ("REDIRECT", "STATUS", "`STATUS 301|302|303|307|308`: the redirect's status (default 301)."),
     ("EXPORT", "AS", "`AS format`: directory (default), zip, tar, tgz (alias tar.gz), wbn, oci, car (an IPFS CARv1 file; its root CID is the one `ipfs add -r --hidden --cid-version=1` prints), html (index.html with its assets inlined as data: URIs), mhtml (index.html and its assets as one MHTML file) or epub (an EPUB 3 book of the XHTML pages)."),
     ("EXPORT", "BASE", "`BASE <url>`: for wbn, the https URL the files are mounted at; for oci, a container image to build on."),
@@ -397,6 +404,10 @@ mod tests {
             ("REDIRECT", &REDIRECT_CLAUSES[..]),
             ("FINGERPRINT", &FINGERPRINT_CLAUSES[..]),
             ("CANONICAL", &crate::language::parser::CANONICAL_CLAUSES[..]),
+            (
+                "PRECOMPRESS",
+                &crate::language::parser::PRECOMPRESS_CLAUSES[..],
+            ),
         ] {
             for c in clauses {
                 assert!(clause(kw, c).is_some(), "{kw} {c}");

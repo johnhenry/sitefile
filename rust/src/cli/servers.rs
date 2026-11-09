@@ -152,6 +152,20 @@ fn parse_country(v: Option<&str>) -> Result<Option<String>> {
 
 /// `--allowed-host` values, validated and lowercased (the server always adds localhost names and
 /// IP addresses).
+fn isolate_of(v: &Parsed) -> Result<Option<String>> {
+    let coep = v.str("coep");
+    if coep.is_some() && !v.flag("isolate") {
+        return usage("--coep needs --isolate");
+    }
+    if let Some(c) = coep.filter(|c| *c != "require-corp" && *c != "credentialless") {
+        return usage(format!(
+            "--coep must be require-corp or credentialless, not '{c}'"
+        ));
+    }
+    Ok(v.flag("isolate")
+        .then(|| coep.unwrap_or("require-corp").to_string()))
+}
+
 fn allowed_hosts_of(v: &Parsed) -> Result<Vec<String>> {
     let mut out: Vec<String> = Vec::new();
     for raw in v.strs("allowed-host") {
@@ -177,6 +191,9 @@ const SERVE_OPTS: &[OptSpec] = &[
     flag("strict-site-files"),
     flag("keep-os-metadata"),
     strings("allowed-host"),
+    flag("cors"),
+    flag("isolate"),
+    string("coep"),
     flag("watch"),
     string_s("file", 'f'),
     string("target"),
@@ -220,6 +237,9 @@ pub const SERVE: Command = Command {
         "-p, --publish <[host:]port>  address to bind (default 127.0.0.1, a free port)",
         "-d, --detach      run in the background and print the server ID",
         "--spa             serve /index.html for unknown paths without a file extension",
+        "--cors            Access-Control-Allow-Origin: * on every response and OPTIONS preflights (204)",
+        "--isolate         cross-origin isolation headers (COOP same-origin, COEP, CORP same-origin) on every response",
+        "--coep <require-corp|credentialless>  the Cross-Origin-Embedder-Policy of --isolate (default require-corp)",
         "--allowed-host <name>        also answer requests for this Host (repeatable; .example.com: and subdomains; *: any)",
         "--spa             answer page navigations to missing paths with the nearest 200.html or index.html",
         "--spa-exclude <glob>         paths that never fall back to the app shell (* matches anything; repeatable)",
@@ -265,6 +285,7 @@ fn run_serve(v: &Parsed) -> Result<i32> {
     )?;
     let bind = parse_publish(v.str("publish"))?;
     let allowed_hosts = allowed_hosts_of(v)?;
+    let isolate = isolate_of(v)?;
     let (spa, spa_exclude, spa_fallback) = spa_options(v)?;
     let base = parse_base(v.str("base"))?;
     let country = parse_country(v.str("country"))?;
@@ -316,6 +337,8 @@ fn run_serve(v: &Parsed) -> Result<i32> {
                 last_modified: Some(Arc::new(move || modified)),
                 warn: None,
                 allowed_hosts: Some(allowed_hosts.clone()),
+                cors: v.flag("cors"),
+                isolate: isolate.clone(),
                 content: site.content,
                 ..Default::default()
             },
@@ -345,6 +368,8 @@ fn run_serve(v: &Parsed) -> Result<i32> {
             base,
             keep_os_metadata,
             allowed_hosts,
+            cors: v.flag("cors"),
+            isolate,
             country,
             strict_site_files,
             project: None,
@@ -372,6 +397,7 @@ fn serve_watch(v: &Parsed) -> Result<i32> {
     }
     let bind = parse_publish(v.str("publish"))?;
     let allowed_hosts = allowed_hosts_of(v)?;
+    let isolate = isolate_of(v)?;
     let context = v.positionals.first().cloned().unwrap_or_else(|| ".".into());
     let file = v.str("file").filter(|s| !s.is_empty()).map(str::to_string);
     let arg_files = v.strs("build-arg-file");
@@ -557,6 +583,8 @@ fn serve_watch(v: &Parsed) -> Result<i32> {
             })),
             warn: Some(Arc::new(|m: &str| err(&format!("warning: {m}\n")))),
             allowed_hosts: Some(allowed_hosts.clone()),
+            cors: v.flag("cors"),
+            isolate: isolate.clone(),
             content: None,
         };
         let s = listen_shared(current.clone(), opts, &bind.host, bind.port)?;
@@ -651,6 +679,8 @@ pub fn serve_worker(id: &str) -> i32 {
                 last_modified: Some(Arc::new(move || modified)),
                 warn: None,
                 allowed_hosts: Some(state.allowed_hosts.clone()),
+                cors: state.cors,
+                isolate: state.isolate.clone(),
                 content: site.content,
                 ..Default::default()
             },

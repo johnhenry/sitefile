@@ -47,6 +47,14 @@ export interface SiteServerOptions {
    * host; unset: no check (the CLI always sets it).
    */
   readonly allowedHosts?: readonly string[];
+  /** `--cors`: `Access-Control-Allow-Origin: *` on every response (`_headers` still wins) and `OPTIONS` preflights answered with `204`. */
+  readonly cors?: boolean;
+  /**
+   * `--isolate`: cross-origin isolation (SharedArrayBuffer, wasm threads) on every response:
+   * `Cross-Origin-Opener-Policy: same-origin`, this `Cross-Origin-Embedder-Policy` and
+   * `Cross-Origin-Resource-Policy: same-origin`. `_headers` still wins.
+   */
+  readonly isolate?: 'require-corp' | 'credentialless';
   /**
    * Where file contents come from when the tree holds only digests (a zip served in place,
    * `openZipFile`): `read` returns a file's bytes (undefined: use the node's), `deflated` a
@@ -399,6 +407,12 @@ export function safeSegments(rawPath: string): string[] | undefined {
  * section 3.2.2, sent by proxies and some clients) loses its scheme and authority (`/path?q`, or
  * `/` for an empty path); any other target is returned as it is. The authority is not checked.
  */
+/** `Access-Control-Request-Headers` echoed in a preflight answer, when it is a plain list of header names. */
+export function preflightHeaders(value: string | undefined): string | undefined {
+  const v = value?.trim();
+  return v !== undefined && v !== '' && /^[A-Za-z0-9 \t,!#$%&'*+\-.^_`|~]+$/.test(v) ? v : undefined;
+}
+
 /** Whether `s` is a dotted-decimal IPv4 address. */
 function isIpv4(s: string): boolean {
   const parts = s.split('.');
@@ -581,6 +595,12 @@ export function createSiteServer(site: Tree | (() => Tree), options: SiteServerO
   const current = typeof site === 'function' ? site : (): Tree => site;
   const base: Record<string, string> = { 'x-content-type-options': 'nosniff', 'cache-control': 'no-cache' };
   if (options.serverId) base['x-sitefile-server'] = options.serverId;
+  if (options.cors) base['access-control-allow-origin'] = '*';
+  if (options.isolate !== undefined) {
+    base['cross-origin-opener-policy'] = 'same-origin';
+    base['cross-origin-embedder-policy'] = options.isolate;
+    base['cross-origin-resource-policy'] = 'same-origin';
+  }
   // `_redirects` / `_headers` are parsed once per tree (a watched server gets a new tree per rebuild).
   let rulesTree: Tree | undefined;
   let rules: { redirects: ReturnType<typeof parseRedirectRules>; headers: ReturnType<typeof parseHeaderRules> } = { redirects: [], headers: [] };
@@ -670,7 +690,16 @@ export function createSiteServer(site: Tree | (() => Tree), options: SiteServerO
       });
       return;
     }
-    if (method !== 'GET' && method !== 'HEAD') return page(405, METHOD_PAGE, { allow: 'GET, HEAD' });
+    if (options.cors && method === 'OPTIONS') {
+      // A CORS preflight: any path, nothing is looked up.
+      const allowHeaders = preflightHeaders(req.headers['access-control-request-headers']);
+      return finish(
+        204,
+        { 'access-control-allow-methods': 'GET, HEAD', ...(allowHeaders !== undefined ? { 'access-control-allow-headers': allowHeaders } : {}), 'access-control-max-age': '600' },
+        undefined,
+      );
+    }
+    if (method !== 'GET' && method !== 'HEAD') return page(405, METHOD_PAGE, { allow: options.cors ? 'GET, HEAD, OPTIONS' : 'GET, HEAD' });
     const tree = current();
     const { redirects, headers: headerRules } = rulesFor(tree);
     const isFile = (p: string): boolean => tree.isFile(p) && p !== '/_redirects' && p !== '/_headers';

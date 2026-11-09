@@ -4,7 +4,7 @@ import http from 'node:http';
 import net from 'node:net';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
-import { byteRange, closeServer, createSiteServer, hostAllowed, parseAllowedHost, earlyHints, httpDate, parseHttpDate, listen, LiveReload, originForm, RELOAD_SCRIPT, safeSegments, normalizeBase } from '../src/server.js';
+import { byteRange, closeServer, createSiteServer, hostAllowed, preflightHeaders, parseAllowedHost, earlyHints, httpDate, parseHttpDate, listen, LiveReload, originForm, RELOAD_SCRIPT, safeSegments, normalizeBase } from '../src/server.js';
 import { makeFile, Tree } from '../src/tree.js';
 import { siteFileWarnings } from '../src/serve-rules.js';
 import { makeSite, runCli, tmpDir } from './helpers/cli.js';
@@ -325,6 +325,47 @@ test('Host allow-list: DNS rebinding guard (johnhenry/sitefile#190)', async () =
   assert.equal(parseAllowedHost('.dev.test'), '.dev.test');
   assert.equal(parseAllowedHost('*'), '*');
   for (const bad of ['', '.', 'a..b', 'a b', 'a:80', 'http://a', '*.a']) assert.equal(parseAllowedHost(bad), undefined, bad);
+});
+
+test('--cors: Access-Control-Allow-Origin and OPTIONS preflights (johnhenry/sitefile#171)', async () => {
+  const s = createSiteServer(tree, { cors: true });
+  const { port } = await listen(s, '127.0.0.1', 0);
+  try {
+    assert.equal((await req(port, '/app.js')).headers['access-control-allow-origin'], '*');
+    assert.equal((await req(port, '/missing')).headers['access-control-allow-origin'], '*');
+    const pre = await req(port, '/app.js', 'OPTIONS', { 'access-control-request-headers': 'x-a, x-b' });
+    assert.equal(pre.status, 204);
+    assert.equal(pre.headers['access-control-allow-methods'], 'GET, HEAD');
+    assert.equal(pre.headers['access-control-allow-headers'], 'x-a, x-b');
+    assert.equal((await req(port, '/app.js', 'POST')).headers.allow, 'GET, HEAD, OPTIONS');
+  } finally {
+    await closeServer(s);
+  }
+  await withServer({}, async (port) => {
+    assert.equal((await req(port, '/app.js')).headers['access-control-allow-origin'], undefined);
+    assert.equal((await req(port, '/app.js', 'OPTIONS')).status, 405);
+  });
+  assert.equal(preflightHeaders(' x-a,x-b '), 'x-a,x-b');
+  assert.equal(preflightHeaders('a"b'), undefined);
+  assert.equal(preflightHeaders(''), undefined);
+});
+
+test('--isolate: COOP, COEP and CORP on every response (johnhenry/sitefile#197)', async () => {
+  for (const coep of ['require-corp', 'credentialless'] as const) {
+    const s = createSiteServer(tree, { isolate: coep });
+    const { port } = await listen(s, '127.0.0.1', 0);
+    try {
+      for (const p of ['/app.js', '/missing']) {
+        const r = await req(port, p);
+        assert.equal(r.headers['cross-origin-opener-policy'], 'same-origin');
+        assert.equal(r.headers['cross-origin-embedder-policy'], coep);
+        assert.equal(r.headers['cross-origin-resource-policy'], 'same-origin');
+      }
+    } finally {
+      await closeServer(s);
+    }
+  }
+  await withServer({}, async (port) => assert.equal((await req(port, '/app.js')).headers['cross-origin-embedder-policy'], undefined));
 });
 
 test('an access log line is written per request: method path status bytes ms', async () => {

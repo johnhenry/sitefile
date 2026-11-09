@@ -54,6 +54,14 @@ const examples = {
     assert.match(read(site, 'index.html'), /Tom &amp; &lt;Jerry&gt;/, 'build arg is substituted and HTML-escaped');
     assert.ok(files(site).includes('style.css'));
   },
+  book() {
+    const out = mkdtempSync(path.join(os.tmpdir(), 'sitefile-example-book-'));
+    temps.push(out);
+    run(['build', path.join(here, 'book'), '-o', path.join(out, 'book.epub'), '--force']);
+    const epub = readFileSync(path.join(out, 'book.epub'));
+    assert.equal(epub.subarray(30, 38).toString('latin1'), 'mimetype', 'EXPORT AS epub writes mimetype first');
+    assert.equal(epub.subarray(38, 58).toString('latin1'), 'application/epub+zip', 'stored');
+  },
   inline() {
     assert.ok(files(build('inline')).includes('index.html'), 'a template written inside the Sitefile renders');
   },
@@ -68,6 +76,11 @@ const examples = {
     const list = files(build('blog'));
     for (const p of ['index.html', 'feed.xml', 'sitemap.xml', 'asset-manifest.json']) assert.ok(list.includes(p), `blog writes ${p}`);
     assert.ok(list.some((p) => p.startsWith('posts/')) && list.some((p) => p.startsWith('tags/')), 'one page per post and per tag');
+  },
+  precompress() {
+    const list = files(build('precompress'));
+    assert.ok(list.includes('index.html.gz') && list.includes('style.css.gz'), 'PRECOMPRESS writes .gz sidecars');
+    assert.ok(!list.includes('logo.svg.gz'), 'files under MIN are left alone');
   },
   data() {
     assert.ok(files(build('data')).length > 0, 'YAML, CSV and Web Bundle data render');

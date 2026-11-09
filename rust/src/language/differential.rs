@@ -229,6 +229,14 @@ pub(crate) fn instruction(ins: &Instruction) -> Value {
             ("base", Some(operand(base))),
             ("pretty", Some(json!(pretty))),
         ]),
+        Instruction::Precompress { span: sp, formats, patterns, min, overwrite } => obj(vec![
+            ("kind", s("PRECOMPRESS")),
+            ("span", Some(span(sp))),
+            ("formats", Some(json!(formats))),
+            ("patterns", Some(Value::Array(patterns.iter().map(operand).collect()))),
+            ("min", min.as_ref().map(operand)),
+            ("overwrite", Some(json!(overwrite))),
+        ]),
         Instruction::Sitemap { span: sp, base, dest, overwrite } => obj(vec![
             ("kind", s("SITEMAP")),
             ("span", Some(span(sp))),
