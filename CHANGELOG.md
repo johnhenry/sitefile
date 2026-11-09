@@ -2,18 +2,52 @@
 
 ## Unreleased
 
-- **PRECACHE: a service-worker precache manifest** (johnhenry/sitefile#216):
-  `PRECACHE <pattern>… [TO <dest>] [INTO <service-worker>]` writes a
-  Workbox-style `[{url, revision}]` list (10 hex digits of the SHA-256;
-  `null` for fingerprinted files) to `/sw-manifest.json` and/or injects it at
-  `self.__WB_MANIFEST`. Both implementations, with conformance cases; example
-  `examples/precache`.
+- **`serve` prints network URLs on `0.0.0.0` / `::`** (johnhenry/sitefile#169):
+  a `Network:` line per non-loopback interface address (IPv4 first, IPv6 in
+  brackets), and `servers --json` gains `networkUrls`. Both implementations
+  (Rust reads the interfaces with `getifaddrs`, no new dependency).
+- **`serve --log-format json`, `--log-ip`, `--quiet`** (johnhenry/sitefile#173):
+  one JSON object per log line (request, started, stopped, warning, error,
+  message), a stable contract in docs/CLI.md, identical in both servers; kept in
+  the server record. `server logs --json` converts text logs of older servers.
+- **`serve --max-age`, `--immutable`, `--max-age-html`** (johnhenry/sitefile#175):
+  preview production `Cache-Control` on files (HTML keeps `no-cache` unless
+  `--max-age-html`); `_headers` still wins; kept in the server record. Both
+  servers.
+- **Portable paths** (johnhenry/sitefile#222): EXPORT warns about exported
+  paths Windows cannot hold (reserved names such as `aux.html`, `:` and other
+  forbidden characters, a trailing dot or space) and about `_` files and
+  folders without `/.nojekyll` (GitHub Pages); `build --strict-paths` makes
+  them one `E_PATH_PORTABLE` error. A CHECKLINKS broken link whose target
+  differs from a file only in case names that file. Both implementations, with
+  conformance cases.
+- **MIME: custom content types** (johnhenry/sitefile#220): `MIME <.ext>
+  <type/subtype>` adds a `/*.ext` `Content-Type` rule to `/_headers` (in
+  source order with HEADER), which `serve`, the hosts and `EXPORT … AS wbn`
+  use. Both implementations, with conformance cases. The CLI's `--mime` flag
+  is not part of this change.
+- **CSP: Content-Security-Policy from inline hashes** (johnhenry/sitefile#219):
+  `CSP [POLICY <policy>] [META]` writes a per-page policy to `/_headers` (or a
+  `<meta>` with META) that allows each page's inline scripts and styles by
+  their SHA-256 instead of `'unsafe-inline'`. Both implementations, with
+  conformance cases; example `examples/csp`.
+- **Development 404s and what-answered log notes** (johnhenry/sitefile#201):
+  a foreground or `--watch` server lists near misses on its 404 page
+  (letter-case differences, `_redirects` rules that matched the path but not
+  their query or conditions), and access-log lines note a clean URL, the SPA
+  fallback or the 404.html that answered. Both implementations.
 - **`serve --host-profile` and `--html-handling`** (johnhenry/sitefile#192):
   route like Netlify, Cloudflare Pages, Vercel, GitHub Pages or Firebase
   (canonical page URLs and their redirect status, whether `_redirects` and
   `_headers` are read, which 404 answers, Cloudflare's SPA fallback), or pick
   Cloudflare's `auto`, `force-slash`, `drop-slash` or `none` directly. Kept in
   the server record. Both implementations, with a conformance case per mode.
+- **PRECACHE: a service-worker precache manifest** (johnhenry/sitefile#216):
+  `PRECACHE <pattern>… [TO <dest>] [INTO <service-worker>]` writes a
+  Workbox-style `[{url, revision}]` list (10 hex digits of the SHA-256;
+  `null` for fingerprinted files) to `/sw-manifest.json` and/or injects it at
+  `self.__WB_MANIFEST`. Both implementations, with conformance cases; example
+  `examples/precache`.
 - **`serve --rewrite-base <url>`** (johnhenry/sitefile#196): the production
   URL in served HTML, CSS and XML becomes the local origin (and `--base`), so
   a preview with absolute self-links stays local. On by default in
@@ -92,6 +126,17 @@
   (Surge) or `index.html` (nested apps such as `/admin/`); `--spa-exclude
   <glob>` skips paths and `--spa-fallback <path>` picks one file. Both
   implementations.
+- **`EXPORT … FOR <host>`** (johnhenry/sitefile#205): writes the REDIRECT
+  and HEADER rules (and FINGERPRINT's cache headers) as Netlify, Cloudflare
+  Pages, Vercel (Build Output API v3), Firebase Hosting (`firebase.json`),
+  Azure Static Web Apps (`staticwebapp.config.json`), GitHub Pages
+  (`.nojekyll`, `CNAME` from `BASE`) or S3 (website configuration and
+  per-object metadata) read them. A rule the host cannot express as Netlify
+  applies it is `E_EXPORT` naming the rule; `build --lossy` leaves it out
+  with a warning. This includes a redirect that a file in the export would
+  answer first on Netlify, on hosts that apply redirects first. Both
+  implementations, with a conformance case per host.
+
 - **`_redirects`: placeholders, query matching, conditions, 410/451, nearest
   404 and warnings** (johnhenry/sitefile#193): `sitefile serve` understands
   `:placeholders` (`/blog/:year/:slug /posts/:slug`), query parameters
@@ -199,6 +244,20 @@
   A small deterministic Zstandard encoder shared by both implementations
   (`src/zstd.ts`, `rust/src/zstd.rs`); frames decode with libzstd.
   Conformance cases `steps-dictionary`, `serve-dictionary`.
+- **`EXPORT … AS swbn KEY <secret-id>`** (johnhenry/sitefile#207): a Signed
+  Web Bundle for Isolated Web Apps, signed with an Ed25519 PEM key passed as
+  `--secret id=<id>,src=key.pem` (never stored). The output is
+  byte-identical to `wbn-sign` 0.3.1's; `build` prints the Web Bundle ID.
+  The Rust port signs with `ring`'s Ed25519 (already in the build through rustls).
+  `--secret` values may now contain line breaks; a value used as an HTTP
+  header still may not. Conformance cases `ok-swbn`, `err-swbn-*`.
+- **WARC export, import and serve** (johnhenry/sitefile#206, WARC part):
+  `EXPORT / AS warc BASE <url>` writes a deterministic WARC/1.1 file (one
+  `response` record per file with its `_headers`, directory indexes at their
+  directory URL; `COMPRESSION gzip` or `-o x.warc.gz` gzips each record);
+  `IMPORT … AS tree` and `sitefile serve` read `.warc` and `.warc.gz`. Both
+  implementations; conformance cases `ok-warc`, `ok-warc-gzip`,
+  `ok-warc-import`. WACZ follows once the zip writer work lands.
 - **DOM-morphing reload with scroll restore** (johnhenry/sitefile#200): when a
   rebuild changed only existing HTML files, the reload event carries
   `"morph":true` and pages update in place (scroll, focus and form input

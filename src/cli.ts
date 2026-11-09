@@ -54,11 +54,12 @@ Options:
                                a file for zip, tar, tgz, wbn (*.wbn.gz: a gzipped bundle), car, html, mhtml
   -t, --tag <name[:tag]>       also store the build as a local image (build only, repeatable);
                                with -t and no -o nothing is written to the context
-      --format <fmt>           directory | zip | tar | tgz (alias tar.gz) | wbn | oci | car | html | mhtml
+      --format <fmt>           directory | zip | tar | tgz (alias tar.gz) | wbn | oci | car | html | mhtml | warc | swbn
                                (build only).
                                oci writes an OCI archive for -o *.tar (e.g. site.oci.tar), else an
                                OCI image layout directory.
-                               Default: the --out extension (.zip .tar .tar.gz .tgz .wbn .wbn.gz .oci.tar .car .mhtml),
+                               Default: the --out extension (.zip .tar .tar.gz .tgz .wbn .wbn.gz .oci.tar .car .mhtml
+                               .warc .warc.gz .swbn),
                                else the Sitefile's EXPORT ... AS <fmt>
       --oci-root <path>        directory inside an oci image layer (default /srv/www; overrides EXPORT ... AT)
       --compression <c>        gzip or none (build only; overrides EXPORT ... COMPRESSION): the oci site layer
@@ -79,7 +80,7 @@ Options:
       --base <image>           build the oci image on <image> (runnable; overrides EXPORT ... AS oci BASE);
                                a bare name means Docker Hub. Pin it: nginx:alpine@sha256:...
       --insecure-registry <h>  allow plain http to registry host[:port] (repeatable; localhost always may)
-      --base-url <url>         https URL ending in '/' the files are mounted at (wbn, mhtml);
+      --base-url <url>         https URL ending in '/' the files are mounted at (wbn, mhtml, warc);
                                overrides EXPORT ... BASE
       --build-arg <NAME=value> set an ARG (repeatable); --build-arg NAME reads $NAME
       --secret id=<id>,env=<VAR> | id=<id>,src=<file>
@@ -113,6 +114,10 @@ Options:
       --update-lock            re-record unpinned URLs whose content changed
       --strict-pins            fail when a remote IMPORT has no INTEGRITY and no lockfile entry, or the
                                BASE image is neither @sha256:-pinned nor locked (build, validate, inspect)
+      --lossy                  with EXPORT ... FOR <host>: leave out, with a warning, REDIRECT and HEADER
+                               rules the host cannot express (default: an error)
+      --strict-paths           fail (E_PATH_PORTABLE) instead of warning when an exported path cannot be
+                               written on Windows, or starts with '_' and there is no /.nojekyll
       --lint-disable <rules>   turn lint rules off (validate; comma-separated rule ids, or all; repeatable)
       --no-lockfile            do not read or write Sitefile.lock
       --vendor-dir <dir>       read remote imports and BASE blobs from this vendor directory (relative
@@ -189,6 +194,8 @@ export async function main(
         'frozen-lockfile': { type: 'boolean' },
         'update-lock': { type: 'boolean' },
         'strict-pins': { type: 'boolean' },
+        lossy: { type: 'boolean' },
+        'strict-paths': { type: 'boolean' },
         'lint-disable': { type: 'string', multiple: true },
         'no-lockfile': { type: 'boolean' },
         'vendor-dir': { type: 'string' },
@@ -351,10 +358,10 @@ export async function main(
     // The default destination depends on the format, which the Sitefile may set.
     // (A wbn's default name also depends on its COMPRESSION: dist.wbn or dist.wbn.gz.)
     const sitefilePlan =
-      command === 'build' && !o.out && (!formatOverride || formatOverride === 'wbn') ? await planBuild({ contextDir: context, ...(file ? { sitefile: file } : {}), buildArgs }) : undefined;
+      command === 'build' && !o.out && (!formatOverride || formatOverride === 'wbn' || formatOverride === 'warc') ? await planBuild({ contextDir: context, ...(file ? { sitefile: file } : {}), buildArgs }) : undefined;
     const sitefileFormat = formatOverride ? undefined : sitefilePlan?.exportFormat;
     const defaultFormat = formatOverride ?? sitefileFormat ?? 'directory';
-    const defaultCompression = defaultFormat === 'wbn' ? (compression ?? (sitefilePlan ? sitefileCompression(sitefilePlan, 'wbn') : undefined)) : undefined;
+    const defaultCompression = defaultFormat === 'wbn' || defaultFormat === 'warc' ? (compression ?? (sitefilePlan ? sitefileCompression(sitefilePlan, defaultFormat) : undefined)) : undefined;
     // A Git context's default destination is in the current directory, not the temporary checkout.
     const out = o.out ?? path.join(fetched ? '.' : context, defaultOutName(defaultFormat, defaultCompression));
     run.wrote?.push(out);
@@ -395,6 +402,8 @@ export async function main(
       frozenLockfile: !!o['frozen-lockfile'],
       updateLock: !!o['update-lock'],
       strictPins: !!o['strict-pins'],
+      lossy: !!o.lossy,
+      strictPaths: !!o['strict-paths'],
       onWarning: (m) => process.stderr.write(`warning: ${m}\n`),
       ...(profiler ? { profiler, alsoWrites: [o.profile!] } : {}),
       ...(run.memo ? { memo: run.memo } : {}),
@@ -405,10 +414,10 @@ export async function main(
     if (command === 'build' && compression !== undefined) {
       const fmt = (o.tag ?? []).length && !o.out ? 'oci' : (formatOverride ?? sitefileFormat ?? (await planBuild(options)).exportFormat);
       if (fmt === 'oci') ociCompression = compression;
-      else if (fmt === 'wbn') wbnCompression = compression;
-      else return usageError(`--compression applies only to oci and wbn exports, not ${fmt}`);
+      else if (fmt === 'wbn' || fmt === 'warc') wbnCompression = compression;
+      else return usageError(`--compression applies only to oci, wbn and warc exports, not ${fmt}`);
     }
-    if (formatOverride === 'wbn' && o.out) wbnCompression ??= compressionFromExtension(o.out, 'wbn');
+    if ((formatOverride === 'wbn' || formatOverride === 'warc') && o.out) wbnCompression ??= compressionFromExtension(o.out, formatOverride);
 
     switch (command) {
       case 'build': {
@@ -468,7 +477,7 @@ export async function main(
             ? `Exported ${n} to ${where} (${r.output.digest()})\n`
             : r.format === 'oci'
               ? `Exported ${n} to ${where} (oci image ${r.manifestDigest}${r.bytes !== undefined ? `, ${r.bytes} bytes` : ''})\n`
-              : `Exported ${n} to ${where} (${r.format === 'tgz' ? 'tar.gz' : r.format}, ${r.bytes} bytes, ${r.fileDigest}${r.rootCid ? `, root ${r.rootCid}` : ''})\n`,
+              : `Exported ${n} to ${where} (${r.format === 'tgz' ? 'tar.gz' : r.format}, ${r.bytes} bytes, ${r.fileDigest}${r.rootCid ? `, root ${r.rootCid}` : ''}${r.webBundleId ? `, web bundle id ${r.webBundleId}` : ''})\n`,
         );
         if (r.dictionaryDeltas) process.stdout.write(`Dictionary deltas: ${r.dictionaryDeltas.length} (.dcz)\n`);
         if (o.manifest !== undefined) await writeManifest(r.output, o.manifest, context, !!o.force);

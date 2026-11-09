@@ -141,6 +141,10 @@ pub(crate) fn operands_of(ins: &Instruction) -> Vec<(&Operand, bool)> {
             .chain(into)
             .map(|o| (o, false))
             .collect(),
+        Instruction::Csp { policy, .. } => policy.iter().map(|o| (o, false)).collect(),
+        Instruction::Mime {
+            ext, media_type, ..
+        } => vec![(ext, false), (media_type, false)],
         Instruction::Sitemap { base, dest, .. } => std::iter::once(base)
             .chain(dest)
             .map(|o| (o, false))
@@ -708,12 +712,14 @@ fn check(input: Vec<Instruction>, file: &str) -> Result<Vec<Instruction>> {
             Instruction::Sitemap { .. }
             | Instruction::Redirect { .. }
             | Instruction::Header { .. }
+            | Instruction::Mime { .. }
             | Instruction::Fingerprint { .. }
             | Instruction::Canonical { .. }
             | Instruction::Precompress { .. }
             | Instruction::Robots { .. }
             | Instruction::SecurityTxt { .. }
             | Instruction::Precache { .. }
+            | Instruction::Csp { .. }
             | Instruction::CheckLinks { .. } => {}
             Instruction::Export { .. } => saw_export = true,
             Instruction::From { .. } => {}

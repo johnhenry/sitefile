@@ -353,3 +353,67 @@ export function securityTxt(s: SecurityTxt): string {
     ...s.policy.map((v) => `Policy: ${v}\n`),
   ].join('');
 }
+
+// ---------------------------------------------------------------- CSP
+
+/** Check a CSP POLICY: non-empty, no control characters (so it cannot break a header line), no `,` (which would make it two policies). */
+export function checkCspPolicy(raw: string, span: SourceSpan): string {
+  const v = raw.replace(/^[ \t]+|[ \t]+$/g, '');
+  if (CONTROL.test(raw) || v === '' || v.includes(',')) {
+    throw new SitefileError('E_VALIDATION', `CSP POLICY '${raw}' must be a non-empty policy without control characters or commas (directives separated by ';')`, span);
+  }
+  return v;
+}
+
+/**
+ * A page's policy: `base` with `'sha256-…'` sources for its inline scripts and styles (deduplicated, in page
+ * order) added to `script-src` and `style-src`. A directive the base already has gets the hashes appended;
+ * otherwise one is added (`script-src 'self' …`) when the page has hashes of that kind. Directives are
+ * joined with `; `.
+ */
+export function cspPolicy(base: string, scriptHashes: readonly string[], styleHashes: readonly string[]): string {
+  const directives = base
+    .split(';')
+    .map((d) => d.replace(/^[ \t]+|[ \t]+$/g, ''))
+    .filter((d) => d !== '');
+  const add = (name: string, hashes: readonly string[]): void => {
+    if (hashes.length === 0) return;
+    const sources = [...new Set(hashes)].map((h) => `'${h}'`).join(' ');
+    const at = directives.findIndex((d) => d.split(/[ \t]+/)[0]!.toLowerCase() === name);
+    if (at === -1) directives.push(`${name} 'self' ${sources}`);
+    else directives[at] = `${directives[at]} ${sources}`;
+  };
+  add('script-src', scriptHashes);
+  add('style-src', styleHashes);
+  return directives.join('; ');
+}
+
+/** The `_headers` paths of a page URL: `/a/index.html` -> `/a/`, `/a/index.html`; `/b.html` -> `/b.html`, `/b`; others as they are. */
+export function pagePatterns(url: string): string[] {
+  if (url.endsWith('/index.html')) return [url.slice(0, -'index.html'.length), url];
+  if (url.endsWith('.html')) return [url, url.slice(0, -'.html'.length)];
+  return [url];
+}
+
+/** `<meta http-equiv="Content-Security-Policy" content="…">`, with `&` and `"` of the policy escaped. */
+export function cspMeta(policy: string): string {
+  return `<meta http-equiv="Content-Security-Policy" content="${policy.replace(/&/g, '&amp;').replace(/"/g, '&quot;')}">`;
+}
+
+// ---------------------------------------------------------------- MIME
+
+/** Check a MIME extension: `.` and letters, digits, `+`, `-` or `_` (`.usdz`, `.tar-gz`); returned in lowercase. */
+export function checkMimeExtension(raw: string, span: SourceSpan): string {
+  if (!/^\.[A-Za-z0-9+_-]+$/.test(raw)) {
+    throw new SitefileError('E_VALIDATION', `MIME extension '${raw}' must be a dot and letters, digits, '+', '-' or '_' (e.g. .usdz)`, span);
+  }
+  return raw.toLowerCase();
+}
+
+/** Check a MIME media type: `type/subtype`, both RFC 6838 restricted names (no parameters); returned in lowercase. */
+export function checkMimeType(raw: string, span: SourceSpan): string {
+  if (!/^[A-Za-z0-9][A-Za-z0-9!#$&^_.+-]{0,126}\/[A-Za-z0-9][A-Za-z0-9!#$&^_.+-]{0,126}$/.test(raw)) {
+    throw new SitefileError('E_VALIDATION', `MIME type '${raw}' must be type/subtype (e.g. model/vnd.usdz+zip), without parameters`, span);
+  }
+  return raw.toLowerCase();
+}

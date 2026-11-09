@@ -39,15 +39,17 @@ sitefile why <path> [context] [--json] [--target stage]
 | `--allow-plugin name` | allow the JavaScript `PLUGIN name` to run; repeatable. A JS `PLUGIN` that is not allowed fails with `E_UNSUPPORTED` at its line, naming the flag to add, before any import is fetched or any plugin process starts. A name that matches no `PLUGIN` is a warning. WebAssembly plugins need no flag. `validate` never runs plugins; `inspect` builds in memory, so it needs the flag like `build`. |
 | `--allow-plugins` | allow every JavaScript `PLUGIN` in the Sitefile. Use it only for a Sitefile you trust as much as its plugin code. |
 | `--no-cache` | do not read or write the TRANSFORM result cache for this build |
+| `--strict-paths` | fail with `E_PATH_PORTABLE` (listing every problem) instead of warning when an exported path cannot be written on Windows, or a file or folder starts with `_` and there is no `/.nojekyll` (GitHub Pages). See [LANGUAGE.md](LANGUAGE.md#portable-paths). |
 | `--keep-os-metadata` | keep OS metadata files in archives imported `AS tree`. By default `__MACOSX/` (anywhere in the path), AppleDouble `._*` files, `.DS_Store`, Finder's `Icon\r`, and `Thumbs.db` and `desktop.ini` (any case) are dropped, with one warning per import: `IMPORT s: skipped 6 OS metadata files (...); --keep-os-metadata keeps them`. Build-context directories are not filtered (use `.sitefileignore`). |
 | `--strict-pins` | fail with `E_UNPINNED`, before fetching anything, when a remote `IMPORT` has neither `INTEGRITY` nor a `Sitefile.lock` entry, or a registry `FROM image` or the `BASE` image is neither `@sha256:`-pinned nor locked. `validate --strict-pins` and `graph --strict-pins` check the same without building (they read `Sitefile.lock`); with `--provenance` the pins are recorded. Conflicts with `--update-lock`. See [LANGUAGE.md](LANGUAGE.md#remote-sources-and-the-lockfile). |
+| `--lossy` | with `EXPORT … FOR <host>`, leave out (with a warning) the REDIRECT and HEADER rules the host cannot express, instead of failing with `E_EXPORT`. See [LANGUAGE.md](LANGUAGE.md#host-files-export--for-host). |
 | `--cache-from <ref>` | `build` only, repeatable: also look up TRANSFORM results in this [registry cache](#registry-cache) (first match wins) |
 | `--cache-to <ref>` | `build` only, once: after a successful build, push the TRANSFORM results it used to this [registry cache](#registry-cache) |
 | `--plugin-timeout ms` | per-call time limit for TRANSFORM plugins and tools (default 60000) |
 | `--plugin-memory MiB` | memory limit for each plugin: a JavaScript plugin's heap (`node --max-old-space-size`), a wasm plugin's linear memory (default 1024). A plugin that passes it fails with `E_PLUGIN` |
 | `--node path` | the Node binary JavaScript plugins run on: an absolute path, at least Node 26 (default `$SITEFILE_NODE`, else the Node running the TypeScript CLI or `node` on `PATH` for the Rust binary; [PLUGINS.md](PLUGINS.md#which-node-runs-plugins)) |
 | `--lint-disable rule[,rule…]` | `validate` only, repeatable: turn [lint rules](LANGUAGE.md#lint-rules-sitefile-validate) off for this run (`all` turns every rule off). An unknown rule id is a usage error. |
-| `--secret id=<id>,env=<VAR>` / `--secret id=<id>,src=<file>` | a build secret for `IMPORT … SECRET <id> AS HEADER <Name>` / `AS BEARER` (repeatable; also on `vendor` and `outdated`). Sent only to that import's origin and redacted (`***`) from every message; see [LANGUAGE.md](LANGUAGE.md#build-secrets---secret-import--secret). |
+| `--secret id=<id>,env=<VAR>` / `--secret id=<id>,src=<file>` | a build secret for `IMPORT … SECRET <id> AS HEADER <Name>` / `AS BEARER`, or the signing key of `EXPORT … AS swbn KEY <id>` (repeatable; also on `vendor` and `outdated`). Sent only to that import's origin and redacted (`***`) from every message; see [LANGUAGE.md](LANGUAGE.md#build-secrets---secret-import--secret). |
 
 `validate` also prints **lint warnings** (`warning: Sitefile:4: [render-escape] RENDER writes /index.html without
 --escape=html, …`), after the planner's warnings and before the result line; they never change the exit code.
@@ -1165,7 +1167,7 @@ sitefile serve --watch [-p [host:]port] [--spa] [build options] [context]   # se
 sitefile servers [-a] [--json]                   # also: sitefile server ls
 sitefile server stop [--time secs] <name|id>...
 sitefile server rm [-f] <name|id>...
-sitefile server logs [-f] [-n lines] <name|id>
+sitefile server logs [-f] [-n lines] [--json] <name|id>
 sitefile server restart <name|id>
 ```
 
@@ -1207,6 +1209,11 @@ on disk after the server started answers `500` for the entries that changed (`se
 - Binds `127.0.0.1` and a free port unless `-p` is given. `-p 8080`, `-p 127.0.0.1:8080`, `-p [::1]:8080`.
   **`0.0.0.0` (or `::`) is bound only when you write it in `-p`** (a warning is printed). A port in use is
   `error[E_SERVER]`.
+- **Network URLs.** Bound to `0.0.0.0` or `::`, `serve` (foreground, `-d`, `--watch`) and `server restart` print a
+  `  Network: http://<address>:<port>/` line after the URL for each address other machines can use: the up,
+  non-loopback interface addresses, IPv4 (each sorted as text) and, for `::`, then IPv6 (in brackets; link-local
+  `fe80::/10` left out, it needs a zone). `servers --json` adds `networkUrls` (the same list) to a running server
+  bound to all interfaces. The default bind stays `127.0.0.1`; sharing is always explicit.
 - **`--cors`** adds `Access-Control-Allow-Origin: *` to every response (files, `304`, `404`, redirects, errors;
   a `_headers` value for the path wins) and answers `OPTIONS` on any path with `204`,
   `Access-Control-Allow-Methods: GET, HEAD`, the request's `Access-Control-Request-Headers` echoed as
@@ -1217,6 +1224,12 @@ on disk after the server started answers `500` for the entries that changed (`se
   `Cross-Origin-Embedder-Policy: require-corp` (`--coep credentialless` sends `credentialless`, which lets
   cross-origin resources without CORP load without credentials) and `Cross-Origin-Resource-Policy:
   same-origin`. A `_headers` value for the path wins. Stored in the server record (`isolate`, the COEP value).
+- **Production cache preview.** `cache-control: no-cache` (with the ETag) is right for previews but hides caching
+  bugs. `--max-age <secs>` sends `Cache-Control: public, max-age=<secs>` on file responses (`200`, `206`, `304`)
+  other than HTML, `--immutable` adds `, immutable` to it (fingerprinted assets), and `--max-age-html <secs>` gives
+  HTML pages `public, max-age=<secs>` too (without it they keep `no-cache`, the common production practice).
+  `404` pages keep `no-cache`, and a `_headers` `Cache-Control` for the path wins. This previews the headers a
+  host would send; it is not a CDN. Stored in the server record (`cache`: `maxAge`, `immutable`, `maxAgeHtml`).
 - **Host allow-list (DNS rebinding).** A request whose `Host` names something other than `localhost`, a
   `*.localhost` name or an IP address (any IPv4 or bracketed IPv6 literal, so the bind address and, on
   `0.0.0.0`, every interface address work) gets `403` with a page naming `--allowed-host`, before anything
@@ -1229,6 +1242,22 @@ on disk after the server started answers `500` for the entries that changed (`se
   checks only when `allowedHosts` is given.
 - Foreground by default: prints the URL and one access-log line per request (`GET /path 200 1234 1.2ms`); Ctrl-C
   stops it. Foreground servers are not listed by `servers`; `--name` needs `-d`.
+- **Access log formats.** Text (the default) is `METHOD target STATUS BYTES MSms`, the target as received with
+  bytes outside printable ASCII as `%xx`, and ` <client address>` at the end with `--log-ip`. `--quiet` drops the
+  request lines. `--log-format json` writes **one JSON object per line**, a stable contract (field order fixed):
+  - request: `{"type":"request","ts":"2026-11-08T21:30:00.123Z","method":"GET","path":"/a","query":"x=1","status":200,"bytes":1234,"ms":1.2,"encoding":"identity","range":null}`
+    plus `"remote":"127.0.0.1"` with `--log-ip`. `path` and `query` split the target at the first `?` (dropped);
+    `ms` has one decimal; `range` is the `Content-Range` of a `206`/`416`, else `null`; `encoding` is the
+    `Content-Encoding` sent (`identity` until compression lands).
+  - `{"type":"started","ts","site","files","url"}` when the server listens (instead of the `Serving …` line),
+    `{"type":"stopped","ts","signal"}` when a detached server shuts down.
+  - any other line: `{"type":"warning"|"error"|"message","ts","message"}` (`warning: …` and `error…` lines get those
+    types).
+  Under `--watch` the access log, browser console lines and the start line are JSON; build output (`Built …`,
+  errors on stderr) is not part of the log and stays text. The format is stored in the server record
+  (`logFormat: "json"`, `logIp`, `quiet`), so a detached server writes it to its log file. `server logs --json`
+  prints any server's log as JSON, converting the text lines of servers started without it (`<time> GET … 200 …`
+  becomes a request object with `range: null`).
 - **In a terminal** (a foreground `serve` or `serve --watch` whose stdin is a terminal), single keys act
   at once (`Press h for keys` is printed under the URL): `o` opens the site in the browser (at the
   `--open` path, if one was given), `u` prints the URLs (`  Local:   …`, and with `-p 0.0.0.0:…` or `-p
@@ -1333,6 +1362,14 @@ on disk after the server started answers `500` for the entries that changed (`se
   `--html-handling` without a profile redirects with 307. These are the hosts' defaults (Vercel and Firebase
   without `cleanUrls`/`trailingSlash`); their own config files (`vercel.json`, `firebase.json`, ...) are not
   read yet. Kept in the server record as `hostProfile` and `htmlHandling`.
+- **Development 404s.** A foreground or `--watch` server (not `-d`, and not one bound to `0.0.0.0`/`::`) answers
+  a miss that no `404.html` covers with a page listing near misses: files whose path differs only in letter
+  case from the path, `<path>.html` or `<path>/index.html` (they work on a case-insensitive disk such as
+  macOS's, not on a host), and `_redirects` rules whose source matches but whose query parameters or
+  conditions do not. Without near misses it is the plain page.
+- **What answered** is noted at the end of the access-log line: `→ /about.html (clean URL)`,
+  `→ /app/index.html (spa fallback)`, `→ /docs/404.html`, `→ /index.html (no 404.html)` (Cloudflare
+  profile), and `→ <target> (_redirects:3)` for a rule. Index files and exact paths get no note.
 - **`_redirects` and `_headers`** at the site root (the Netlify / Cloudflare Pages files, which `REDIRECT` and
   `HEADER` write; see LANGUAGE.md "Site files") are read once at start and never served themselves.
   - `_redirects`: one `from [name=value...] to [status[!]] [Key=values...]` per line (`#` comments), as on

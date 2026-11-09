@@ -1,3 +1,4 @@
+import { looksLikeWarc, readWarc } from './warc.js';
 import { randomBytes } from 'node:crypto';
 import { promises as fs } from 'node:fs';
 import http from 'node:http';
@@ -12,6 +13,7 @@ import { LocalContext } from './resources/local.js';
 import { DEFAULT_ARCHIVE_LIMITS, type ArchiveLimits } from './resources/types.js';
 import { Store } from './store.js';
 import { Tree } from './tree.js';
+import type { CachePreview } from './server.js';
 
 /**
  * Detached site servers ("containers"). One state file per server:
@@ -55,6 +57,14 @@ export interface ServerState {
   readonly cors?: boolean;
   /** `--isolate`: the Cross-Origin-Embedder-Policy sent with COOP and CORP (absent: not isolated). */
   readonly isolate?: 'require-corp' | 'credentialless';
+  /** `--max-age`, `--immutable`, `--max-age-html` (absent: every response keeps `no-cache`). */
+  readonly cache?: CachePreview;
+  /** `--log-format json` (absent: text). */
+  readonly logFormat?: 'json';
+  /** `--log-ip` (absent: false). */
+  readonly logIp?: boolean;
+  /** `--quiet` (absent: false). */
+  readonly quiet?: boolean;
   /** `--country`: what `_redirects` `Country=` conditions match (absent: none matches). */
   readonly country?: string;
   /** `--strict-site-files`: an ignored `_redirects`/`_headers` line stops the server from starting (absent: false). */
@@ -246,8 +256,9 @@ export async function loadArchiveTree(
   const origin = file;
   const unreadable = await checkArchiveFile(file, limits);
   const bytes = new Uint8Array(await fs.readFile(file).catch(() => { throw unreadable(); }));
-  const tree = await extractArchive(bytes, origin, limits);
-  if (tree.get('/oci-layout')) return ociArchiveTree(tree, origin, limits);
+  const warc = looksLikeWarc(bytes);
+  const tree = warc ? readWarc(bytes, origin, limits) : await extractArchive(bytes, origin, limits);
+  if (!warc && tree.get('/oci-layout')) return ociArchiveTree(tree, origin, limits);
   return options.hidden ? tree : served(tree, origin, options);
 }
 

@@ -13,6 +13,9 @@ import {
   type OciCompression,
   type PrecompressFormat,
   parseOciCompression,
+  EXPORT_HOSTS,
+  type ExportHost,
+  parseExportHost,
   REDIRECT_STATUSES,
   type RedirectStatus,
   type ImportArg,
@@ -71,6 +74,8 @@ function parseInstruction(c: Cursor): Instruction {
       return parseRedirect(c, span);
     case 'HEADER':
       return parseHeader(c, span);
+    case 'MIME':
+      return parseMime(c, span);
     case 'FINGERPRINT':
       return parseFingerprint(c, span);
     case 'CANONICAL':
@@ -83,6 +88,8 @@ function parseInstruction(c: Cursor): Instruction {
       return parseSecurityTxt(c, span);
     case 'PRECACHE':
       return parsePrecache(c, span);
+    case 'CSP':
+      return parseCsp(c, span);
     case 'CHECKLINKS':
       return parseCheckLinks(c, span);
     case 'RUN':
@@ -572,6 +579,14 @@ function parseHeader(c: Cursor, span: SourceSpan): Instruction {
   return { kind: 'HEADER', span, pattern, name: { parts, span: raw.span }, value, overwrite: flags.has('overwrite') };
 }
 
+/** `MIME <.ext> <type/subtype>` */
+function parseMime(c: Cursor, span: SourceSpan): Instruction {
+  const ext = c.operand('extension (.ext)');
+  const type = c.operand('media type (type/subtype)');
+  c.expectEnd();
+  return { kind: 'MIME', span, ext, type };
+}
+
 /** `FINGERPRINT [--overwrite] [--no-cache-headers] <pattern>… [MANIFEST <dest>] [INTEGRITY]` */
 function parseFingerprint(c: Cursor, span: SourceSpan): Instruction {
   const flags = parseFlags(c, { overwrite: 'bare', 'no-cache-headers': 'bare' });
@@ -687,6 +702,14 @@ function parsePrecache(c: Cursor, span: SourceSpan): Instruction {
   return { kind: 'PRECACHE', span, patterns, ...(dest ? { dest } : {}), ...(into ? { into } : {}), overwrite: flags.has('overwrite') };
 }
 
+/** `CSP [POLICY <policy>] [META]` */
+function parseCsp(c: Cursor, span: SourceSpan): Instruction {
+  const policy = c.keyword('POLICY') ? c.operand('policy') : undefined;
+  const meta = c.keyword('META');
+  c.expectEnd();
+  return { kind: 'CSP', span, ...(policy ? { policy } : {}), meta };
+}
+
 /** `CHECKLINKS [--warn] [--external]` */
 function parseCheckLinks(c: Cursor, span: SourceSpan): Instruction {
   const flags = parseFlags(c, { warn: 'bare', external: 'bare' });
@@ -705,7 +728,7 @@ function parseExport(c: Cursor, span: SourceSpan): Instruction {
     if (name === '') throw c.error('E_SYNTAX', 'expected export format after AS', at);
     const f = parseExportFormat(name);
     if (f === undefined) {
-      throw c.error('E_UNSUPPORTED', `export format '${name}' is not supported (expected directory, zip, tar, tgz, wbn, oci, car, html or mhtml)`, at);
+      throw c.error('E_UNSUPPORTED', `export format '${name}' is not supported (expected directory, zip, tar, tgz, wbn, oci, car, html, mhtml, warc or swbn)`, at);
     }
     format = f;
   }
@@ -725,6 +748,31 @@ function parseExport(c: Cursor, span: SourceSpan): Instruction {
     }
     compression = { value, span: cspan };
   }
+  let key: { id: string; span: SourceSpan } | undefined;
+  if (c.keyword('KEY')) {
+    const kspan = c.span;
+    key = { id: c.ident('secret id'), span: kspan };
+  }
+  let forHost: { value: ExportHost; span: SourceSpan } | undefined;
+  if (c.keyword('FOR')) {
+    const hspan = c.span;
+    const name = c.word();
+    const value = parseExportHost(name);
+    if (value === undefined) {
+      throw c.error('E_SYNTAX', name === '' ? `expected a host after FOR (${EXPORT_HOSTS.join(', ')})` : `unknown host '${name}' (expected ${EXPORT_HOSTS.join(', ')})`, hspan);
+    }
+    forHost = { value, span: hspan };
+  }
   c.expectEnd();
-  return { kind: 'EXPORT', span, path, format, ...(base ? { base } : {}), ...(at ? { at } : {}), ...(compression ? { compression } : {}) };
+  return {
+    kind: 'EXPORT',
+    span,
+    path,
+    format,
+    ...(base ? { base } : {}),
+    ...(at ? { at } : {}),
+    ...(compression ? { compression } : {}),
+    ...(key ? { key } : {}),
+    ...(forHost ? { forHost } : {}),
+  };
 }

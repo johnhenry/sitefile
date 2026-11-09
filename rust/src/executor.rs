@@ -11,6 +11,7 @@ use crate::base_image::{
 use crate::build_args::BuildArgs;
 use crate::canonical::{canonical, CanonicalOp};
 use crate::checklinks::{broken_links, report_broken_links, CheckLinksOp};
+use crate::csp::csp_pages;
 use crate::digest::sha256;
 use crate::documents::{
     data_collection, markdown_collection, sort_documents, DataKind, MarkdownDocument,
@@ -128,6 +129,11 @@ pub struct BuildOptions {
     /// `--strict-pins`: fail (E_UNPINNED) before fetching anything when a remote IMPORT has neither
     /// INTEGRITY nor a lockfile entry, or the BASE image is neither `@sha256:`-pinned nor locked.
     pub strict_pins: bool,
+    /// `--lossy`: with `EXPORT … FOR <host>`, leave out (with a warning) the REDIRECT and HEADER rules
+    /// the host cannot express, instead of failing with E_EXPORT.
+    pub lossy: bool,
+    /// `--strict-paths`: exported paths Windows or GitHub Pages cannot hold are E_PATH_PORTABLE, not warnings.
+    pub strict_paths: bool,
     /// Maximum imports resolved at once (default 4).
     pub concurrency: usize,
     pub plugin_policy: PluginPolicy,
@@ -245,6 +251,8 @@ impl Default for BuildOptions {
             update_lock: false,
             vendor_dir: None,
             strict_pins: false,
+            lossy: false,
+            strict_paths: false,
             concurrency: 4,
             plugin_policy: DEFAULT_PLUGIN_POLICY,
             node: None,
@@ -690,12 +698,15 @@ pub fn warn_unused_secrets(p: &Plan, secrets: &Secrets, warn: &Callback) {
         .imports
         .iter()
         .flat_map(|s| s.secrets.iter().map(|x| x.id.as_str()))
+        .chain(p.export_key.as_deref())
         .collect();
     let mut ids: Vec<&str> = secrets.ids().collect();
     ids.sort();
     for id in ids {
         if !used.contains(id) {
-            warn(&format!("--secret {id} is not used by any IMPORT … SECRET"));
+            warn(&format!(
+                "--secret {id} is not used by any IMPORT … SECRET or EXPORT … KEY"
+            ));
         }
     }
 }
@@ -1216,8 +1227,35 @@ fn build_with(options: &BuildOptions, temp_dirs: &Mutex<Vec<PathBuf>>) -> Result
             ),
         ));
     }
-    let tree = with_site_rules(tree, &p, &label, &current_renames, &|m: &str| warn(m))?;
-    let output = tree.subtree(&p.export_path);
+    let (tree, host_output) = with_site_rules(
+        tree,
+        &p,
+        &label,
+        &current_renames,
+        &|m: &str| warn(m),
+        options.lossy,
+    )?;
+    let output = host_output.unwrap_or_else(|| tree.subtree(&p.export_path));
+    let paths: Vec<String> = output.entries().map(|(f, _)| f.clone()).collect();
+    let portability = crate::portable::portability_problems(&paths);
+    if !portability.is_empty() && options.strict_paths {
+        let count = if portability.len() == 1 {
+            "a path is".to_string()
+        } else {
+            format!("{} paths are", portability.len())
+        };
+        let listed: String = portability.iter().map(|m| format!("\n  {m}")).collect();
+        return Err(SitefileError::plain(
+            E_PATH_PORTABLE,
+            format!(
+                "EXPORT {}: {count} not portable (--strict-paths):{listed}",
+                p.export_path
+            ),
+        ));
+    }
+    for m in &portability {
+        warn(&format!("EXPORT {}: {m}", p.export_path));
+    }
     if output.is_empty() {
         warn(&match &p.target {
             None => format!("EXPORT {} contains no files", p.export_path),
@@ -1295,7 +1333,8 @@ fn with_site_rules(
     label: &str,
     renames: &BTreeMap<String, String>,
     warn: &dyn Fn(&str),
-) -> Result<Tree> {
+    lossy: bool,
+) -> Result<(Tree, Option<Tree>)> {
     let url_below = |path: &str| -> Option<String> {
         if p.export_path == "/" {
             Some(path.to_string())
@@ -1311,17 +1350,12 @@ fn with_site_rules(
     let renamed = |s: &str| urls.get(s).cloned().unwrap_or_else(|| s.to_string());
     let to: Vec<String> = p.redirects.iter().map(|r| renamed(&r.to)).collect();
     let patterns: Vec<String> = p.headers.iter().map(|h| renamed(&h.pattern)).collect();
-    let redirects = redirects_file(
-        p.redirects
-            .iter()
-            .zip(&to)
-            .map(|(r, to)| (r.from.as_str(), to.as_str(), r.status)),
-    );
+
     // FINGERPRINT's Cache-Control lines, after the HEADER lines (see `cache_header_rules`).
     let mut auto: Vec<(String, &str)> = Vec::new();
     let mut header_rules: Vec<(bool, &SourceSpan)> =
         p.headers.iter().map(|h| (h.overwrite, &h.span)).collect();
-    let mut header_kind = "HEADER";
+    let mut header_kind = p.headers.first().map_or("HEADER", |h| h.instruction);
     let headers_path = join_virtual(&p.export_path, "_headers");
     if let (Some(fp), false) = (&p.cache_headers, urls.is_empty()) {
         let files: Vec<String> = tree
@@ -1346,6 +1380,117 @@ fn with_site_rules(
             }
         }
     }
+    // CSP: Content-Security-Policy lines after those, or with META a <meta> in each page.
+    let mut csp_rules: Vec<(String, String)> = Vec::new();
+    if let Some(c) = &p.csp {
+        let origin = format!("{label}:{} CSP", c.span.line);
+        let r = csp_pages(&tree, &p.export_path, &c.policy, c.meta, &origin);
+        if !r.headless.is_empty() {
+            let count = if r.headless.len() == 1 {
+                "1 page has".to_string()
+            } else {
+                format!("{} pages have", r.headless.len())
+            };
+            warn(&format!(
+                "{origin}: {count} no <head>, so no policy was added: {}",
+                r.headless.join(", ")
+            ));
+        }
+        if !r.pages.is_empty() {
+            tree = tree.with_files(r.pages, ConflictPolicy::Overwrite, Some(&c.span))?;
+        }
+        let none_yet = p.headers.is_empty() && auto.is_empty();
+        if !r.rules.is_empty() && none_yet && tree.is_file(&headers_path) {
+            warn(&format!("{origin}: {headers_path} already exists (not written by HEADER), so no Content-Security-Policy lines were added; add them to that file, use HEADER, or CSP … META"));
+        } else if !r.rules.is_empty() {
+            if none_yet {
+                header_rules = vec![(false, &c.span)];
+                header_kind = "CSP";
+            }
+            csp_rules = r.rules;
+        }
+    }
+    // EXPORT … FOR <host> (not netlify, whose files these are; not with --target, which exports the raw tree).
+    let n_headers = p.headers.len() + auto.len() + csp_rules.len();
+    let mut keep_r = vec![true; p.redirects.len()];
+    let mut keep_h = vec![true; n_headers];
+    if let Some((host, hspan)) = p.export_for.as_ref().filter(|_| p.target.is_none()) {
+        if host != "netlify" {
+            use crate::export_for::{export_for_host, HostHeader, HostOptions, HostRedirect};
+            let host_redirects: Vec<HostRedirect> = p
+                .redirects
+                .iter()
+                .zip(&to)
+                .map(|(r, to)| HostRedirect {
+                    from: r.from.clone(),
+                    to: to.clone(),
+                    status: r.status,
+                    span: r.span.clone(),
+                })
+                .collect();
+            let auto_span = p.cache_headers.clone().unwrap_or_else(|| hspan.clone());
+            let host_headers: Vec<HostHeader> = p
+                .headers
+                .iter()
+                .zip(&patterns)
+                .map(|(h, pattern)| HostHeader {
+                    pattern: pattern.clone(),
+                    name: h.name.clone(),
+                    value: h.value.clone(),
+                    span: h.span.clone(),
+                    auto: false,
+                })
+                .chain(auto.iter().map(|(pattern, value)| HostHeader {
+                    pattern: pattern.clone(),
+                    name: "Cache-Control".into(),
+                    value: value.to_string(),
+                    span: auto_span.clone(),
+                    auto: true,
+                }))
+                .chain(csp_rules.iter().map(|(pattern, value)| {
+                    HostHeader {
+                        pattern: pattern.clone(),
+                        name: "Content-Security-Policy".into(),
+                        value: value.clone(),
+                        span: p
+                            .csp
+                            .as_ref()
+                            .map_or_else(|| hspan.clone(), |c| c.span.clone()),
+                        auto: false,
+                    }
+                }))
+                .collect();
+            let r = export_for_host(
+                host,
+                &tree.subtree(&p.export_path),
+                &host_redirects,
+                &host_headers,
+                &HostOptions {
+                    label,
+                    lossy,
+                    warn,
+                    base: p.export_base.as_deref(),
+                    span: hspan,
+                },
+            )?;
+            if host != "cloudflare" {
+                return Ok((tree, Some(r.output)));
+            }
+            // Cloudflare: the same files, without the rules it refused.
+            keep_r = (0..p.redirects.len())
+                .map(|i| r.redirects.contains(&i))
+                .collect();
+            keep_h = (0..n_headers).map(|i| r.headers.contains(&i)).collect();
+        }
+    }
+    let redirects = redirects_file(
+        p.redirects
+            .iter()
+            .zip(&to)
+            .zip(&keep_r)
+            .filter(|(_, k)| **k)
+            .map(|((r, to), _)| (r.from.as_str(), to.as_str(), r.status)),
+    );
     let headers = headers_file(
         p.headers
             .iter()
@@ -1354,7 +1499,15 @@ fn with_site_rules(
             .chain(
                 auto.iter()
                     .map(|(pattern, value)| (pattern.as_str(), "Cache-Control", *value)),
-            ),
+            )
+            .chain(
+                csp_rules
+                    .iter()
+                    .map(|(pattern, v)| (pattern.as_str(), "Content-Security-Policy", v.as_str())),
+            )
+            .zip(&keep_h)
+            .filter(|(_, k)| **k)
+            .map(|(x, _)| x),
     );
     /// (file name, content, each rule's `--overwrite` and span, instruction)
     type SiteFile<'a> = (&'a str, String, Vec<(bool, &'a SourceSpan)>, &'a str);
@@ -1362,7 +1515,12 @@ fn with_site_rules(
         (
             "_redirects",
             redirects,
-            p.redirects.iter().map(|r| (r.overwrite, &r.span)).collect(),
+            p.redirects
+                .iter()
+                .zip(&keep_r)
+                .filter(|(_, k)| **k)
+                .map(|(r, _)| (r.overwrite, &r.span))
+                .collect(),
             "REDIRECT",
         ),
         ("_headers", headers, header_rules, header_kind),
@@ -1383,7 +1541,7 @@ fn with_site_rules(
             Some(first),
         )?;
     }
-    Ok(tree)
+    Ok((tree, None))
 }
 
 // ---------------------------------------------------------------- export
@@ -1431,6 +1589,8 @@ pub struct ExportedBuild {
     pub manifest_digest: Option<String>,
     /// car: the root CID (CIDv1, base32).
     pub root_cid: Option<String>,
+    /// swbn: the Web Bundle ID (the Isolated Web App is `isolated-app://<id>/`).
+    pub web_bundle_id: Option<String>,
     /// Watch mode: set when the directory export applied only the changes (export::incremental).
     pub incremental: Option<crate::export::incremental::Applied>,
     /// `--experimental-dictionary`: the paths that got a `.dcz` delta.
@@ -1728,6 +1888,7 @@ fn export_build_inner(
                 file_digest: Some(digest),
                 manifest_digest: Some(img.manifest_digest.clone()),
                 root_cid: None,
+                web_bundle_id: None,
                 incremental: None,
                 dictionary_deltas: None,
             });
@@ -1745,6 +1906,7 @@ fn export_build_inner(
             file_digest: None,
             manifest_digest: Some(img.manifest_digest.clone()),
             root_cid: None,
+            web_bundle_id: None,
             incremental: None,
             dictionary_deltas: None,
         });
@@ -1763,7 +1925,42 @@ fn export_build_inner(
             file_digest: None,
             manifest_digest: None,
             root_cid: None,
+            web_bundle_id: None,
             incremental: written.incremental,
+            dictionary_deltas: None,
+        });
+    }
+    if format == ExportFormat::Swbn {
+        let key_id = if result.plan.export_format == ExportFormat::Swbn {
+            result.plan.export_key.clone()
+        } else {
+            None
+        };
+        let Some(key_id) = key_id else {
+            return Err(SitefileError::plain(
+                E_VALIDATION,
+                "swbn export needs a signing key: build with 'EXPORT ... AS swbn KEY <secret-id>' and --secret",
+            ));
+        };
+        let Some(pem) = options.secrets.get(&key_id) else {
+            return Err(SitefileError::plain(
+                E_SECRET,
+                format!("EXPORT ... KEY {key_id}: no --secret id={key_id} was given"),
+            ));
+        };
+        let (data, id) =
+            crate::export::swbn::write_signed_web_bundle(&result.output, pem, &key_id)?;
+        let written = export_file(&data, out, &export_options)?;
+        return Ok(ExportedBuild {
+            result,
+            format,
+            out_path: written.out_file,
+            bytes: Some(written.bytes),
+            file_digest: Some(sha256(&data)),
+            manifest_digest: None,
+            root_cid: None,
+            web_bundle_id: Some(id),
+            incremental: None,
             dictionary_deltas: None,
         });
     }
@@ -1778,6 +1975,7 @@ fn export_build_inner(
             file_digest: Some(sha256(&data)),
             manifest_digest: None,
             root_cid: Some(root),
+            web_bundle_id: None,
             incremental: None,
             dictionary_deltas: None,
         });
@@ -1794,10 +1992,10 @@ fn export_build_inner(
                 .base_url
                 .clone()
                 .or_else(|| result.plan.export_base.clone()),
-            compression: if format == ExportFormat::Wbn {
+            compression: if matches!(format, ExportFormat::Wbn | ExportFormat::Warc) {
                 target
                     .wbn_compression
-                    .or(sitefile_compression(&result.plan, ExportFormat::Wbn))
+                    .or(sitefile_compression(&result.plan, format))
             } else {
                 None
             },
@@ -1813,6 +2011,7 @@ fn export_build_inner(
         file_digest: Some(digest),
         manifest_digest: None,
         root_cid: None,
+        web_bundle_id: None,
         incremental: None,
         dictionary_deltas: None,
     })

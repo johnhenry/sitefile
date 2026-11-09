@@ -63,7 +63,9 @@ test('IMPORT AS tree drops OS metadata with one warning; keepOsMetadata keeps it
   const kept: string[] = [];
   const k = await build({ contextDir: await project(files), lockfile: false, keepOsMetadata: true, onWarning: (m) => kept.push(m) });
   assert.equal(k.output.size, 8);
-  assert.deepEqual(kept, []);
+  // Kept metadata is reported only by the export's portability check (Icon\r, __MACOSX without .nojekyll).
+  assert.deepEqual(kept.filter((m) => !m.startsWith('EXPORT /: ')), []);
+  assert.ok(kept.some((m) => m.includes("'/site/Icon\r' cannot be extracted on Windows")), kept.join('\n'));
 });
 
 test('serve: archives and directories are served without OS metadata unless kept', async () => {

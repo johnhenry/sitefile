@@ -129,6 +129,18 @@ pub struct ServerState {
     /// `--isolate`: the Cross-Origin-Embedder-Policy sent with COOP and CORP.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub isolate: Option<String>,
+    /// `--max-age`, `--immutable`, `--max-age-html`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache: Option<crate::server::CachePreview>,
+    /// `--log-format json` (`None`: text).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub log_format: Option<String>,
+    /// `--log-ip`.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub log_ip: bool,
+    /// `--quiet`.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub quiet: bool,
     /// `--country`: what `_redirects` `Country=` conditions match (absent: none matches).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub country: Option<String>,
@@ -540,8 +552,13 @@ fn load_archive(
     let unreadable = || SitefileError::plain(E_ARCHIVE, format!("cannot read '{origin}'"));
     check_archive_file(file, limits)?;
     let bytes = fs::read(file).map_err(|_| unreadable())?;
-    let tree = extract_archive(&bytes, &origin, limits, None)?;
-    if tree.is_file("/oci-layout") {
+    let warc = crate::warc::looks_like_warc(&bytes);
+    let tree = if warc {
+        crate::warc::read_warc(&bytes, &origin, limits, None)?
+    } else {
+        extract_archive(&bytes, &origin, limits, None)?
+    };
+    if !warc && tree.is_file("/oci-layout") {
         return oci_archive_tree(&tree, &origin, limits);
     }
     if hidden {
@@ -954,6 +971,14 @@ pub struct DetachedServe {
     pub cors: bool,
     /// `--isolate`: the Cross-Origin-Embedder-Policy (`require-corp` or `credentialless`).
     pub isolate: Option<String>,
+    /// `--max-age`, `--immutable`, `--max-age-html`.
+    pub cache: Option<crate::server::CachePreview>,
+    /// `--log-format json` (`Some("json")`; `None`: text).
+    pub log_format: Option<String>,
+    /// `--log-ip`.
+    pub log_ip: bool,
+    /// `--quiet`.
+    pub quiet: bool,
     /// `--country`.
     pub country: Option<String>,
     /// `--strict-site-files`.
@@ -983,6 +1008,10 @@ impl DetachedServe {
             allowed_hosts: Vec::new(),
             cors: false,
             isolate: None,
+            cache: None,
+            log_format: None,
+            log_ip: false,
+            quiet: false,
             country: None,
             strict_site_files: false,
             project: None,
@@ -1049,6 +1078,10 @@ pub fn serve_detached_with(
         allowed_hosts: serve.allowed_hosts.clone(),
         cors: serve.cors,
         isolate: serve.isolate.clone(),
+        cache: serve.cache.clone(),
+        log_format: serve.log_format.clone(),
+        log_ip: serve.log_ip,
+        quiet: serve.quiet,
         country: serve.country.clone(),
         strict_site_files: serve.strict_site_files,
         host: serve.bind.host.clone(),
@@ -1269,6 +1302,10 @@ mod tests {
             allowed_hosts: Vec::new(),
             cors: false,
             isolate: None,
+            cache: None,
+            log_format: None,
+            log_ip: false,
+            quiet: false,
             country: None,
             strict_site_files: false,
             bind: Bind {

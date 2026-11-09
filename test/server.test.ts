@@ -4,7 +4,7 @@ import http from 'node:http';
 import net from 'node:net';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
-import { byteRange, closeServer, createSiteServer, hostAllowed, preflightHeaders, parseAllowedHost, earlyHints, httpDate, parseHttpDate, listen, LiveReload, originForm, RELOAD_SCRIPT, safeSegments, normalizeBase, normalizeProductionUrl, rewriteBaseUrls, hostProfile } from '../src/server.js';
+import { accessLogLine, networkAddresses, networkUrls, byteRange, cacheControlFor, logLineAsJson, closeServer, createSiteServer, hostAllowed, preflightHeaders, parseAllowedHost, earlyHints, httpDate, parseHttpDate, listen, LiveReload, originForm, RELOAD_SCRIPT, safeSegments, normalizeBase, normalizeProductionUrl, rewriteBaseUrls, hostProfile } from '../src/server.js';
 import type { RoutingProfile } from '../src/server.js';
 import { makeFile, Tree } from '../src/tree.js';
 import { siteFileWarnings } from '../src/serve-rules.js';
@@ -367,6 +367,84 @@ test('--isolate: COOP, COEP and CORP on every response (johnhenry/sitefile#197)'
     }
   }
   await withServer({}, async (port) => assert.equal((await req(port, '/app.js')).headers['cross-origin-embedder-policy'], undefined));
+});
+
+test('--max-age/--immutable/--max-age-html: a production cache preview (johnhenry/sitefile#175)', async () => {
+  const s = createSiteServer(tree, { cache: { maxAge: 600, immutable: true } });
+  const { port } = await listen(s, '127.0.0.1', 0);
+  try {
+    const r = await req(port, '/app.js');
+    assert.equal(r.headers['cache-control'], 'public, max-age=600, immutable');
+    assert.equal((await req(port, '/app.js', 'GET', { 'if-none-match': String(r.headers.etag) })).headers['cache-control'], 'public, max-age=600, immutable');
+    assert.equal((await req(port, '/')).headers['cache-control'], 'no-cache');
+    assert.equal((await req(port, '/missing')).headers['cache-control'], 'no-cache');
+  } finally {
+    await closeServer(s);
+  }
+  assert.equal(cacheControlFor('text/html; charset=utf-8', { maxAgeHtml: 0 }), 'public, max-age=0');
+  assert.equal(cacheControlFor('text/css; charset=utf-8', { maxAgeHtml: 5 }), undefined);
+  assert.equal(cacheControlFor('image/png', { maxAge: 5 }), 'public, max-age=5');
+  assert.equal(cacheControlFor('image/png', undefined), undefined);
+});
+
+test('--log-format json, --log-ip, --quiet and server logs --json conversion (johnhenry/sitefile#173)', async () => {
+  const lines: string[] = [];
+  const s = createSiteServer(tree, { logFormat: 'json', logIp: true, log: (l) => lines.push(l) });
+  const { port } = await listen(s, '127.0.0.1', 0);
+  try {
+    await req(port, '/app.js?x=1');
+    await new Promise((r) => setTimeout(r, 50));
+    const o = JSON.parse(lines[0]!);
+    assert.deepEqual(Object.keys(o), ['type', 'ts', 'method', 'path', 'query', 'status', 'bytes', 'ms', 'encoding', 'range', 'remote']);
+    assert.equal(o.type, 'request');
+    assert.equal(o.path, '/app.js');
+    assert.equal(o.query, 'x=1');
+    assert.equal(o.status, 200);
+    assert.equal(o.remote, '127.0.0.1');
+    assert.equal(o.range, null);
+  } finally {
+    await closeServer(s);
+  }
+  const quiet: string[] = [];
+  const q = createSiteServer(tree, { quiet: true, log: (l) => quiet.push(l) });
+  const qp = await listen(q, '127.0.0.1', 0);
+  try {
+    await req(qp.port, '/app.js');
+    assert.deepEqual(quiet, []);
+  } finally {
+    await closeServer(q);
+  }
+  const e = { ts: '2026-01-01T00:00:00.000Z', method: 'GET', target: '/a?b', status: 206, bytes: 2, ms: 1.24, range: 'bytes 0-1/10' };
+  assert.equal(accessLogLine('text', { ...e, remote: '::1' }), 'GET /a?b 206 2 1.2ms ::1');
+  assert.equal(
+    accessLogLine('json', e),
+    '{"type":"request","ts":"2026-01-01T00:00:00.000Z","method":"GET","path":"/a","query":"b","status":206,"bytes":2,"ms":1.2,"encoding":"identity","range":"bytes 0-1/10"}',
+  );
+  assert.equal(
+    logLineAsJson('2026-01-01T00:00:00.000Z GET /a?b 200 5 0.4ms'),
+    '{"type":"request","ts":"2026-01-01T00:00:00.000Z","method":"GET","path":"/a","query":"b","status":200,"bytes":5,"ms":0.4,"encoding":"identity","range":null}',
+  );
+  assert.equal(
+    logLineAsJson('2026-01-01T00:00:00.000Z serving ./site (3 files) at http://127.0.0.1:8080/'),
+    '{"type":"started","ts":"2026-01-01T00:00:00.000Z","site":"./site","files":3,"url":"http://127.0.0.1:8080/"}',
+  );
+  assert.equal(logLineAsJson('2026-01-01T00:00:00.000Z received SIGTERM, shutting down'), '{"type":"stopped","ts":"2026-01-01T00:00:00.000Z","signal":"SIGTERM"}');
+  assert.equal(logLineAsJson('2026-01-01T00:00:00.000Z warning: x "y"'), '{"type":"warning","ts":"2026-01-01T00:00:00.000Z","message":"x \\"y\\""}');
+  assert.equal(logLineAsJson('    at stack'), '{"type":"message","ts":"","message":"    at stack"}');
+  assert.equal(logLineAsJson('{"type":"request"}'), '{"type":"request"}');
+});
+
+test('network URLs for a server bound to all interfaces (johnhenry/sitefile#169)', () => {
+  assert.deepEqual(networkAddresses('127.0.0.1'), []);
+  assert.deepEqual(networkAddresses('::1'), []);
+  const v4 = networkAddresses('0.0.0.0');
+  for (const a of v4) assert.match(a, /^[0-9.]+$/);
+  assert.ok(!v4.some((a) => a.startsWith('127.')), 'no loopback');
+  assert.deepEqual(v4, [...v4].sort());
+  const all = networkAddresses('::');
+  assert.deepEqual(all.slice(0, v4.length), v4, 'IPv4 first');
+  for (const a of all.slice(v4.length)) assert.ok(a.includes(':') && !/^fe[89ab]/.test(a) && a !== '::1', a);
+  assert.deepEqual(networkUrls('0.0.0.0', 8080), v4.map((a) => `http://${a}:8080/`));
 });
 
 test('an access log line is written per request: method path status bytes ms', async () => {
@@ -873,6 +951,39 @@ test('serve --host-profile and --html-handling: canonical URLs, site files and 4
     assert.equal(await loc(port, '/about'), '308 /about/', '--html-handling replaces the profile\'s');
     assert.equal(await loc(port, '/about/'), '200');
   });
+});
+
+// johnhenry/sitefile#201
+test('serve: the dev 404 lists near misses; the access log says what answered', async () => {
+  const files = { '/index.html': 'home', '/About.html': 'about', '/docs/Guide/index.html': 'guide', '/app/index.html': 'app', '/sub/404.html': 'sub 404', '/_redirects': '/promo /sale 302 Country=nz\n/item id=:id /items/:id\n' };
+  const t = Tree.fromFiles(Object.entries(files).map(([p, c]) => [p, makeFile(enc(c), 't')] as const));
+  const log: string[] = [];
+  const s = createSiteServer(t, { spa: true, devNotFound: true, log: (l) => log.push(l) });
+  const { port } = await listen(s, '127.0.0.1', 0);
+  try {
+    let r = await req(port, '/about');
+    assert.equal(r.status, 404);
+    assert.match(r.body, /<li><a href="\/About\.html">\/About\.html<\/a>: the letter case differs/);
+    r = await req(port, '/docs/guide/');
+    assert.match(r.body, /href="\/docs\/Guide\/index\.html"/);
+    r = await req(port, '/promo');
+    assert.match(r.body, /<code>_redirects:1<\/code>: matches the path but not its conditions/);
+    assert.match((await req(port, '/item')).body, /_redirects:2<\/code>: matches the path but not its query parameters/);
+    assert.equal((await req(port, '/zzz')).body, '<!doctype html><meta charset="utf-8"><title>404 Not Found</title><h1>404 Not Found</h1>\n', 'no near miss: the plain page');
+    await req(port, '/sub/x');
+    await req(port, '/app/route', 'GET', { 'sec-fetch-mode': 'navigate' });
+  } finally {
+    await closeServer(s);
+  }
+  assert.ok(log.includes(log.find((l) => /^GET \/sub\/x 404 7 [0-9.]+ms \u2192 \/sub\/404\.html$/.test(l))!), log.join('\n'));
+  assert.ok(log.some((l) => /^GET \/app\/route 200 3 [0-9.]+ms \u2192 \/app\/index\.html \(spa fallback\)$/.test(l)), log.join('\n'));
+  await withTree(files, {}, async (port) => assert.doesNotMatch((await req(port, '/about')).body, /Near misses/, 'only with devNotFound'));
+  const clean: string[] = [];
+  const c = createSiteServer(Tree.fromFiles([['/a.html', makeFile(enc('a'), 't')]]), { log: (l) => clean.push(l) });
+  const cp = (await listen(c, '127.0.0.1', 0)).port;
+  await req(cp, '/a');
+  await closeServer(c);
+  assert.match(clean[0]!, /^GET \/a 200 1 [0-9.]+ms \u2192 \/a\.html \(clean URL\)$/);
 });
 
 const NAV = { 'sec-fetch-mode': 'navigate', 'sec-fetch-dest': 'document' };

@@ -1,0 +1,14 @@
+{
+  "command": "serve",
+  "log": true,
+  "expectLog": ["GET /a 200 2 Tms \u2192 /a.html (clean URL)", "GET /sub/x 404 8 Tms \u2192 /sub/404.html"],
+  "requests": [
+    { "target": "/about", "expect": { "status": 404 } },
+    { "target": "/docs/guide/", "expect": { "status": 404 } },
+    { "target": "/promo", "expect": { "status": 404 } },
+    { "target": "/item", "expect": { "status": 404 } },
+    { "target": "/zzz", "expect": { "status": 404 } },
+    { "target": "/a", "expect": { "status": 200 } },
+    { "target": "/sub/x", "expect": { "status": 404, "body": "sub 404\n" } }
+  ]
+}

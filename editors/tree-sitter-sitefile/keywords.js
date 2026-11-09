@@ -3,17 +3,18 @@
 // src/language/ast.ts, src/language/scanner.ts and rust/src/language/parser.rs.
 
 export const KEYWORDS = {
-  instructions: ['FROM', 'STAGE', 'ARG', 'LET', 'IMPORT', 'COPY', 'RENDER', 'TRANSFORM', 'PLUGIN', 'TOOL', 'SITEMAP', 'FEED', 'REDIRECT', 'HEADER', 'FINGERPRINT', 'CANONICAL', 'PRECOMPRESS', 'ROBOTS', 'SECURITY_TXT', 'PRECACHE', 'CHECKLINKS', 'EXPORT'],
+  instructions: ['FROM', 'STAGE', 'ARG', 'LET', 'IMPORT', 'COPY', 'RENDER', 'TRANSFORM', 'PLUGIN', 'TOOL', 'SITEMAP', 'FEED', 'REDIRECT', 'HEADER', 'FINGERPRINT', 'CANONICAL', 'PRECOMPRESS', 'ROBOTS', 'SECURITY_TXT', 'PRECACHE', 'CSP', 'MIME', 'CHECKLINKS', 'EXPORT'],
   /** Rejected by the parser (E_UNSUPPORTED); parsed as `unsupported_instruction`. */
   unsupported: ['RUN', 'REMOVE', 'GENERATE', 'ASSERT', 'META', 'EXEC'],
-  clauses: ['FROM', 'AS', 'TO', 'INTEGRITY', 'SORT', 'BY', 'ASC', 'DESC', 'SCHEMA', 'DRAFTS', 'PAGE', 'FIRST', 'FOR', 'IN', 'WITH', 'OPTIONS', 'ARGS', 'BASE', 'AT', 'COMPRESSION', 'LINK', 'TITLE', 'STATUS', 'IMAGE', 'SECRET', 'HEADER', 'BEARER', 'MANIFEST', 'PRETTY', 'MIN', 'ALLOW', 'DISALLOW', 'SITEMAP', 'CONTACT', 'EXPIRES', 'ENCRYPTION', 'POLICY', 'INTO', 'ARG'],
+  clauses: ['FROM', 'AS', 'TO', 'INTEGRITY', 'SORT', 'BY', 'ASC', 'DESC', 'SCHEMA', 'DRAFTS', 'PAGE', 'FIRST', 'FOR', 'IN', 'WITH', 'OPTIONS', 'ARGS', 'BASE', 'AT', 'COMPRESSION', 'KEY', 'LINK', 'TITLE', 'STATUS', 'IMAGE', 'SECRET', 'HEADER', 'BEARER', 'MANIFEST', 'PRETTY', 'MIN', 'ALLOW', 'DISALLOW', 'SITEMAP', 'CONTACT', 'EXPIRES', 'ENCRYPTION', 'POLICY', 'INTO', 'POLICY', 'META', 'ARG'],
   scratch: 'scratch',
   valueTypes: ['string', 'number', 'boolean'],
   importKinds: ['file', 'text', 'json', 'tree', 'markdown', 'yaml', 'csv', 'wbn', 'html', 'sitefile'],
   /** The LET-only type of an html fragment (`LET name: html`), a keyword token here. */
   fragmentType: 'html',
-  exportFormats: ['directory', 'zip', 'tar', 'tgz', 'tar.gz', 'wbn', 'oci', 'car', 'html', 'mhtml'],
+  exportFormats: ['directory', 'zip', 'tar', 'tgz', 'tar.gz', 'wbn', 'oci', 'car', 'html', 'mhtml', 'warc', 'swbn'],
   compressions: ['gzip', 'none'],
+  exportHosts: ['netlify', 'cloudflare', 'vercel', 'firebase', 'azure', 'github-pages', 's3'],
   escapeModes: ['none', 'html'],
   /** `${file "…" | helper}` (src/media.ts FILE_HELPERS). */
   fileHelpers: ['url', 'width', 'height', 'type', 'size', 'integrity', 'datauri', 'srcset', 'img', 'video', 'audio', 'source', 'script', 'stylesheet', 'preload', 'modulepreload', 'pre', 'svg'],

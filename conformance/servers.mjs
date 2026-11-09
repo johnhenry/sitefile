@@ -315,7 +315,7 @@ function startServe(cmd, argv, env, cwd) {
     child.stderr.on('data', (d) => (err += d));
     child.stdout.on('data', (d) => {
       out += d;
-      const m = / at http:\/\/127\.0\.0\.1:(\d+)\//.exec(out);
+      const m = /(?: at |"url":")http:\/\/127\.0\.0\.1:(\d+)\//.exec(out);
       if (!m) return;
       clearTimeout(timer);
       resolve({
@@ -330,6 +330,14 @@ function startServe(cmd, argv, env, cwd) {
     });
   });
 }
+
+/** stdout of `serve` with times made comparable: ISO times, `"ms":N`, `N.Nms` and the port. */
+const normalizeLog = (text) =>
+  text
+    .replace(/[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:.]+Z/g, 'TS')
+    .replace(/"ms":[0-9]+\.[0-9]/g, '"ms":0.0')
+    .replace(/ [0-9]+\.[0-9]ms/g, ' 0.0ms')
+    .replace(/(http:\/\/[^/\s"]+):[0-9]+\//g, '$1:PORT/');
 
 const show = (r) =>
   [
@@ -353,7 +361,7 @@ export async function runServeCase(c, { impls, tmp }) {
       answers[impl] = [];
       for (const r of c.requests) answers[impl].push(await rawRequest(server.port, r));
       // The access-log line of the last request is written after its answer.
-      if (c.log) await new Promise((r) => setTimeout(r, 200));
+      if (c.log) await new Promise((r) => setTimeout(r, 600));
     } catch (e) {
       detail.push(`${impl}: ${e.message}`);
     } finally {
@@ -361,13 +369,24 @@ export async function runServeCase(c, { impls, tmp }) {
     }
     if (c.log && server) {
       const { out, err } = server.output();
-      const norm = (t) => t.replace(/127\.0\.0\.1:\d+/g, '127.0.0.1:PORT').replace(/ \d+\.\dms/g, ' Tms');
+      const norm = (t) =>
+        t
+          .replace(/[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:.]+Z/g, 'TS')
+          .replace(/"ms":[0-9]+\.[0-9]/g, '"ms":T')
+          .replace(/(https?:\/\/[^/\s"]+):[0-9]+\//g, '$1:PORT/')
+          .replace(/127\.0\.0\.1:\d+/g, '127.0.0.1:PORT')
+          .replace(/ \d+\.\dms/g, ' Tms');
       logs[impl] = `stdout:\n${norm(out)}stderr:\n${norm(err)}`;
     }
   }
   if (c.log && detail.length === 0) {
     const [a, b] = impls.map(([impl]) => logs[impl]);
     if (a !== b) detail.push(`logs differ\nts:\n${a}\nrust:\n${b}`);
+    // `"log": { "lines": n }`: stdout has n lines (the start line and the access log).
+    if (typeof c.log === 'object' && c.log.lines !== undefined) {
+      const n = (logs.ts.split('stderr:\n')[0] ?? '').split('\n').length - 2;
+      if (n !== c.log.lines) detail.push(`ts stdout has ${n} lines, expected ${c.log.lines}`);
+    }
     for (const [impl] of impls) for (const line of c.expectLog ?? []) if (!logs[impl].split('\n').includes(line)) detail.push(`${impl}: log has no line ${JSON.stringify(line)}\n${logs[impl]}`);
   }
   if (detail.length === 0) {

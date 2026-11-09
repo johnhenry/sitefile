@@ -1,9 +1,10 @@
 import http from 'node:http';
+import os from 'node:os';
 import type { AddressInfo } from 'node:net';
 import { isSitefileError, SitefileError } from './errors.js';
 import { fetchRemote, redactUrl } from './resources/https.js';
 import { DEFAULT_FETCH_POLICY, type FetchPolicy } from './resources/types.js';
-import { globMatch, headersFor, isRewriteStatus, matchRule, parseHeaderRules, parseRedirectRules, substituteTarget } from './serve-rules.js';
+import { globMatch, headersFor, isRewriteStatus, matchRedirect, type RedirectRequest, type ServeRedirect, matchRule, parseHeaderRules, parseRedirectRules, substituteTarget } from './serve-rules.js';
 import { deltaFor } from './dictionary.js';
 import type { Tree } from './tree.js';
 import { nfc } from './paths.js';
@@ -68,6 +69,11 @@ export interface SiteServerOptions {
   readonly rewriteBase?: string | (() => string | undefined);
   /** `--host-profile` / `--html-handling`: behave like a static host ({@link hostProfile}). Absent: sitefile's own rules. */
   readonly profile?: RoutingProfile;
+  /**
+   * Foreground and `--watch` servers (never detached or shared ones): a 404 with no `404.html` to
+   * answer it lists near misses ({@link nearMisses}).
+   */
+  readonly devNotFound?: boolean;
   /** `--country`: what `_redirects` `Country=` conditions match (there is no geolocation locally). */
   readonly country?: string;
   /**
@@ -84,6 +90,14 @@ export interface SiteServerOptions {
    * `Cross-Origin-Resource-Policy: same-origin`. `_headers` still wins.
    */
   readonly isolate?: 'require-corp' | 'credentialless';
+  /** `--max-age`, `--immutable`, `--max-age-html`: a production `Cache-Control` preview for files ({@link cacheControlFor}). */
+  readonly cache?: CachePreview;
+  /** `--log-format`: access-log lines as text (the default, `GET /path 200 1234 1.2ms`) or one JSON object each ({@link accessLogLine}). */
+  readonly logFormat?: 'text' | 'json';
+  /** `--log-ip`: add the client address to access-log lines. */
+  readonly logIp?: boolean;
+  /** `--quiet`: no access-log lines (other log lines still go to {@link log}). */
+  readonly quiet?: boolean;
   /**
    * Where file contents come from when the tree holds only digests (a zip served in place,
    * `openZipFile`): `read` returns a file's bytes (undefined: use the node's), `deflated` a
@@ -436,6 +450,102 @@ export function safeSegments(rawPath: string): string[] | undefined {
  * section 3.2.2, sent by proxies and some clients) loses its scheme and authority (`/path?q`, or
  * `/` for an empty path); any other target is returned as it is. The authority is not checked.
  */
+/** One access-log request, as {@link accessLogLine} writes it. */
+export interface AccessLogEntry {
+  readonly ts: string;
+  readonly method: string;
+  /** The request target as received (made printable: other bytes become `%xx`). */
+  readonly target: string;
+  readonly status: number;
+  readonly bytes: number;
+  readonly ms: number;
+  /** `Content-Range` of a `206`/`416`, else undefined. */
+  readonly range?: string;
+  /** What answered, as the `_redirects` log note (` → /new (_redirects:3)`), else undefined. */
+  readonly note?: string;
+  /** The client address (`--log-ip`), else undefined. */
+  readonly remote?: string;
+}
+
+/**
+ * An access-log line. Text: `METHOD target STATUS BYTES MSms` (then ` <remote>` with `--log-ip`). JSON, a stable
+ * contract (docs/CLI.md): `{"type":"request","ts","method","path","query","status","bytes","ms","encoding","range"}`
+ * and `"remote"` with `--log-ip`, in that order; `path` and `query` split the target at the first `?` (the `?`
+ * dropped), `ms` has one decimal, `range` is the response's `Content-Range` or null.
+ */
+export function accessLogLine(format: 'text' | 'json', e: AccessLogEntry): string {
+  const target = printable(e.target);
+  if (format === 'text') return `${e.method} ${target} ${e.status} ${e.bytes} ${e.ms.toFixed(1)}ms${e.note ?? ''}${e.remote !== undefined ? ` ${e.remote}` : ''}`;
+  const q = target.indexOf('?');
+  const path = q === -1 ? target : target.slice(0, q);
+  const query = q === -1 ? '' : target.slice(q + 1);
+  return (
+    `{"type":"request","ts":${JSON.stringify(e.ts)},"method":${JSON.stringify(e.method)},"path":${JSON.stringify(path)},"query":${JSON.stringify(query)},` +
+    `"status":${e.status},"bytes":${e.bytes},"ms":${e.ms.toFixed(1)},"encoding":"identity","range":${e.range === undefined ? 'null' : JSON.stringify(e.range)}` +
+    `${e.note !== undefined ? `,"note":${JSON.stringify(e.note.replace(/^ \u2192 /, ''))}` : ''}` +
+    `${e.remote !== undefined ? `,"remote":${JSON.stringify(e.remote)}` : ''}}`
+  );
+}
+
+/** A log line that is not a request, as a JSON object (`--log-format json`): `warning: …` and `error…` lines get their own types. */
+export function jsonLogLine(ts: string, line: string): string {
+  const [type, message] = line.startsWith('warning: ') ? ['warning', line.slice(9)] : line.startsWith('error') ? ['error', line] : ['message', line];
+  return `{"type":${JSON.stringify(type)},"ts":${JSON.stringify(ts)},"message":${JSON.stringify(message)}}`;
+}
+
+/** `{"type":"started","ts","site","files","url"}`: a server is listening (`--log-format json`). */
+export function startedLogLine(ts: string, site: string, files: number, url: string): string {
+  return `{"type":"started","ts":${JSON.stringify(ts)},"site":${JSON.stringify(site)},"files":${files},"url":${JSON.stringify(url)}}`;
+}
+
+/** `{"type":"stopped","ts","signal"}`: a server shuts down (`--log-format json`). */
+export function stoppedLogLine(ts: string, signal: string): string {
+  return `{"type":"stopped","ts":${JSON.stringify(ts)},"signal":${JSON.stringify(signal)}}`;
+}
+
+/**
+ * A detached server's log line as JSON (`server logs --json`): JSON lines as they are; a text line
+ * (`<ISO time> <rest>`) as a request, started, stopped, warning, error or message object.
+ */
+export function logLineAsJson(line: string): string {
+  if (line.startsWith('{')) return line;
+  const m = /^([0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:.]+Z) (.*)$/.exec(line);
+  if (!m) return jsonLogLine('', line);
+  const [, ts, rest] = m as unknown as [string, string, string];
+  const r = /^([A-Z][A-Z-]*) (\S+) ([0-9]{3}) ([0-9]+) ([0-9]+\.[0-9])ms(?: (\S+))?$/.exec(rest);
+  if (r) {
+    return accessLogLine('json', { ts, method: r[1]!, target: r[2]!, status: Number(r[3]), bytes: Number(r[4]), ms: Number(r[5]), ...(r[6] !== undefined ? { remote: r[6] } : {}) });
+  }
+  const started = /^serving (.+) \(([0-9]+) files\) at (\S+)$/.exec(rest);
+  if (started) return startedLogLine(ts, started[1]!, Number(started[2]), started[3]!);
+  const stopped = /^received (SIG[A-Z]+), shutting down$/.exec(rest);
+  if (stopped) return stoppedLogLine(ts, stopped[1]!);
+  return jsonLogLine(ts, rest);
+}
+
+/** Production cache headers to preview instead of `no-cache` (`serve --max-age`). */
+export interface CachePreview {
+  /** Seconds for files other than HTML: `public, max-age=N`. */
+  readonly maxAge?: number;
+  /** Adds `immutable` to the non-HTML value (needs {@link maxAge}). */
+  readonly immutable?: boolean;
+  /** Seconds for HTML pages (absent: they keep `no-cache`, the common production practice). */
+  readonly maxAgeHtml?: number;
+}
+
+/** The `Cache-Control` a file of media `type` gets under `cache`, or undefined to keep `no-cache`. */
+export function cacheControlFor(type: string, cache: CachePreview | undefined): string | undefined {
+  if (cache === undefined) return undefined;
+  if (type.startsWith('text/html')) return cache.maxAgeHtml === undefined ? undefined : `public, max-age=${cache.maxAgeHtml}`;
+  if (cache.maxAge === undefined) return undefined;
+  return `public, max-age=${cache.maxAge}${cache.immutable ? ', immutable' : ''}`;
+}
+
+/**
+ * The origin form of a request target: an absolute-form target (`http://host/path?q`, RFC 9112
+ * section 3.2.2, sent by proxies and some clients) loses its scheme and authority (`/path?q`, or
+ * `/` for an empty path); any other target is returned as it is. The authority is not checked.
+ */
 /** `Access-Control-Request-Headers` echoed in a preflight answer, when it is a plain list of header names. */
 export function preflightHeaders(value: string | undefined): string | undefined {
   const v = value?.trim();
@@ -648,6 +758,51 @@ export function routingFor(o: { hostProfile?: HostProfileName | undefined; htmlH
   return o.hostProfile === undefined && o.htmlHandling === undefined ? undefined : hostProfile(o.hostProfile, o.htmlHandling);
 }
 
+/** A near miss for a 404: a file (`path`) or a `_redirects` rule (`line`), and why. */
+export interface NearMiss {
+  readonly path?: string;
+  readonly line?: number;
+  readonly why: string;
+}
+
+const utf8Order = (a: string, b: string): number => Buffer.compare(Buffer.from(a), Buffer.from(b));
+
+/**
+ * What a missing path almost matched (at most 20): files whose path differs only in ASCII letter case
+ * from the path, `<path>.html` or `<path>/index.html` (which work on a case-insensitive disk but not on a
+ * host), sorted by path; then `_redirects` rules whose source matches but whose query parameters or
+ * conditions do not, in file order.
+ */
+export function nearMisses(tree: Tree, isFile: (p: string) => boolean, vpath: string, redirects: readonly ServeRedirect[], req: RedirectRequest): NearMiss[] {
+  const lower = (s: string): string => s.replace(/[A-Z]/g, (c) => c.toLowerCase());
+  const wanted = new Set([vpath, `${vpath === '/' ? '' : vpath}.html`, `${vpath === '/' ? '' : vpath}/index.html`].map(lower));
+  const out: NearMiss[] = [];
+  const files = tree
+    .entries()
+    .map(([p]) => p)
+    .filter((p) => isFile(p) && wanted.has(lower(p)))
+    .sort(utf8Order);
+  for (const p of files) out.push({ path: p, why: 'the letter case differs (a case-insensitive disk finds it, a host does not)' });
+  for (const r of redirects) {
+    if (matchRedirect(r, vpath) !== undefined && matchRule(r, vpath, req) === undefined) {
+      out.push({ line: r.line, why: `matches the path but not its ${r.query.length > 0 ? 'query parameters' : 'conditions'}${r.query.length > 0 && r.conditions.length > 0 ? ' or conditions' : ''}` });
+    }
+  }
+  return out.slice(0, 20);
+}
+
+const escapeHtml = (s: string): string => s.replace(/[&<>"]/g, (c) => (c === '&' ? '&amp;' : c === '<' ? '&lt;' : c === '>' ? '&gt;' : '&quot;'));
+
+/** The development 404 page listing near misses. */
+export function nearMissPage(vpath: string, misses: readonly NearMiss[], mount = ''): string {
+  let out = `<!doctype html><meta charset="utf-8"><title>404 Not Found</title><h1>404 Not Found</h1>\n<p>Nothing is served at <code>${escapeHtml(vpath)}</code>. Near misses:</p>\n<ul>\n`;
+  for (const m of misses) {
+    const what = m.path !== undefined ? `<a href="${escapeHtml(mount + encodePath(m.path))}">${escapeHtml(m.path)}</a>` : `<code>_redirects:${m.line}</code>`;
+    out += `<li>${what}: ${escapeHtml(m.why)}</li>\n`;
+  }
+  return out + '</ul>\n';
+}
+
 /** A `Host` header safe to write into a page: a name, IPv4 or bracketed IPv6 address, and a port. */
 const SAFE_HOST = /^(?:[A-Za-z0-9.-]+|\[[0-9A-Fa-f:.]+\])(?::[0-9]{1,5})?$/;
 
@@ -780,7 +935,21 @@ export function createSiteServer(site: Tree | (() => Tree), options: SiteServerO
       if (quiet) return;
       // `servers` probes carry the server's own id; they would only clutter the access log.
       if (options.serverId !== undefined && req.headers['x-sitefile-probe'] === options.serverId) return;
-      options.log?.(`${method} ${printable(target)} ${status} ${bytes} ${ms.toFixed(1)}ms${note}`);
+      if (options.quiet) return;
+      const range = headers['content-range'];
+      options.log?.(
+        accessLogLine(options.logFormat ?? 'text', {
+          ts: new Date().toISOString(),
+          method,
+          target,
+          status,
+          bytes,
+          ms,
+          ...(range !== undefined ? { range: String(range) } : {}),
+          ...(note !== '' ? { note } : {}),
+          ...(options.logIp ? { remote: req.socket.remoteAddress ?? '' } : {}),
+        }),
+      );
     };
     const page = (status: number, html: string, extra: Record<string, string> = {}): void =>
       finish(status, { 'content-type': 'text/html; charset=utf-8', 'content-length': Buffer.byteLength(html), ...extra }, html);
@@ -892,17 +1061,19 @@ export function createSiteServer(site: Tree | (() => Tree), options: SiteServerO
       const encoding: Record<string, string> = deflated ? { 'content-encoding': 'gzip', vary: varyOn } : {};
       const vary: Record<string, string> = !deflated && dictionaryVary ? { vary: varyOn } : {};
       if (status !== 200) return finish(status, { 'content-type': type, 'content-length': body.byteLength, ...encoding, ...custom }, body);
+      const preview = cacheControlFor(type, options.cache);
+      const cc: Record<string, string> = preview === undefined ? {} : { 'cache-control': preview };
       // An injected page, a gzip response and a delta are other representations of the file: they get their own ETags.
       const etag = `"${file.digest.replace(/^sha256:/, '')}${rebase ? '-rebased' : ''}${live ? '-live' : ''}${deflated ? '-gzip' : ''}${delta ? '-dcz' : ''}"`;
       const modified = options.lastModified?.();
       const lm: Record<string, string> = modified === undefined ? {} : { 'last-modified': httpDate(modified) };
-      if (etagMatches(req.headers['if-none-match'], etag)) return finish(304, { ...encoding, ...custom, ...vary, etag, ...lm }, undefined);
+      if (etagMatches(req.headers['if-none-match'], etag)) return finish(304, { ...encoding, ...cc, ...custom, ...vary, etag, ...lm }, undefined);
       // If-Modified-Since only counts without If-None-Match (RFC 9110 section 13.2.2).
       const ims = req.headers['if-none-match'] === undefined ? req.headers['if-modified-since'] : undefined;
       const since = ims === undefined ? undefined : parseHttpDate(ims);
-      if (modified !== undefined && since !== undefined && modified <= since) return finish(304, { ...encoding, ...custom, ...vary, etag, ...lm }, undefined);
+      if (modified !== undefined && since !== undefined && modified <= since) return finish(304, { ...encoding, ...cc, ...custom, ...vary, etag, ...lm }, undefined);
       // The delta is sent whole (no byte ranges of an encoded body).
-      if (delta) return finish(200, { 'content-type': type, 'content-length': delta.byteLength, ...custom, ...vary, 'content-encoding': 'dcz', etag, ...lm }, delta);
+      if (delta) return finish(200, { 'content-type': type, 'content-length': delta.byteLength, ...cc, ...custom, ...vary, 'content-encoding': 'dcz', etag, ...lm }, delta);
       // A single byte range of a GET (`If-Range` must name this ETag); anything else gets the whole file.
       const ifRange = req.headers['if-range'] as string | undefined;
       const range = method === 'GET' && (ifRange === undefined || ifRange.trim() === etag) ? byteRange(req.headers.range, body.byteLength) : undefined;
@@ -914,11 +1085,11 @@ export function createSiteServer(site: Tree | (() => Tree), options: SiteServerO
         const part = body.subarray(start, end + 1);
         return finish(
           206,
-          { 'content-type': type, 'content-length': part.byteLength, ...custom, ...vary, etag, ...lm, 'accept-ranges': 'bytes', 'content-range': `bytes ${start}-${end}/${body.byteLength}` },
+          { 'content-type': type, 'content-length': part.byteLength, ...cc, ...custom, ...vary, etag, ...lm, 'accept-ranges': 'bytes', 'content-range': `bytes ${start}-${end}/${body.byteLength}` },
           part,
         );
       }
-      finish(200, { 'content-type': type, 'content-length': body.byteLength, ...encoding, ...custom, ...vary, etag, ...lm, 'accept-ranges': 'bytes' }, body);
+      finish(200, { 'content-type': type, 'content-length': body.byteLength, ...encoding, ...cc, ...custom, ...vary, etag, ...lm, 'accept-ranges': 'bytes' }, body);
     };
     /** The file for a path: exact, `<path>.html` (clean URLs), or `<dir>/index.html` with a trailing slash. */
     const resolve = (p: string, slash: boolean): string | undefined => {
@@ -1050,18 +1221,27 @@ export function createSiteServer(site: Tree | (() => Tree), options: SiteServerO
     }
     if (served === undefined && options.spa && isNavigation(req.headers) && !(options.spaExclude ?? []).some((g) => globMatch(g, vpath + (trailingSlash && segs.length > 0 ? '/' : '')))) {
       served = spaFallback(segs, trailingSlash, isFile, options.spaFallback);
+      if (served !== undefined) note = ` \u2192 ${encodePath(served)} (spa fallback)`;
     }
+    if (served !== undefined && note === '' && served === `${vpath}.html`) note = ` \u2192 ${encodePath(served)} (clean URL)`;
     if (served !== undefined) return sendFile(200, served);
     // The nearest 404.html: in the request's directory, then each parent up to the root (only the
     // root one for a profile whose host does not look further).
     const dirs = trailingSlash ? segs : segs.slice(0, -1);
     for (let n = profile?.notFound === 'root' ? 0 : dirs.length; n >= 0; n--) {
       const notFound = `/${dirs.slice(0, n).map((d) => d + '/').join('')}404.html`;
-      if (isFile(notFound)) return sendFile(404, notFound);
+      if (isFile(notFound)) {
+        note = ` \u2192 ${encodePath(notFound)}`;
+        return sendFile(404, notFound);
+      }
     }
     // Cloudflare Pages: a site without a 404.html is taken for a single-page app.
-    if (profile?.notFound === 'index' && isFile('/index.html')) return sendFile(200, '/index.html');
-    page(404, NOT_FOUND_PAGE, custom);
+    if (profile?.notFound === 'index' && isFile('/index.html')) {
+      note = ' \u2192 /index.html (no 404.html)';
+      return sendFile(200, '/index.html');
+    }
+    const misses = options.devNotFound ? nearMisses(tree, isFile, vpath, redirects, ruleRequest) : [];
+    page(404, misses.length === 0 ? NOT_FOUND_PAGE : nearMissPage(vpath, misses, mount), custom);
   };
 
   const server = http.createServer(handler);
@@ -1097,6 +1277,31 @@ export function closeServer(server: http.Server): Promise<void> {
     server.close(() => resolve());
     server.closeAllConnections();
   });
+}
+
+/**
+ * The addresses other machines can reach a server bound to all interfaces at: the up, non-loopback
+ * interface addresses, IPv4 for `0.0.0.0`, IPv4 then IPv6 for `::` (IPv6 link-local `fe80::/10`
+ * left out: it needs a zone), each family sorted as text, without duplicates. Empty for any other bind.
+ */
+export function networkAddresses(bindHost: string): string[] {
+  if (bindHost !== '0.0.0.0' && bindHost !== '::') return [];
+  const v4 = new Set<string>();
+  const v6 = new Set<string>();
+  for (const list of Object.values(os.networkInterfaces())) {
+    for (const a of list ?? []) {
+      if (a.internal) continue;
+      if (a.family === 'IPv4') v4.add(a.address);
+      else if (bindHost === '::' && !/^fe[89ab]/i.test(a.address)) v6.add(a.address.toLowerCase());
+    }
+  }
+  const sorted = (xs: Set<string>): string[] => [...xs].sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
+  return [...sorted(v4), ...sorted(v6)];
+}
+
+/** {@link networkAddresses} as URLs. */
+export function networkUrls(bindHost: string, port: number): string[] {
+  return networkAddresses(bindHost).map((a) => formatUrl(a, port));
 }
 
 export function formatUrl(host: string, port: number): string {

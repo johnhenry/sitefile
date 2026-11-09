@@ -607,6 +607,121 @@ pub fn security_txt(
     out
 }
 
+// ---------------------------------------------------------------- CSP
+
+/// Check a CSP POLICY (`checkCspPolicy` in src/site.ts): non-empty, no control characters, no `,`.
+pub fn check_csp_policy(raw: &str, span: &SourceSpan) -> Result<String> {
+    let v = raw.trim_matches(|c| c == ' ' || c == '\t');
+    if control(raw) || v.is_empty() || v.contains(',') {
+        return Err(SitefileError::at(
+            E_VALIDATION,
+            format!("CSP POLICY '{raw}' must be a non-empty policy without control characters or commas (directives separated by ';')"),
+            span,
+        ));
+    }
+    Ok(v.to_string())
+}
+
+/// A page's policy (`cspPolicy` in src/site.ts).
+pub fn csp_policy(base: &str, script_hashes: &[String], style_hashes: &[String]) -> String {
+    let mut directives: Vec<String> = base
+        .split(';')
+        .map(|d| d.trim_matches(|c| c == ' ' || c == '\t').to_string())
+        .filter(|d| !d.is_empty())
+        .collect();
+    let mut add = |name: &str, hashes: &[String]| {
+        if hashes.is_empty() {
+            return;
+        }
+        let mut unique: Vec<&String> = Vec::new();
+        for h in hashes {
+            if !unique.contains(&h) {
+                unique.push(h);
+            }
+        }
+        let sources: Vec<String> = unique.iter().map(|h| format!("'{h}'")).collect();
+        let sources = sources.join(" ");
+        let at = directives.iter().position(|d| {
+            d.split(|c| c == ' ' || c == '\t')
+                .next()
+                .unwrap_or("")
+                .to_lowercase()
+                == name
+        });
+        match at {
+            Some(i) => directives[i] = format!("{} {sources}", directives[i]),
+            None => directives.push(format!("{name} 'self' {sources}")),
+        }
+    };
+    add("script-src", script_hashes);
+    add("style-src", style_hashes);
+    directives.join("; ")
+}
+
+/// The `_headers` paths of a page URL (`pagePatterns` in src/site.ts).
+pub fn page_patterns(url: &str) -> Vec<String> {
+    if let Some(dir) = url.strip_suffix("index.html").filter(|d| d.ends_with('/')) {
+        return vec![dir.to_string(), url.to_string()];
+    }
+    if let Some(bare) = url.strip_suffix(".html") {
+        return vec![url.to_string(), bare.to_string()];
+    }
+    vec![url.to_string()]
+}
+
+/// `<meta http-equiv="Content-Security-Policy" content="…">`, with `&` and `"` of the policy escaped.
+pub fn csp_meta(policy: &str) -> String {
+    format!(
+        "<meta http-equiv=\"Content-Security-Policy\" content=\"{}\">",
+        policy.replace('&', "&amp;").replace('"', "&quot;")
+    )
+}
+
+// ---------------------------------------------------------------- MIME
+
+/// Check a MIME extension (`checkMimeExtension` in src/site.ts): `.` and `[A-Za-z0-9+_-]+`, lowercased.
+pub fn check_mime_extension(raw: &str, span: &SourceSpan) -> Result<String> {
+    let ok = raw.len() > 1
+        && raw.starts_with('.')
+        && raw[1..]
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'+' || b == b'_' || b == b'-');
+    if !ok {
+        return Err(SitefileError::at(
+            E_VALIDATION,
+            format!("MIME extension '{raw}' must be a dot and letters, digits, '+', '-' or '_' (e.g. .usdz)"),
+            span,
+        ));
+    }
+    Ok(raw.to_ascii_lowercase())
+}
+
+/// An RFC 6838 restricted name: an alphanumeric first character, then up to 126 of `[A-Za-z0-9!#$&^_.+-]`.
+fn restricted_name(s: &str) -> bool {
+    let b = s.as_bytes();
+    !b.is_empty()
+        && b.len() <= 127
+        && b[0].is_ascii_alphanumeric()
+        && b.iter()
+            .all(|c| c.is_ascii_alphanumeric() || b"!#$&^_.+-".contains(c))
+}
+
+/// Check a MIME media type (`checkMimeType` in src/site.ts): `type/subtype`, no parameters, lowercased.
+pub fn check_mime_type(raw: &str, span: &SourceSpan) -> Result<String> {
+    let ok = match raw.split_once('/') {
+        Some((t, s)) => restricted_name(t) && restricted_name(s),
+        None => false,
+    };
+    if !ok {
+        return Err(SitefileError::at(
+            E_VALIDATION,
+            format!("MIME type '{raw}' must be type/subtype (e.g. model/vnd.usdz+zip), without parameters"),
+            span,
+        ));
+    }
+    Ok(raw.to_ascii_lowercase())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
