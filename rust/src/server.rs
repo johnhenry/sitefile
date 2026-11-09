@@ -18,8 +18,13 @@ pub type LogFn = Arc<dyn Fn(&str) + Send + Sync>;
 
 #[derive(Clone, Default)]
 pub struct SiteServerOptions {
-    /// Fall back to `/index.html` for unknown extension-less paths (single-page apps).
+    /// Single-page apps: answer a page navigation ([`is_navigation`]) for a path nothing else
+    /// answers with the nearest app shell ([`spa_fallback`]). Never for subresources.
     pub spa: bool,
+    /// `--spa-exclude`: request paths (`*` matches any characters) that never fall back.
+    pub spa_exclude: Vec<String>,
+    /// `--spa-fallback`: the one file every fallback serves, instead of the nearest `200.html` or `index.html`.
+    pub spa_fallback: Option<String>,
     /// One access-log line per request: `METHOD /path STATUS BYTES MSms`.
     pub log: Option<LogFn>,
     /// Sent as `x-sitefile-server` so `servers` can tell its own servers from a reused port.
@@ -62,8 +67,8 @@ pub struct SiteServerOptions {
     pub max_connections_per_ip: usize,
     /// Count loopback clients against `max_connections_per_ip` too (tests only).
     pub limit_loopback: bool,
-    /// `--random-route`: the site answers only under this prefix (`/<random>`).
-    pub base_path: Option<String>,
+    /// `--random-route`: `base` is a secret, so `/` is a plain `404` instead of a redirect into it.
+    pub hide_base: bool,
     /// `--allow-ip`, `--deny-ip`: a non-loopback client they refuse gets `403` before anything else.
     pub ip_rules: Option<IpRules>,
     /// `X-Robots-Tag: noindex` on every response (non-loopback binds).
@@ -79,6 +84,10 @@ pub struct SiteServerOptions {
     pub gzip_cache: GzipCache,
     /// `--throttle`: response bandwidth and latency ([`parse_throttle`]).
     pub throttle: Option<Throttle>,
+    /// `--base /repo/`: serve the site under this path prefix (a GitHub Pages project site); `/`
+    /// redirects to it, `/repo` gets its slash, everything else is 404. Read per request (a
+    /// watched server takes it from the last good build); [`normalize_base`] makes the value.
+    pub base: Option<BaseFn>,
     /// `--country`: what `_redirects` `Country=` conditions match (there is no geolocation locally).
     pub country: Option<String>,
     /// Where file contents come from when the tree holds only digests (a zip served in
@@ -1774,6 +1783,68 @@ fn etag_matches(header: Option<&str>, etag: &str) -> bool {
     })
 }
 
+/// The app shell a `--spa` navigation to a missing path gets: `fallback` when given
+/// (`--spa-fallback`), else the `200.html` (Surge) or `index.html` of the request's directory or
+/// the closest parent that has one, so `/admin/users/5` gets `/admin/index.html` before
+/// `/index.html` (port of `spaFallback`).
+pub fn spa_fallback(
+    segs: &[String],
+    trailing: bool,
+    is_file: &dyn Fn(&str) -> bool,
+    fallback: Option<&str>,
+) -> Option<String> {
+    if let Some(f) = fallback {
+        return is_file(f).then(|| f.to_string());
+    }
+    let dirs = if trailing {
+        segs
+    } else {
+        &segs[..segs.len().saturating_sub(1)]
+    };
+    for n in (0..=dirs.len()).rev() {
+        let dir: String = dirs[..n].iter().map(|d| format!("{d}/")).collect();
+        for name in ["200.html", "index.html"] {
+            let p = format!("/{dir}{name}");
+            if is_file(&p) {
+                return Some(p);
+            }
+        }
+    }
+    None
+}
+
+/// The `--base` of a server, read per request.
+pub type BaseFn = Arc<dyn Fn() -> Option<String> + Send + Sync>;
+
+/// A `--base` value as `/a/b/` (segments percent-encoded like encodeURIComponent, NFC), `/` for
+/// none, or `None` when it is not a safe absolute path. The path of a URL
+/// (`https://user.github.io/repo/`) is taken as well (port of `normalizeBase`).
+pub fn normalize_base(raw: &str) -> Option<String> {
+    let n = http_prefix(raw);
+    let p = if n > 0 {
+        let rest = &raw[n..];
+        let auth_end = rest.find(['/', '?', '#']).unwrap_or(rest.len());
+        let after = &rest[auth_end..];
+        if after.starts_with('/') {
+            &after[..after.find(['?', '#']).unwrap_or(after.len())]
+        } else {
+            "/"
+        }
+    } else {
+        raw
+    };
+    let segs = if p.starts_with('/') {
+        safe_segments(p)
+    } else {
+        safe_segments(&format!("/{p}"))
+    }?;
+    if segs.is_empty() {
+        return Some("/".into());
+    }
+    let enc: Vec<String> = segs.iter().map(|s| encode_uri_component(s)).collect();
+    Some(format!("/{}/", enc.join("/")))
+}
+
 /// A tree path with each segment percent-encoded like encodeURIComponent.
 fn encode_path(p: &str) -> String {
     let enc: Vec<String> = p.split('/').map(encode_uri_component).collect();
@@ -2589,36 +2660,11 @@ pub fn respond(
     let q = url.find('?');
     let hash = url.find('#');
     let end = q.unwrap_or(url.len()).min(hash.unwrap_or(url.len()));
-    let mut raw_path = &url[..end];
+    let raw_path = &url[..end];
     let search = match (q, hash) {
         (None, _) => "",
         (Some(q), Some(h)) if h > q => &url[q..h],
         (Some(q), _) => &url[q..],
-    };
-    let prefix = options.base_path.as_deref();
-    if let Some(p) = prefix.filter(|_| !raw_path.starts_with("/__sitefile/")) {
-        // --random-route: only paths under the secret prefix exist (the reserved /__sitefile/ ones too).
-        if raw_path == p {
-            return finish(
-                301,
-                owned(vec![
-                    ("location", format!("{p}/{search}")),
-                    ("content-length", "0".into()),
-                ]),
-                None,
-            );
-        }
-        match raw_path.strip_prefix(p).filter(|r| r.starts_with('/')) {
-            Some(rest) => raw_path = rest,
-            None => return page(404, NOT_FOUND_PAGE, vec![]),
-        }
-    }
-    // A redirect target inside the site: under the secret prefix with --random-route.
-    let loc = |l: String| -> String {
-        match prefix {
-            Some(p) if l.starts_with('/') && !l.starts_with("//") => format!("{p}{l}"),
-            _ => l,
-        }
     };
     if options.live_reload.is_some() && raw_path == RELOAD_PATH {
         // GET is streamed by the connection loop; HEAD only gets the headers.
@@ -2648,10 +2694,51 @@ pub fn respond(
             Some(js.as_bytes().to_vec()),
         );
     }
-    let Some(segs) = safe_segments(raw_path) else {
+    let Some(all_segs) = safe_segments(raw_path) else {
         return page(400, BAD_REQUEST_PAGE, vec![]);
     };
     let trailing = raw_path.ends_with('/');
+    // `--base`: the site lives under `mount`; requests outside it are 404 (or redirected into it).
+    let base_now = match &options.base {
+        Some(b) => b(),
+        None => None,
+    };
+    let base_segs = base_now
+        .as_deref()
+        .and_then(safe_segments)
+        .unwrap_or_default();
+    // The `--base` prefix of generated `Location`s (`""` without one), percent-encoded.
+    let mount = if base_segs.is_empty() {
+        String::new()
+    } else {
+        let enc: Vec<String> = base_segs.iter().map(|s| encode_uri_component(s)).collect();
+        format!("/{}", enc.join("/"))
+    };
+    let mut segs = all_segs.clone();
+    if !base_segs.is_empty() {
+        let inside = all_segs.len() >= base_segs.len()
+            && base_segs.iter().zip(&all_segs).all(|(b, a)| a == b);
+        let to_mount = |status: u16| {
+            finish(
+                status,
+                owned(vec![
+                    ("location", format!("{mount}/{search}")),
+                    ("content-length", "0".into()),
+                ]),
+                None,
+            )
+        };
+        if inside && all_segs.len() == base_segs.len() && !trailing {
+            return to_mount(301);
+        }
+        if !inside && all_segs.is_empty() && !options.hide_base {
+            return to_mount(302);
+        }
+        if !inside {
+            return page(404, NOT_FOUND_PAGE, vec![]);
+        }
+        segs = all_segs[base_segs.len()..].to_vec();
+    }
     let vpath = format!("/{}", segs.join("/"));
     // `_headers` patterns match the request path (with its trailing slash).
     let custom = headers_for(
@@ -2897,11 +2984,16 @@ pub fn respond(
             let target = substitute_target(&r.to, &caps);
             if !is_rewrite_status(r.status) {
                 // A rule that matches query parameters passes on only what its target names.
-                let location = loc(if target.contains('?') || !r.query.is_empty() {
+                let target = if target.starts_with('/') {
+                    format!("{mount}{target}")
+                } else {
+                    target
+                };
+                let location = if target.contains('?') || !r.query.is_empty() {
                     target
                 } else {
                     format!("{target}{search}")
-                });
+                };
                 let note = format!(" \u{2192} {location} (_redirects:{})", r.line);
                 let mut res = finish(
                     r.status,
@@ -2934,7 +3026,7 @@ pub fn respond(
     let mut served = resolve(&vpath, trailing);
     if served.is_none() && !trailing && tree.is_directory(&vpath) {
         let enc: Vec<String> = segs.iter().map(|s| encode_uri_component(s)).collect();
-        let location = loc(format!("/{}/{search}", enc.join("/")));
+        let location = format!("{mount}/{}/{search}", enc.join("/"));
         return finish(
             301,
             owned(vec![("location", location), ("content-length", "0".into())]),
@@ -2950,18 +3042,24 @@ pub fn respond(
     // the page then resolve as they do at `/about`). `_redirects` rules for the path come first.
     if served.is_none() && trailing && !segs.is_empty() && is_file(&format!("{vpath}.html")) {
         let enc: Vec<String> = segs.iter().map(|s| encode_uri_component(s)).collect();
-        let location = loc(format!("/{}{search}", enc.join("/")));
+        let location = format!("{mount}/{}{search}", enc.join("/"));
         return finish(
             301,
             owned(vec![("location", location), ("content-length", "0".into())]),
             None,
         );
     }
-    if served.is_none() && options.spa {
-        let last = segs.last().map(String::as_str).unwrap_or("");
-        let has_ext = last.rfind('.').is_some_and(|i| i + 1 < last.len());
-        if !has_ext && is_file("/index.html") {
-            served = Some("/index.html".into());
+    if served.is_none() && options.spa && is_navigation(headers) {
+        let req_path = format!(
+            "{vpath}{}",
+            if trailing && !segs.is_empty() {
+                "/"
+            } else {
+                ""
+            }
+        );
+        if !options.spa_exclude.iter().any(|g| glob_match(g, &req_path)) {
+            served = spa_fallback(&segs, trailing, &is_file, options.spa_fallback.as_deref());
         }
     }
     if let Some(served) = served {
@@ -3761,13 +3859,70 @@ mod tests {
     }
 
     #[test]
-    fn spa_fallback_only_for_extensionless_paths() {
+    fn spa_fallback_by_navigation() {
+        let doc = [
+            ("sec-fetch-mode", "navigate"),
+            ("sec-fetch-dest", "document"),
+        ];
         with_server(true, |port, _| {
-            let r = get(port, "/some/client/route");
+            let r = req(port, "/some/client/route", "GET", &doc);
             assert_eq!((r.status, r.body.as_str()), (200, "<h1>home</h1>"));
-            assert_eq!(get(port, "/missing.js").status, 404);
+            assert_eq!(
+                req(port, "/users/jane.doe", "GET", &doc).body,
+                "<h1>home</h1>"
+            );
+            assert_eq!(
+                req(
+                    port,
+                    "/users/jane.doe",
+                    "GET",
+                    &[("accept", "text/html,*/*")]
+                )
+                .status,
+                200
+            );
+            let script = [
+                ("sec-fetch-mode", "no-cors"),
+                ("sec-fetch-dest", "script"),
+                ("accept", "*/*"),
+            ];
+            assert_eq!(req(port, "/assets/app.js", "GET", &script).status, 404);
+            assert_eq!(get(port, "/some/route").status, 404);
+            assert_eq!(req(port, "/about/team", "GET", &doc).body, "<h1>about</h1>");
             assert_eq!(get(port, "/app.js").body, "console.log(1)");
         });
+        // (johnhenry/sitefile#194) 200.html, nested app roots, exclusions and --spa-fallback.
+        let t = Tree::from_files(
+            [
+                ("/index.html", "root"),
+                ("/200.html", "surge shell"),
+                ("/admin/index.html", "admin"),
+                ("/api/x.json", "{}"),
+                ("/app.html", "app"),
+            ]
+            .map(|(p, c)| (p.to_string(), make_file(c.as_bytes().to_vec(), "t", 0o644))),
+        )
+        .unwrap();
+        let h: HashMap<String, String> = doc
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect();
+        let opts = SiteServerOptions {
+            spa: true,
+            spa_exclude: vec!["/api/*".into(), "/admin/raw".into()],
+            ..Default::default()
+        };
+        let nav = |o: &SiteServerOptions, u: &str| handle_request(&t, o, "GET", u, &h);
+        assert_eq!(body(&nav(&opts, "/route")), "surge shell");
+        assert_eq!(body(&nav(&opts, "/admin/users/5")), "admin");
+        assert_eq!(nav(&opts, "/api/missing").status, 404);
+        assert_eq!(nav(&opts, "/admin/raw").status, 404);
+        let one = SiteServerOptions {
+            spa: true,
+            spa_fallback: Some("/app.html".into()),
+            ..Default::default()
+        };
+        assert_eq!(body(&nav(&one, "/admin/users/5")), "app");
     }
 
     #[test]
@@ -3939,7 +4094,8 @@ mod tests {
     #[test]
     fn sharing_safety() {
         let opts = SiteServerOptions {
-            base_path: Some("/s3cr3t".into()),
+            base: Some(Arc::new(|| Some("/s3cr3t/".to_string()))),
+            hide_base: true,
             noindex: true,
             ..Default::default()
         };
@@ -3947,6 +4103,11 @@ mod tests {
         let h = HashMap::new();
         let get = |u: &str| handle_request(&t, &opts, "GET", u, &h);
         assert_eq!(get("/app.js").status, 404);
+        assert_eq!(
+            get("/").status,
+            404,
+            "the secret is not given away by a redirect"
+        );
         assert_eq!(get("/s3cr3t/app.js").status, 200);
         let r = get("/s3cr3t?x=1");
         assert_eq!(
@@ -4655,6 +4816,51 @@ mod tests {
             assert_eq!(at(&t, path).status, 404, "{path}");
         }
         assert_eq!(reason(308), "Permanent Redirect");
+    }
+
+    // johnhenry/sitefile#195 (test/server.test.ts)
+    #[test]
+    fn base_path_mount() {
+        assert_eq!(normalize_base("repo").as_deref(), Some("/repo/"));
+        assert_eq!(normalize_base("/a b//c/").as_deref(), Some("/a%20b/c/"));
+        assert_eq!(
+            normalize_base("https://user.github.io/repo/?x").as_deref(),
+            Some("/repo/")
+        );
+        assert_eq!(normalize_base("https://example.com").as_deref(), Some("/"));
+        assert_eq!(normalize_base("/../x"), None);
+        let t = Tree::from_files(
+            [
+                ("/index.html", "home"),
+                ("/docs/index.html", "docs"),
+                ("/about.html", "about"),
+                ("/404.html", "site 404"),
+                ("/_redirects", "/old /about 301\n/ext https://e.x/ 302\n"),
+            ]
+            .map(|(p, c)| (p.to_string(), make_file(c.as_bytes().to_vec(), "t", 0o644))),
+        )
+        .unwrap();
+        let opts = SiteServerOptions {
+            base: Some(Arc::new(|| Some("/repo/".to_string()))),
+            ..Default::default()
+        };
+        let get = |u: &str| handle_request(&t, &opts, "GET", u, &HashMap::new());
+        let r = get("/?q=1");
+        assert_eq!((r.status, r.header("location")), (302, Some("/repo/?q=1")));
+        let r = get("/repo");
+        assert_eq!((r.status, r.header("location")), (301, Some("/repo/")));
+        assert_eq!(body(&get("/repo/")), "home");
+        assert_eq!(body(&get("/repo/about")), "about");
+        assert_eq!(get("/repo/docs").header("location"), Some("/repo/docs/"));
+        assert_eq!(get("/repo/about/").header("location"), Some("/repo/about"));
+        assert_eq!(get("/repo/old").header("location"), Some("/repo/about"));
+        assert_eq!(get("/repo/ext").header("location"), Some("https://e.x/"));
+        let r = get("/repo/missing");
+        assert_eq!((r.status, body(&r)), (404, "site 404"));
+        let r = get("/about");
+        assert_eq!(r.status, 404);
+        assert!(body(&r).contains("404 Not Found"));
+        assert_eq!(get("/repository/").status, 404);
     }
 
     // johnhenry/sitefile#193 (the same site as test/server.test.ts)
