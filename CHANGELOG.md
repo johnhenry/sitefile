@@ -2,6 +2,22 @@
 
 ## Unreleased
 
+- **`serve` Host allow-list against DNS rebinding** (johnhenry/sitefile#190):
+  both servers answer `403` unless `Host` is `localhost`, `*.localhost` or an
+  IP address; `--allowed-host <name>` (repeatable; `.example.test` for
+  subdomains, `*` for any) adds names and is kept in the server record.
+- **`serve --base /repo/`** (johnhenry/sitefile#195): serves the site under
+  a path prefix (GitHub Pages project sites): `/` redirects to it, `/repo`
+  gets its slash, everything else is 404, and the server's redirects and
+  `_redirects` path targets stay under it. `serve --watch` defaults it to the
+  path of the EXPORT BASE URL. Kept in the server record and shown in URLs.
+  Both implementations.
+- **`import-config` reads what serve now understands** (johnhenry/sitefile#204,
+  after #193): `:placeholders` in sources and targets (Netlify, Vercel `:name`
+  segments, Firebase `:name` and `:name*`), Netlify `query` and `conditions`
+  (`Language`, `Country`, `Cookie`), and statuses 410 and 451 are now
+  translated rather than listed as unsupported. A target `:name` that the
+  source does not capture is still refused.
 - **`EXPORT … AS epub`** (johnhenry/sitefile#209): an EPUB 3 book of the
   site's XHTML pages (index first), with a generated package document and
   navigation document (or the site's `/nav.xhtml`), deterministic metadata
@@ -32,6 +48,13 @@
   writes a sitemap index with numbered parts above 50,000 URLs or 50 MiB.
   Both implementations, with conformance cases; example `examples/canonical`.
   hreflang alternates are not done yet.
+- **`--oci-layers <n>`** (johnhenry/sitefile#214): split an oci image's files
+  over `n` site layers (1-64, by a hash of each path) so pushing a new version
+  uploads only the layers whose files changed; `dev.sitefile.layers` in the
+  config marks them, and every reader (store, save, serve, push, pull,
+  `FROM image`) merges them. Default unchanged (one layer, same image IDs).
+  Both implementations; conformance `example/blog:oci-layers-*`,
+  `case/steps-oci-layers`.
 - **Identical `--help` in both CLIs**: the `--node` line now reads "default
   $SITEFILE_NODE, else the default Node, see docs/PLUGINS.md" in both. The
   default itself differs (the TypeScript CLI's own Node, `node` on `PATH` for

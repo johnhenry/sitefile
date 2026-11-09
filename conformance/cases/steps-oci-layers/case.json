@@ -1,0 +1,10 @@
+{
+  "stdout": true,
+  "steps": [
+    ["build", "${CTX}", "-o", "${OUT}/site.oci.tar", "--no-lockfile", "--oci-layers", "4", "-t", "layers:1"],
+    ["save", "layers:1", "-o", "${OUT}/saved"],
+    ["save", "layers:1", "-o", "${OUT}/saved.oci.tar"],
+    ["build", "${CTX}", "-o", "${OUT}/bad.oci.tar", "--no-lockfile", "--oci-layers", "65"]
+  ],
+  "outputs": []
+}

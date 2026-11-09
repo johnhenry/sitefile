@@ -26,6 +26,7 @@ export async function storeBuildAsImage(
     readonly contextDir: string;
     readonly ociRoot?: string | undefined;
     readonly ociCompression?: OciCompression | undefined;
+    readonly ociLayers?: number | undefined;
     readonly platform?: string | undefined;
     readonly labels?: Readonly<Record<string, string>> | undefined;
     readonly gitLabels?: boolean | undefined;
@@ -39,6 +40,7 @@ export async function storeBuildAsImage(
   const { id } = await store.addImage(result.output, {
     root: info.ociRoot ?? result.plan.exportRoot,
     compression: info.ociCompression ?? sitefileCompression(result.plan, 'oci'),
+    ...(info.ociLayers !== undefined ? { layers: info.ociLayers } : {}),
     platform: info.platform,
     epoch: sourceDateEpoch(),
     base: result.base,

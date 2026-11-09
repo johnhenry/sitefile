@@ -28,8 +28,7 @@ use crate::digest::sha256;
 use crate::error::{ErrorCode::*, Result, SitefileError};
 use crate::export::exporter::random_hex;
 use crate::export::oci::{
-    blob_path_of, decode_index, extract_image_files, media, parse_config, parse_manifest,
-    site_layer_index,
+    blob_path_of, decode_index, media, parse_config, parse_manifest, site_layer_indices,
 };
 use crate::resources::archive::{
     extract_archive, open_zip_file, os_metadata_warning, without_os_metadata,
@@ -90,6 +89,9 @@ pub struct ServerState {
         skip_serializing_if = "Option::is_none"
     )]
     pub spa_fallback: Option<String>,
+    /// `--base`: the path prefix the site is served under, `/repo/` (absent: `/`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub base: Option<String>,
     /// `--keep-os-metadata`: serve a directory's or archive's OS metadata files too.
     #[serde(
         default,
@@ -97,6 +99,9 @@ pub struct ServerState {
         skip_serializing_if = "std::ops::Not::not"
     )]
     pub keep_os_metadata: bool,
+    /// `--allowed-host` names (localhost names and IP addresses are always allowed).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub allowed_hosts: Vec<String>,
     /// `--country`: what `_redirects` `Country=` conditions match (absent: none matches).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub country: Option<String>,
@@ -316,7 +321,11 @@ impl ServerRegistry {
             state: s.clone(),
             status: if running { "running" } else { "exited" },
             url: if s.ready {
-                url_of(&s.host, s.port)
+                format!(
+                    "{}{}",
+                    url_of(&s.host, s.port),
+                    &s.base.as_deref().unwrap_or("/")[1..]
+                )
             } else {
                 String::new()
             },
@@ -644,19 +653,28 @@ fn oci_archive_tree(layout: &Tree, origin: &str, limits: &ArchiveLimits) -> Resu
         .map_err(|_| bad("OCI archive's first manifest is not an image manifest".into()))?;
     let cfg = parse_config(&blob(&m.config.digest, m.config.size)?)
         .map_err(|_| bad("OCI archive's image config is corrupt".into()))?;
-    let layer = site_layer_index(&m, &cfg)
-        .and_then(|i| m.layers.get(i))
-        .filter(|l| l.media_type == media::LAYER || l.media_type == media::LAYER_TAR);
-    let layer_bytes = match layer {
-        Some(l) => {
+    let layers: Vec<&crate::export::oci::Descriptor> = site_layer_indices(&m, &cfg)
+        .into_iter()
+        .map(|i| &m.layers[i])
+        .collect();
+    // An empty list makes extract_site_layers report "not a Sitefile image".
+    let mut blobs: Vec<Vec<u8>> = Vec::new();
+    if layers
+        .iter()
+        .all(|l| l.media_type == media::LAYER || l.media_type == media::LAYER_TAR)
+    {
+        for l in &layers {
             let b = blob(&l.digest, l.size)?;
-            // Hold the site layer to the archive limits before it is fully decoded.
+            // Hold each site layer to the archive limits before it is fully decoded.
             extract_archive(&b, origin, limits, None)?;
-            b
+            blobs.push(b);
         }
-        None => Vec::new(), // extract_image_files reports "not a Sitefile image"
-    };
-    extract_image_files(&m, &cfg, &layer_bytes, origin)
+    }
+    if layers.is_empty() {
+        blobs.push(Vec::new());
+    }
+    let refs: Vec<&[u8]> = blobs.iter().map(Vec::as_slice).collect();
+    crate::export::oci::extract_site_layers(&m, &cfg, &refs, origin, None)
 }
 
 /// The tree a server state serves.
@@ -893,8 +911,12 @@ pub struct DetachedServe {
     pub spa_exclude: Vec<String>,
     /// `--spa-fallback`.
     pub spa_fallback: Option<String>,
+    /// `--base` (normalized; `None` for `/`).
+    pub base: Option<String>,
     /// `--keep-os-metadata`.
     pub keep_os_metadata: bool,
+    /// `--allowed-host` names, lowercased (see [`crate::server::parse_allowed_host`]).
+    pub allowed_hosts: Vec<String>,
     /// `--country`.
     pub country: Option<String>,
     /// `--strict-site-files`.
@@ -916,7 +938,9 @@ impl DetachedServe {
             spa: false,
             spa_exclude: Vec::new(),
             spa_fallback: None,
+            base: None,
             keep_os_metadata: false,
+            allowed_hosts: Vec::new(),
             country: None,
             strict_site_files: false,
             project: None,
@@ -969,7 +993,9 @@ pub fn serve_detached_with(
         spa: serve.spa,
         spa_exclude: serve.spa_exclude.clone(),
         spa_fallback: serve.spa_fallback.clone(),
+        base: serve.base.clone(),
         keep_os_metadata: serve.keep_os_metadata,
+        allowed_hosts: serve.allowed_hosts.clone(),
         country: serve.country.clone(),
         strict_site_files: serve.strict_site_files,
         host: serve.bind.host.clone(),
@@ -1182,7 +1208,9 @@ mod tests {
             spa: false,
             spa_exclude: Vec::new(),
             spa_fallback: None,
+            base: None,
             keep_os_metadata: false,
+            allowed_hosts: Vec::new(),
             country: None,
             strict_site_files: false,
             bind: Bind {

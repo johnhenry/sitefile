@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { gunzipSync } from 'node:zlib';
@@ -49,7 +50,12 @@ export const ANN = {
   files: 'dev.sitefile.files',
   size: 'dev.sitefile.size',
   stored: 'dev.sitefile.created',
+  /** The number of site layers (`--oci-layers`, issue #214); absent means one. */
+  layers: 'dev.sitefile.layers',
 } as const;
+
+/** Most site layers `--oci-layers` accepts. */
+export const MAX_OCI_LAYERS = 64;
 const EPOCH_ISO = '1970-01-01T00:00:00Z';
 
 export interface OciOptions {
@@ -72,6 +78,11 @@ export interface OciOptions {
   readonly base?: BaseImage | undefined;
   /** Site layer encoding: gzip (default, `tar+gzip`) or none (plain `tar`). Base layers are kept as they are. */
   readonly compression?: OciCompression | undefined;
+  /**
+   * Split the site's files over this many layers (default 1, at most {@link MAX_OCI_LAYERS}), by a hash
+   * of each path, so a push after a small change uploads only the layers that changed (issue #214).
+   */
+  readonly layers?: number | undefined;
 }
 
 /** A resolved base image: one platform manifest, its config and layers. */
@@ -104,6 +115,13 @@ export interface OciImage {
   readonly root: string;
   /** Layers below the site layer (from BASE), already normalized to OCI media types. Empty otherwise. */
   readonly baseLayers: readonly Descriptor[];
+  /** With `layers` > 1: the site layers after the first (`layerBytes`), by digest, in layer order. */
+  readonly extraLayers?: ReadonlyMap<string, Uint8Array>;
+}
+
+/** The site layer (0-based, of `n`) a file belongs to: the first 4 bytes of SHA-256 of its path, mod n. */
+export function layerOf(path: string, n: number): number {
+  return n <= 1 ? 0 : createHash('sha256').update(path).digest().readUInt32BE(0) % n;
 }
 
 /** JSON with sorted keys and no whitespace. */
@@ -140,14 +158,21 @@ function isoOf(epoch: number | undefined): string {
 export function buildOciImage(tree: Tree, options: OciOptions = {}): OciImage {
   const root = normalizeOciRoot(options.root);
   const { os, arch } = parsePlatform(options.platform);
-  const layerTree = Tree.fromFiles(tree.mountedAt(root));
   const segs = root === '/' ? [] : root.slice(1).split('/');
   const dirs = segs.map((_, i) => segs.slice(0, i + 1).join('/'));
-  const tar = writeTar(layerTree, { epoch: options.epoch ?? 0, dirs });
   const uncompressed = options.compression === 'none';
-  const layerBytes = uncompressed ? tar : gzipTar(tar);
-  const diffId = sha256(tar);
-  const layerDigest = uncompressed ? diffId : sha256(layerBytes);
+  const n = options.layers ?? 1;
+  if (!Number.isSafeInteger(n) || n < 1 || n > MAX_OCI_LAYERS) throw new SitefileError('E_USAGE', `--oci-layers expects an integer from 1 to ${MAX_OCI_LAYERS}`);
+  // Every layer carries the root's parent directories; with one layer this is the image it always was.
+  const parts: Array<Array<[string, FileNode]>> = Array.from({ length: n }, () => []);
+  for (const [p, f] of tree.entries()) parts[layerOf(p, n)]!.push([p, f]);
+  const site = parts.map((files) => {
+    const tar = writeTar(Tree.fromFiles(Tree.fromFiles(files).mountedAt(root)), { epoch: options.epoch ?? 0, dirs });
+    const bytes = uncompressed ? tar : gzipTar(tar);
+    const diffId = sha256(tar);
+    return { bytes, diffId, digest: uncompressed ? diffId : sha256(bytes) };
+  });
+  const { bytes: layerBytes, diffId, digest: layerDigest } = site[0]!;
   const size = tree.entries().reduce((n, [, f]) => n + f.bytes.byteLength, 0);
 
   const base = options.base;
@@ -156,6 +181,7 @@ export function buildOciImage(tree: Tree, options: OciOptions = {}): OciImage {
   const labels: Record<string, string> = {};
   if (isRecord(baseInner.Labels)) for (const [k, v] of Object.entries(baseInner.Labels)) if (typeof v === 'string') labels[k] = v;
   labels[ANN.root] = root;
+  if (n > 1) labels[ANN.layers] = String(n);
   if (options.title) labels[ANN.title] = options.title;
   if (options.source) labels[ANN.source] = options.source;
   if (options.revision) labels[ANN.revision] = options.revision;
@@ -180,7 +206,7 @@ export function buildOciImage(tree: Tree, options: OciOptions = {}): OciImage {
       os: base && typeof baseCfg.os === 'string' ? baseCfg.os : os,
       created,
       config: { ...baseInner, Labels: labels },
-      rootfs: { type: 'layers', diff_ids: [...baseDiffIds, diffId] },
+      rootfs: { type: 'layers', diff_ids: [...baseDiffIds, ...site.map((l) => l.diffId)] },
       history: [...baseHistory, { created: isoOf(options.epoch), created_by: 'sitefile', comment: 'static site files', author: 'sitefile' }],
     }),
   );
@@ -196,11 +222,12 @@ export function buildOciImage(tree: Tree, options: OciOptions = {}): OciImage {
       schemaVersion: 2,
       mediaType: MEDIA.manifest,
       config: { mediaType: MEDIA.config, digest: configDigest, size: configBytes.byteLength },
-      layers: [...baseLayers, { mediaType: uncompressed ? MEDIA.layerTar : MEDIA.layer, digest: layerDigest, size: layerBytes.byteLength }],
+      layers: [...baseLayers, ...site.map((l) => ({ mediaType: uncompressed ? MEDIA.layerTar : MEDIA.layer, digest: l.digest, size: l.bytes.byteLength }))],
       annotations,
     }),
   );
-  return { manifestBytes, manifestDigest: sha256(manifestBytes), configBytes, configDigest, layerBytes, layerDigest, diffId, root, baseLayers };
+  const extraLayers = n > 1 ? new Map(site.slice(1).map((l) => [l.digest, l.bytes] as const)) : undefined;
+  return { manifestBytes, manifestDigest: sha256(manifestBytes), configBytes, configDigest, layerBytes, layerDigest, diffId, root, baseLayers, ...(extraLayers ? { extraLayers } : {}) };
 }
 
 function isRecord(v: unknown): v is Record<string, unknown> {
@@ -279,7 +306,7 @@ export function blobPathOf(digest: string): string {
  * without a name, and their blobs are included.
  */
 export function layoutTree(
-  img: Pick<OciImage, 'manifestBytes' | 'manifestDigest' | 'configBytes' | 'configDigest' | 'layerBytes' | 'layerDigest'>,
+  img: Pick<OciImage, 'manifestBytes' | 'manifestDigest' | 'configBytes' | 'configDigest' | 'layerBytes' | 'layerDigest' | 'extraLayers'>,
   refName?: string,
   /** Blobs of the layers below the site layer (digest -> bytes), for images built on a BASE. */
   baseBlobs: ReadonlyMap<string, Uint8Array> = new Map(),
@@ -289,7 +316,7 @@ export function layoutTree(
     { digest: img.manifestDigest, size: img.manifestBytes.byteLength, ...(refName ? { extra: exportNameAnnotations(refName) } : {}) },
     ...referrers.map((r) => ({ digest: r.descriptor.digest, size: r.descriptor.size, artifactType: r.descriptor.artifactType, extra: r.descriptor.annotations })),
   ];
-  const blobs = new Map<string, Uint8Array>([[img.manifestDigest, img.manifestBytes], [img.configDigest, img.configBytes], [img.layerDigest, img.layerBytes], ...baseBlobs]);
+  const blobs = new Map<string, Uint8Array>([[img.manifestDigest, img.manifestBytes], [img.configDigest, img.configBytes], [img.layerDigest, img.layerBytes], ...(img.extraLayers ?? []), ...baseBlobs]);
   for (const r of referrers) for (const [d, b] of r.blobs) blobs.set(d, b);
   const files: Array<[string, FileNode]> = [
     ['/oci-layout', makeFile(OCI_LAYOUT_BYTES, 'oci')],
@@ -363,8 +390,22 @@ export function parseConfig(bytes: Uint8Array): ParsedConfig {
  * carries the `dev.sitefile.root` label (built with BASE). -1 when the image is not a Sitefile image.
  */
 export function siteLayerIndex(m: ParsedManifest, cfg: ParsedConfig): number {
-  if (m.layers.length === 1) return 0;
-  return m.layers.length > 1 && cfg.labels[ANN.root] !== undefined ? m.layers.length - 1 : -1;
+  return siteLayerIndices(m, cfg)[0] ?? -1;
+}
+
+/**
+ * Indices of every layer holding site files: the last `dev.sitefile.layers` layers (`--oci-layers`),
+ * else the one {@link siteLayerIndex} names; empty when the image is not a Sitefile image.
+ */
+export function siteLayerIndices(m: ParsedManifest, cfg: ParsedConfig): number[] {
+  const raw = cfg.labels[ANN.layers];
+  if (raw !== undefined && cfg.labels[ANN.root] !== undefined) {
+    const n = /^[1-9][0-9]{0,1}$/.test(raw) ? Number(raw) : 0;
+    if (n < 1 || n > MAX_OCI_LAYERS || n > m.layers.length) return [];
+    return Array.from({ length: n }, (_, i) => m.layers.length - n + i);
+  }
+  if (m.layers.length === 1) return [0];
+  return m.layers.length > 1 && cfg.labels[ANN.root] !== undefined ? [m.layers.length - 1] : [];
 }
 
 /**
@@ -372,27 +413,40 @@ export function siteLayerIndex(m: ParsedManifest, cfg: ParsedConfig): number {
  * `layerBytes` are the compressed blob bytes. Returns the tree under the image's root (its
  * `dev.sitefile.root` label, else `/`), or under `rootOverride` (`FROM image … AT <dir>`).
  */
-export async function extractImageFiles(m: ParsedManifest, cfg: ParsedConfig, layerBytes: Uint8Array, origin: string, rootOverride?: string): Promise<Tree> {
-  const idx = siteLayerIndex(m, cfg);
-  const layer = m.layers[idx];
-  if (idx < 0 || !layer || (layer.mediaType !== MEDIA.layer && layer.mediaType !== MEDIA.layerTar)) {
+export async function extractImageFiles(
+  m: ParsedManifest,
+  cfg: ParsedConfig,
+  layerBytes: Uint8Array | readonly Uint8Array[],
+  origin: string,
+  rootOverride?: string,
+): Promise<Tree> {
+  const blobs = layerBytes instanceof Uint8Array ? [layerBytes] : layerBytes;
+  const indices = siteLayerIndices(m, cfg);
+  if (indices.length === 0 || indices.length !== blobs.length || indices.some((i) => m.layers[i]?.mediaType !== MEDIA.layer && m.layers[i]?.mediaType !== MEDIA.layerTar)) {
     throw new SitefileError('E_STORE', `${origin}: not a Sitefile image (only single-layer tar or tar+gzip images, or images built with BASE, hold site files)`);
   }
-  if (sha256(layerBytes) !== layer.digest || layerBytes.byteLength !== layer.size) {
-    throw new SitefileError('E_STORE', `${origin}: layer blob does not match its digest`);
-  }
-  let tar: Uint8Array = layerBytes;
-  if (layer.mediaType === MEDIA.layer) {
-    try {
-      tar = new Uint8Array(gunzipSync(layerBytes));
-    } catch (e) {
-      throw new SitefileError('E_STORE', `${origin}: layer is not valid gzip`, undefined, { cause: e });
-    }
-  }
-  if (sha256(tar) !== cfg.diffIds[idx]) throw new SitefileError('E_STORE', `${origin}: layer content does not match the config diff_id`);
   const root = rootOverride ?? cfg.labels[ANN.root] ?? '/';
-  const all = await extractArchive(tar, origin, { maxEntries: 1_000_000, maxTotalBytes: 8 * 2 ** 30, maxRatio: Number.MAX_SAFE_INTEGER });
-  return all.subtree(normalizeVirtual(root).path);
+  let files: Array<readonly [string, FileNode]> = [];
+  for (const [k, idx] of indices.entries()) {
+    const layer = m.layers[idx]!;
+    const bytes = blobs[k]!;
+    if (sha256(bytes) !== layer.digest || bytes.byteLength !== layer.size) {
+      throw new SitefileError('E_STORE', `${origin}: layer blob does not match its digest`);
+    }
+    let tar: Uint8Array = bytes;
+    if (layer.mediaType === MEDIA.layer) {
+      try {
+        tar = new Uint8Array(gunzipSync(bytes));
+      } catch (e) {
+        throw new SitefileError('E_STORE', `${origin}: layer is not valid gzip`, undefined, { cause: e });
+      }
+    }
+    if (sha256(tar) !== cfg.diffIds[idx]) throw new SitefileError('E_STORE', `${origin}: layer content does not match the config diff_id`);
+    const all = await extractArchive(tar, origin, { maxEntries: 1_000_000, maxTotalBytes: 8 * 2 ** 30, maxRatio: Number.MAX_SAFE_INTEGER });
+    files = files.concat(all.subtree(normalizeVirtual(root).path).entries());
+  }
+  // Site layers hold disjoint paths; were one repeated, the upper layer wins, as in a container.
+  return Tree.empty.withFiles(files, 'overwrite');
 }
 
 /**
