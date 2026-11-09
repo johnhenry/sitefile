@@ -1,0 +1,3 @@
+FROM scratch
+LANGUAGES en english
+EXPORT /

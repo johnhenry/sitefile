@@ -1,0 +1,3 @@
+FROM scratch
+LANGUAGES en fr EN
+EXPORT /

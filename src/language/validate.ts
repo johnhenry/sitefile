@@ -57,6 +57,8 @@ export function operandsOf(ins: Instruction): Operand[] {
       return [...ins.patterns, ...(ins.manifest ? [ins.manifest] : [])];
     case 'CANONICAL':
       return [ins.base];
+    case 'LANGUAGES':
+      return [...ins.codes, ...(ins.default ? [ins.default] : [])];
     case 'PRECOMPRESS':
       return [...ins.patterns, ...(ins.min ? [ins.min] : [])];
     case 'ROBOTS':
@@ -291,6 +293,7 @@ export function validate(instructions: readonly Instruction[], file: string): Pr
       case 'MIME':
       case 'FINGERPRINT':
       case 'CANONICAL':
+      case 'LANGUAGES':
       case 'PRECOMPRESS':
       case 'ROBOTS':
       case 'SECURITY_TXT':

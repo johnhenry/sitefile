@@ -18,7 +18,7 @@ const NOT_YET: [&str; 5] = ["REMOVE", "GENERATE", "ASSERT", "META", "EXEC"];
 // (`crate::lsp`) completes and documents them from the same lists.
 
 /// Every instruction keyword `parse_instruction` accepts.
-pub const INSTRUCTIONS: [&str; 24] = [
+pub const INSTRUCTIONS: [&str; 25] = [
     "FROM",
     "STAGE",
     "ARG",
@@ -35,6 +35,7 @@ pub const INSTRUCTIONS: [&str; 24] = [
     "HEADER",
     "FINGERPRINT",
     "CANONICAL",
+    "LANGUAGES",
     "PRECOMPRESS",
     "ROBOTS",
     "SECURITY_TXT",
@@ -74,6 +75,8 @@ pub const FEED_CLAUSES: [&str; 4] = ["BASE", "LINK", "TO", "TITLE"];
 pub const FINGERPRINT_CLAUSES: [&str; 2] = ["MANIFEST", "INTEGRITY"];
 /// Clauses of CANONICAL, in this order (`BASE` is required).
 pub const CANONICAL_CLAUSES: [&str; 2] = ["BASE", "PRETTY"];
+/// Clauses after `LANGUAGES <code>…`.
+pub const LANGUAGES_CLAUSES: [&str; 1] = ["DEFAULT"];
 /// Sidecar formats PRECOMPRESS knows; only gzip has an encoder (`crate::deflate`, shared with the TypeScript).
 pub const PRECOMPRESS_FORMATS: [&str; 3] = ["gzip", "br", "zstd"];
 /// Clauses after `PRECOMPRESS <pattern>…`.
@@ -186,6 +189,7 @@ fn parse_instruction(c: &mut Cursor) -> Result<Instruction> {
         "HEADER" => parse_header(c, span),
         "FINGERPRINT" => parse_fingerprint(c, span),
         "CANONICAL" => parse_canonical(c, span),
+        "LANGUAGES" => parse_languages(c, span),
         "PRECOMPRESS" => parse_precompress(c, span),
         "ROBOTS" => parse_robots(c, span),
         "SECURITY_TXT" => parse_security_txt(c, span),
@@ -1168,6 +1172,31 @@ fn parse_canonical(c: &mut Cursor, span: SourceSpan) -> Result<Instruction> {
     let pretty = c.keyword("PRETTY");
     c.expect_end()?;
     Ok(Instruction::Canonical { span, base, pretty })
+}
+
+/// `LANGUAGES <code>… [DEFAULT <code>]`
+fn parse_languages(c: &mut Cursor, span: SourceSpan) -> Result<Instruction> {
+    let mut codes = Vec::new();
+    while !c.at_end() && !c.peek_keyword("DEFAULT") {
+        codes.push(c.operand("language code")?);
+    }
+    if codes.is_empty() {
+        return Err(c.error(
+            E_SYNTAX,
+            "expected a language code (LANGUAGES en fr de DEFAULT en)",
+        ));
+    }
+    let default = if c.keyword("DEFAULT") {
+        Some(c.operand("default language code")?)
+    } else {
+        None
+    };
+    c.expect_end()?;
+    Ok(Instruction::Languages {
+        span,
+        codes,
+        default,
+    })
 }
 
 /// `PRECOMPRESS [--overwrite] [gzip]… <pattern>… [MIN <bytes>]`

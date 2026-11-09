@@ -48,6 +48,10 @@
         "named": true
       },
       {
+        "type": "languages_instruction",
+        "named": true
+      },
+      {
         "type": "let_instruction",
         "named": true
       },
@@ -1305,6 +1309,64 @@
       "source": {
         "multiple": false,
         "required": true,
+        "types": [
+          {
+            "type": "path",
+            "named": true
+          },
+          {
+            "type": "raw_string",
+            "named": true
+          },
+          {
+            "type": "string",
+            "named": true
+          },
+          {
+            "type": "url",
+            "named": true
+          },
+          {
+            "type": "word",
+            "named": true
+          }
+        ]
+      }
+    }
+  },
+  {
+    "type": "languages_instruction",
+    "named": true,
+    "fields": {
+      "code": {
+        "multiple": true,
+        "required": true,
+        "types": [
+          {
+            "type": "path",
+            "named": true
+          },
+          {
+            "type": "raw_string",
+            "named": true
+          },
+          {
+            "type": "string",
+            "named": true
+          },
+          {
+            "type": "url",
+            "named": true
+          },
+          {
+            "type": "word",
+            "named": true
+          }
+        ]
+      },
+      "default": {
+        "multiple": false,
+        "required": false,
         "types": [
           {
             "type": "path",
@@ -3116,6 +3178,10 @@
     "named": false
   },
   {
+    "type": "DEFAULT",
+    "named": false
+  },
+  {
     "type": "DESC",
     "named": false
   },
@@ -3193,6 +3259,10 @@
   },
   {
     "type": "KEY",
+    "named": false
+  },
+  {
+    "type": "LANGUAGES",
     "named": false
   },
   {

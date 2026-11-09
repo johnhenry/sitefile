@@ -927,7 +927,7 @@ the manifest: a listed file that is absent is `missing`, one with another size o
 file the manifest does not list is `extra`. It prints one line per difference (`OK: N files match <root>`
 when there is none) and fails with `E_INTEGRITY`, exit 1, when there is any. A directory is read like a
 build context: hidden files count, `.git` is skipped, symlinks must stay inside it, and a manifest file
-inside the directory is not counted as extra. An archive (zip, tar, tar.gz, wbn, OCI archive) is read from
+inside the directory is not counted as extra. An archive (zip, tar, tar.gz, tar.zst, wbn, OCI archive) is read from
 its bytes with the default archive limits. An image needs no manifest: without one, verify checks every
 stored blob against its digest. The manifest itself is checked first: its root must match its files.
 
@@ -970,7 +970,7 @@ sitefile build . -o dist-v2 --experimental-dictionary dist-v1     # or: --experi
 ## Comparing builds: `sitefile diff`
 
 `sitefile diff <a> <b> [--json] [--exit-code]` lists what changed going from `<a>` to `<b>`. Each side is
-a directory, an archive file (zip, tar, tar.gz, wbn, OCI archive) or an image reference or ID, read the
+a directory, an archive file (zip, tar, tar.gz, tar.zst, wbn, OCI archive) or an image reference or ID, read the
 way `verify` reads it (hidden files count, `.git` is skipped). Files are compared by digest and mode, never
 by timestamp:
 
@@ -1231,7 +1231,7 @@ served (`--json` calls it `site`).
 `../` or `/`, or ending in `/`) read once at start through the sandboxed local reader: a symlink leaving the
 directory is an error, and hidden files (`.git`, `.env`, ... except `.well-known`) are not served.
 
-`serve` also serves an **archive file**: `sitefile serve site.zip`, `./site.tar`, `site.tgz` (`.tar.gz`),
+`serve` also serves an **archive file**: `sitefile serve site.zip`, `./site.tar`, `site.tgz` (`.tar.gz`), `site.tar.zst` (`.tzst`),
 `site.wbn`, or an OCI image archive (`site.oci.tar`, as `build -o x.oci.tar` and `save` write it). A path-like
 argument (as above) that is a regular file is an archive; a bare name is an image reference first, and an archive
 file only when no image has that name. The format is read from the bytes, never the extension, and the file is
@@ -1245,9 +1245,9 @@ directory or a zip, tar or Web Bundle is also served without OS metadata files (
 `server restart`). So a Finder-made zip (`site/` plus `__MACOSX/`) serves as the single folder `site/`. An OCI
 archive serves the first image in its `index.json` exactly as that image would be served from the store, after
 every blob it reads is checked against its digest and the site layer against the same limits. A file that is
-none of these is `error[E_TYPE]: <file>: not a recognized archive (expected tar, tar.gz, zip or web bundle)`.
-An xz, zstd or bzip2 stream (`.tar.xz`, `.tar.zst`, `.tar.bz2`), a 7z or a RAR archive is named instead, with
-what to do: `(it is zstd-compressed, e.g. .tar.zst; recompress it as .tar.gz or zip)`.
+none of these is `error[E_TYPE]: <file>: not a recognized archive (expected tar, tar.gz, tar.zst, zip or web bundle)`.
+An xz or bzip2 stream (`.tar.xz`, `.tar.bz2`), a 7z or a RAR archive is named instead, with
+what to do: `(it is xz-compressed, e.g. .tar.xz; recompress it as .tar.gz or zip)`.
 In a server record (`$SITEFILE_HOME/servers/<id>.json`) the source is `{"kind": "archive", "path": ...}`, next
 to `image` (`imageId`) and `dir` (`path`).
 A zip is served **in place**: its central directory and local headers are checked at start and every entry is

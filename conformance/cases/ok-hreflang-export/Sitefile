@@ -1,0 +1,16 @@
+# Language folders are read below the EXPORT path for CANONICAL; LANGUAGES may come after it.
+ARG A = "en"
+ARG B = "fr"
+FROM scratch
+COPY <<P /www/en/index.html
+<html><head></head></html>
+P
+COPY <<P /www/fr/index.html
+<html><head></head></html>
+P
+COPY <<P /en/outside.html
+<html><head></head></html>
+P
+CANONICAL BASE https://example.com/site/
+LANGUAGES ${A} ${B}
+EXPORT /www

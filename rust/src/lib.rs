@@ -51,6 +51,7 @@ pub mod csp;
 pub mod export;
 pub mod export_for;
 pub mod fingerprint;
+pub mod hreflang;
 pub mod integrity;
 pub mod links;
 pub mod mime_data;

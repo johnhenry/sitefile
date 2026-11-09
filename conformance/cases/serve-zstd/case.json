@@ -1,0 +1,10 @@
+{
+  "command": "serve",
+  "site": "site.tar.zst",
+  "requests": [
+    { "target": "/", "expect": { "status": 200 } },
+    { "target": "/about/", "expect": { "status": 200 } },
+    { "target": "/css/site.css", "expect": { "status": 200 } },
+    { "target": "/missing", "expect": { "status": 404 } }
+  ]
+}

@@ -100,6 +100,12 @@ const examples = {
     assert.match(read(site, 'about.html'), /href="https:\/\/example.com\/about"/, 'PRETTY drops .html');
     assert.equal(read(site, 'old.html').match(/rel="canonical"/g).length, 1, 'a page with its own canonical link keeps it');
   },
+  hreflang() {
+    const site = build('hreflang');
+    assert.match(read(site, 'fr/about.html'), /<link rel="alternate" hreflang="en" href="https:\/\/example.com\/en\/about.html">/, 'a folder translation links the other language');
+    assert.match(read(site, 'blog/bonjour.html'), /hreflang="en" href="https:\/\/example.com\/blog\/hello.html"/, 'translationKey pairs posts with different slugs');
+    assert.match(read(site, 'sitemap.xml'), /<xhtml:link rel="alternate" hreflang="x-default" href="https:\/\/example.com\/en\/"\/>/, 'SITEMAP lists the alternates, with x-default');
+  },
   fileable() {
     // The plugin reads only its own folder, so fileable is vendored into it first (gitignored).
     execFileSync(process.execPath, [path.join(here, 'fileable', 'vendor.mjs')], { stdio: 'ignore' });

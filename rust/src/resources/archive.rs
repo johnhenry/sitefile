@@ -119,8 +119,15 @@ pub fn extract_archive(
         total: 0,
         retain: true,
     };
-    if is_gzip(bytes) {
-        let inner = gunzip(bytes, origin, limits, span)?;
+    let compression = if is_gzip(bytes) {
+        Some("gzip")
+    } else if is_zstd(bytes) {
+        Some("zstd")
+    } else {
+        None
+    };
+    if let Some(compression) = compression {
+        let inner = decompress(compression, bytes, origin, limits, span)?;
         // gzip(application/webbundle), as @johnhenry/fileable (encode="wbn") and packfile's toArchive() write it
         if is_web_bundle(&inner) {
             return web_bundle_to_tree(
@@ -132,7 +139,7 @@ pub fn extract_archive(
         if !is_tar(&inner) {
             return Err(SitefileError::new(
                 E_TYPE,
-                format!("{origin}: gzip content is not a tar archive"),
+                format!("{origin}: {compression} content is not a tar archive"),
                 span.cloned(),
             ));
         }
@@ -142,7 +149,8 @@ pub fn extract_archive(
     } else if is_tar(bytes) {
         read_tar(bytes, &mut c)?;
     } else {
-        let what = other_format(bytes).unwrap_or("expected tar, tar.gz, zip or web bundle");
+        let what =
+            other_format(bytes).unwrap_or("expected tar, tar.gz, tar.zst, zip or web bundle");
         return Err(SitefileError::new(
             E_TYPE,
             format!("{origin}: not a recognized archive ({what})"),
@@ -195,9 +203,6 @@ fn other_format(b: &[u8]) -> Option<&'static str> {
     if b.starts_with(&[0xfd, 0x37, 0x7a, 0x58, 0x5a, 0x00]) {
         return Some("it is xz-compressed, e.g. .tar.xz; recompress it as .tar.gz or zip");
     }
-    if b.starts_with(&[0x28, 0xb5, 0x2f, 0xfd]) {
-        return Some("it is zstd-compressed, e.g. .tar.zst; recompress it as .tar.gz or zip");
-    }
     if b.starts_with(b"BZh") && b.len() > 3 && (b'1'..=b'9').contains(&b[3]) {
         return Some("it is bzip2-compressed, e.g. .tar.bz2; recompress it as .tar.gz or zip");
     }
@@ -212,6 +217,10 @@ fn other_format(b: &[u8]) -> Option<&'static str> {
 
 fn is_gzip(b: &[u8]) -> bool {
     b.len() > 2 && b[0] == 0x1f && b[1] == 0x8b
+}
+/// A Zstandard frame (RFC 8878); a stream that starts with a skippable frame is not recognized.
+fn is_zstd(b: &[u8]) -> bool {
+    b.starts_with(&ZSTD_MAGIC)
 }
 fn is_zip(b: &[u8]) -> bool {
     b.len() >= 4
@@ -258,9 +267,11 @@ fn archive_path(name: &str, span: Option<&SourceSpan>) -> Result<String> {
     Ok(normalize_virtual(&format!("/{name}"), span, "archive entry")?.path)
 }
 
-// ------------------------------------------------------------------ gzip
+// ------------------------------------------------------------ gzip, zstd
 
-fn gunzip(
+/// Decompress a gzip or zstd stream within the limits (the same ratio and size caps for both).
+fn decompress(
+    kind: &str,
     bytes: &[u8],
     origin: &str,
     limits: &ArchiveLimits,
@@ -276,7 +287,13 @@ fn gunzip(
             .saturating_add(2)
             .saturating_mul(TAR_OVERHEAD_PER_ENTRY),
     );
-    match inflate_like_node(bytes, true, by_ratio.min(by_total)) {
+    let cap = by_ratio.min(by_total);
+    let out = if kind == "gzip" {
+        inflate_like_node(bytes, true, cap)
+    } else {
+        unzstd_like_node(bytes, cap)
+    };
+    match out {
         Inflated::Done(out) => Ok(out),
         Inflated::TooLarge => Err(too_large(origin, by_ratio <= by_total, limits, span)),
         Inflated::Corrupt => Err(corrupt(origin, "corrupt compressed data", span)),
@@ -351,6 +368,99 @@ fn inflate_like_node(input: &[u8], gzip: bool, cap: u64) -> Inflated {
             } else {
                 Inflated::Corrupt
             };
+        }
+    }
+}
+
+const ZSTD_MAGIC: [u8; 4] = [0x28, 0xb5, 0x2f, 0xfd];
+/// libzstd's default `ZSTD_d_windowLogMax` (27): Node refuses frames that need a larger window.
+const ZSTD_MAX_WINDOW: u64 = 1 << 27;
+
+/// A skippable frame's magic number: 0x184D2A50 to 0x184D2A5F, little-endian.
+fn is_zstd_skippable(b: &[u8]) -> bool {
+    b.len() >= 4 && (b[0] & 0xf0) == 0x50 && b[1..4] == [0x2a, 0x4d, 0x18]
+}
+
+/// The window a zstd frame header asks for (its content size for a single-segment frame), or
+/// None if the header is truncated.
+fn zstd_window_size(f: &[u8]) -> Option<u64> {
+    let desc = *f.get(4)?;
+    let single = desc & 0x20 != 0;
+    if !single {
+        let w = *f.get(5)?;
+        let log = 10 + u32::from(w >> 3);
+        let base = 1u64 << log;
+        return Some(base + (base >> 3) * u64::from(w & 7));
+    }
+    let did = [0usize, 1, 2, 4][usize::from(desc & 3)];
+    let fcs_len = [1usize, 2, 4, 8][usize::from(desc >> 6)];
+    let at = 5 + did;
+    let field = f.get(at..at + fcs_len)?;
+    let mut v = 0u64;
+    for (i, &b) in field.iter().enumerate() {
+        v |= u64::from(b) << (8 * i);
+    }
+    Some(if fcs_len == 2 { v + 256 } else { v })
+}
+
+/// What Node's `zlib.zstdDecompress` with `maxOutputLength: cap` makes of
+/// `input` (libzstd 1.5): frames are decoded one after another while the rest
+/// starts with a frame or skippable-frame magic number (anything else after a
+/// frame is ignored), a truncated frame, a bad checksum, a dictionary or a
+/// window over 128 MiB is an error, and more than `cap` bytes of output is
+/// TooLarge. Never holds much more than `cap` bytes of output.
+fn unzstd_like_node(input: &[u8], cap: u64) -> Inflated {
+    use ruzstd::decoding::{BlockDecodingStrategy, FrameDecoder};
+    let mut rest = input;
+    let mut out: Vec<u8> = Vec::new();
+    let mut dec = FrameDecoder::new();
+    loop {
+        if is_zstd_skippable(rest) {
+            let Some(len) = rest.get(4..8) else {
+                return Inflated::Corrupt;
+            };
+            let len = u32::from_le_bytes([len[0], len[1], len[2], len[3]]) as usize;
+            match rest.get(8 + len..) {
+                Some(r) => rest = r,
+                None => return Inflated::Corrupt,
+            }
+        } else {
+            match zstd_window_size(rest) {
+                Some(w) if w <= ZSTD_MAX_WINDOW => {}
+                _ => return Inflated::Corrupt,
+            }
+            if dec.init(&mut rest).is_err() {
+                return Inflated::Corrupt;
+            }
+            loop {
+                let before = (rest.len(), dec.blocks_decoded());
+                if dec
+                    .decode_blocks(&mut rest, BlockDecodingStrategy::UptoBytes(NODE_CHUNK))
+                    .is_err()
+                {
+                    return Inflated::Corrupt;
+                }
+                if let Some(chunk) = dec.collect() {
+                    out.extend_from_slice(&chunk);
+                }
+                if !dec.is_finished() && before == (rest.len(), dec.blocks_decoded()) {
+                    return Inflated::Corrupt; // truncated
+                }
+                if out.len() as u64 > cap {
+                    return Inflated::TooLarge;
+                }
+                if dec.is_finished() {
+                    break;
+                }
+            }
+            if let Some(stored) = dec.get_checksum_from_data() {
+                if dec.get_calculated_checksum() != Some(stored) {
+                    return Inflated::Corrupt;
+                }
+            }
+        }
+        if !(rest.starts_with(&ZSTD_MAGIC) || is_zstd_skippable(rest)) {
+            return Inflated::Done(out);
         }
     }
 }
@@ -2010,5 +2120,95 @@ pub(crate) mod tests {
         h.extend(b"abc");
         h.extend(vec![0u8; 509 + 1024]);
         assert_eq!(&*x(&h).unwrap().get("/f").unwrap().bytes, b"abc");
+    }
+
+    // ---------------------------------------------------------------- zstd (#221)
+
+    /// A zstd frame of raw blocks (no checksum), as `src/zstd.ts` writes when nothing matches.
+    fn zst(data: &[u8]) -> Vec<u8> {
+        crate::zstd::zstd_compress(data, b"")
+    }
+
+    #[test]
+    fn tar_zst_imports_like_tar_gz() {
+        let t = tar(&sample());
+        let want = paths(&x(&t).unwrap());
+        assert_eq!(paths(&x(&zst(&t)).unwrap()), want);
+        // Two frames around a skippable frame; then junk after the last frame, which libzstd ignores.
+        let mut multi = zst(&t[..512]);
+        multi.extend_from_slice(&[0x50, 0x2a, 0x4d, 0x18, 2, 0, 0, 0, 9, 9]);
+        multi.extend_from_slice(&zst(&t[512..]));
+        assert_eq!(paths(&x(&multi).unwrap()), want);
+        multi.extend_from_slice(b"junk");
+        assert_eq!(paths(&x(&multi).unwrap()), want);
+        // The committed fixtures (written by Node's libzstd, one with a checksum).
+        let fixture = include_bytes!("../../../conformance/cases/import-zstd/site.tar.zst");
+        assert_eq!(
+            paths(&x(fixture).unwrap()),
+            ["/about/index.html", "/css/site.css", "/index.html"]
+        );
+    }
+
+    #[test]
+    fn bad_zstd_streams_are_errors() {
+        let t = tar(&sample());
+        let z = zst(&t);
+        rejects(&z[..z.len() - 5], E_ARCHIVE, "corrupt compressed data", L);
+        rejects(&ZSTD_MAGIC, E_ARCHIVE, "corrupt compressed data", L);
+        let mut tail = z.clone();
+        tail.extend_from_slice(&ZSTD_MAGIC);
+        rejects(&tail, E_ARCHIVE, "corrupt compressed data", L);
+        // The first frame of the fixture has a checksum; flip its last byte.
+        let fixture = include_bytes!("../../../conformance/cases/import-zstd/site.tar.zst");
+        let first = fixture
+            .windows(4)
+            .skip(4)
+            .position(|w| w == [0x5e, 0x2a, 0x4d, 0x18])
+            .unwrap()
+            + 4;
+        let mut bad = fixture.to_vec();
+        bad[first - 1] ^= 1;
+        rejects(&bad, E_ARCHIVE, "corrupt compressed data", L);
+        // windowLog 27 is the most libzstd accepts by default; 28 is refused.
+        let raw = |w: u8| vec![0x28, 0xb5, 0x2f, 0xfd, 0x00, w, 0x09, 0, 0, 0x41];
+        rejects(
+            &raw(17 << 3),
+            E_TYPE,
+            "zstd content is not a tar archive",
+            L,
+        );
+        rejects(&raw(18 << 3), E_ARCHIVE, "corrupt compressed data", L);
+        rejects(&raw((17 << 3) | 7), E_ARCHIVE, "corrupt compressed data", L);
+        rejects(
+            &zst(b"not a tar"),
+            E_TYPE,
+            "zstd content is not a tar archive",
+            L,
+        );
+    }
+
+    #[test]
+    fn zstd_bombs_stop_at_the_limits() {
+        let zeros = tar(&[TarEntry {
+            data: vec![0; 4 << 20],
+            ..te("zeros", "")
+        }]);
+        let bomb = zst(&zeros);
+        rejects(&bomb, E_ARCHIVE_LIMIT, "compression ratio exceeds 100:1", L);
+        let small = ArchiveLimits {
+            max_total_bytes: 100,
+            max_entries: 1,
+            ..L
+        };
+        rejects(
+            &zst(&tar(&[te("big", &"x".repeat(5000))])),
+            E_ARCHIVE_LIMIT,
+            "expands beyond 100 bytes",
+            small,
+        );
+        assert!(!matches!(
+            unzstd_like_node(&bomb, 1 << 20),
+            Inflated::Done(_)
+        ));
     }
 }

@@ -1,0 +1,5 @@
+# A .tzst cut short (#221).
+FROM scratch
+IMPORT s FROM ./site.tzst AS tree
+COPY s:/ /
+EXPORT /

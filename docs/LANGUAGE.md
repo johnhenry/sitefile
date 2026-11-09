@@ -851,8 +851,50 @@ use `${NAME}`.
   with no `</head>` is left alone, and one warning names those pages. Comments
   and the contents of `<script>` and the other raw-text elements are skipped,
   as when references are scanned. The rewritten pages get the origin
-  `Sitefile:<line> CANONICAL`. Alternate-language links (`hreflang`) are not
-  written yet.
+  `Sitefile:<line> CANONICAL`. With LANGUAGES (below) it also writes
+  `hreflang` alternates.
+- `LANGUAGES <code>… [DEFAULT <code>]` (see `examples/hreflang/`) says which
+  pages are translations of each other, so that CANONICAL and SITEMAP write
+  [hreflang alternates](https://developers.google.com/search/docs/specialty/international/localized-versions).
+  It writes nothing itself; without CANONICAL or SITEMAP it has no effect.
+  - Each code (an operand) must be a basic BCP 47 tag: 2-3 letters, then
+    `-` subtags of 1-8 letters or digits (`en`, `fr`, `pt-BR`, `zh-Hant-TW`);
+    anything else, a code listed twice (ASCII case-insensitive), a `DEFAULT`
+    that is not one of the codes, or a second LANGUAGES line in the Sitefile
+    is `E_VALIDATION`. It applies to every CANONICAL and SITEMAP of the
+    Sitefile, also those before it.
+  - **Folders.** The codes are folder names: `/en/about.html` and
+    `/fr/about.html` are the `en` and `fr` pages of `/about.html` (the first
+    path segment must equal the code exactly). A page in no language folder
+    is the `DEFAULT` language's page of its own path, so with `DEFAULT en`
+    `/about.html` and `/fr/about.html` translate each other; without
+    DEFAULT it has no language. The path is the one each instruction uses for
+    the page: below the EXPORT path for CANONICAL, the tree path for SITEMAP.
+  - **Documents.** Pages written by a `RENDER … FOR item IN list` (without BY
+    or PAGE) earlier in the same stage, whose element has a `translationKey`
+    (text or a number) and a text `lang`, are grouped by that key in that
+    language instead, whatever their folders, so translations can have
+    different slugs (`/blog/hello.html` and `/blog/bonjour.html`). A `lang`
+    that is not a language code is `E_VALIDATION`; an element with only one
+    of the two fields is ignored (the folder rule applies to its page).
+  - A group of two or more pages gives each of them one alternate per page
+    of the group (itself included), ordered by language (ASCII
+    case-insensitive), then `x-default` for the DEFAULT language's page when
+    the group has one. A page alone in its group gets none. Two pages of
+    one language in a group (`/about.html` and `/en/about.html` with
+    `DEFAULT en`, or two documents with one key and one `lang`) are
+    `E_VALIDATION`, naming both.
+  - CANONICAL writes `<link rel="alternate" hreflang="<code>" href="…">`
+    elements right after its canonical link (the URLs as for the canonical
+    link, so `PRETTY` applies), into every page of a group that has no
+    `<link>` with the `rel` token `alternate` and an `hreflang` attribute
+    before its `</head>` (yours win). A page that keeps its own canonical
+    link still gets the alternates.
+  - SITEMAP adds `<xhtml:link rel="alternate" hreflang="<code>" href="…"/>`
+    elements to the entries of those pages (the URLs as for `<loc>`), and
+    `xmlns:xhtml="http://www.w3.org/1999/xhtml"` to every `<urlset>` when any
+    entry has one. The split into a sitemap index counts the bytes of these
+    elements too.
 - `BASE` (SITEMAP and FEED) must be an absolute `http://` or `https://` URL
   with a host and no credentials, query, fragment, whitespace or control
   characters (`E_VALIDATION` otherwise); trailing slashes are dropped, so
@@ -1702,10 +1744,11 @@ checked:
 
 ### Archives (`IMPORT … AS tree` on a file)
 - Formats are detected from magic bytes, not names: tar (ustar or v7), tar.gz /
-  tgz (gzip; a gzip stream that holds a Web Bundle is read as one), and zip (stored and deflate, including ZIP64 records: the zip64
+  tgz (gzip; a gzip stream that holds a Web Bundle is read as one), tar.zst / tzst
+  (Zstandard), and zip (stored and deflate, including ZIP64 records: the zip64
   end record and locator and the 0x0001 extra field, as streaming writers add
   them even to small archives; no encryption). Anything
-  else fails with `E_TYPE`; xz, zstd and bzip2 streams and 7z and RAR
+  else fails with `E_TYPE`; xz and bzip2 streams and 7z and RAR
   archives are named in the message, with what to convert them to. Supported tar extras: POSIX ustar prefix (old GNU
   headers keep timestamps there and are read without it), GNU long names, pax
   `path`/`size` (a malformed record is `E_ARCHIVE`). Other pax keys are ignored.
@@ -1717,6 +1760,10 @@ checked:
   (CP437), as older Windows Explorer, Info-ZIP and Java tools write it.
   A gzip stream may hold several members; zero bytes after the last one are
   ignored, any other trailing data must be another valid member.
+  A zstd stream may hold several frames and skippable frames, as libzstd reads
+  them: a frame's checksum is checked when present, data after a frame that
+  does not start another frame is ignored, and a frame that needs a window
+  over 128 MiB or a dictionary is `E_ARCHIVE` (as is a truncated stream).
   Decompression is asynchronous, so other imports keep making progress.
 - `INTEGRITY` and the lockfile apply to the archive bytes exactly as for file
   imports, and the import's provenance digest is the archive's digest.
@@ -1742,9 +1789,9 @@ checked:
   notice).
 - Limits (`E_ARCHIVE_LIMIT`), configurable through `BuildOptions.archiveLimits`:
   `maxEntries` 10 000, `maxTotalBytes` 500 MiB of uncompressed content, and
-  `maxRatio` 100 (uncompressed:compressed, measured on the gzip stream or the
+  `maxRatio` 100 (uncompressed:compressed, measured on the gzip or zstd stream or the
   whole zip; not enforced below 1 MiB of output, since tar padding compresses
-  extremely well). Inflation is bounded with zlib's `maxOutputLength`, so a
+  extremely well). Inflation is bounded with zlib's `maxOutputLength` (zstd too), so a
   bomb is stopped at the limit, never fully inflated; zip entries are never
   inflated beyond their declared size. The download cap still applies first.
 

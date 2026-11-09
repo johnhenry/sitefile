@@ -1,0 +1,20 @@
+# LANGUAGES: /en/… and /fr/… are the same pages in two languages, so CANONICAL and SITEMAP add
+# hreflang alternates (and x-default, the DEFAULT language's page) for search engines.
+FROM scratch
+ARG SITE_URL = "https://example.com/"
+IMPORT posts FROM ./posts AS markdown
+COPY ./public/ /
+# Posts have different slugs per language: frontmatter `lang` and a shared `translationKey` pair them.
+RENDER --escape=html <<HTML TO /blog/${post.slug}.html FOR post IN posts
+<!doctype html>
+<html lang="${post.lang}">
+<head>
+<title>${post.title}</title>
+</head>
+<body>${post.content|raw}</body>
+</html>
+HTML
+LANGUAGES en fr DEFAULT en
+CANONICAL BASE ${SITE_URL}
+SITEMAP BASE ${SITE_URL}
+EXPORT /

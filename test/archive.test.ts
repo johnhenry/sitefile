@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { crc32, gzipSync } from 'node:zlib';
+import { constants, crc32, gzipSync, zstdCompressSync } from 'node:zlib';
 import { extractArchive } from '../src/resources/archive.js';
 import { DEFAULT_ARCHIVE_LIMITS, type ArchiveLimits } from '../src/resources/types.js';
 import { isSitefileError, type ErrorCode } from '../src/errors.js';
@@ -265,10 +265,32 @@ test('a flipped byte in a stored entry fails the CRC-32 check (#183)', async () 
 test('formats sitefile does not read are named in the E_TYPE error (#221)', async () => {
   const pad = (m: number[]): Uint8Array => Buffer.concat([Buffer.from(m), Buffer.alloc(600)]);
   await rejects(pad([0xfd, 0x37, 0x7a, 0x58, 0x5a, 0x00]), 'E_TYPE', /not a recognized archive \(it is xz-compressed, e\.g\. \.tar\.xz; recompress it as \.tar\.gz or zip\)$/);
-  await rejects(pad([0x28, 0xb5, 0x2f, 0xfd]), 'E_TYPE', /\(it is zstd-compressed, e\.g\. \.tar\.zst;/);
   await rejects(Buffer.from('BZh91AY&SY'), 'E_TYPE', /\(it is bzip2-compressed/);
   await rejects(pad([0x37, 0x7a, 0xbc, 0xaf, 0x27, 0x1c]), 'E_TYPE', /\(it is a 7z archive; convert it to zip or tar\)$/);
   await rejects(Buffer.from('Rar!\x1a\x07\x01\x00', 'latin1'), 'E_TYPE', /\(it is a RAR archive; convert it to zip or tar\)$/);
   // Text that merely starts like a magic number is just unrecognized.
-  await rejects(Buffer.from('BZhello'), 'E_TYPE', /\(expected tar, tar\.gz, zip or web bundle\)$/);
+  await rejects(Buffer.from('BZhello'), 'E_TYPE', /\(expected tar, tar\.gz, tar\.zst, zip or web bundle\)$/);
+});
+
+test('.tar.zst imports like .tar.gz: frames, skippable frames, checksums, limits (#221)', async () => {
+  const t = tar(sample);
+  const want = paths(await extractArchive(t, 't'));
+  assert.deepEqual(paths(await extractArchive(zstdCompressSync(t), 't')), want);
+  const checked = zstdCompressSync(t.subarray(0, 512), { params: { [constants.ZSTD_c_checksumFlag]: 1 } });
+  const skippable = Buffer.from([0x50, 0x2a, 0x4d, 0x18, 2, 0, 0, 0, 9, 9]);
+  const multi = Buffer.concat([checked, skippable, zstdCompressSync(t.subarray(512))]);
+  assert.deepEqual(paths(await extractArchive(multi, 't')), want);
+  // Bytes after a frame that are not a frame are ignored, as libzstd (Node) does.
+  assert.deepEqual(paths(await extractArchive(Buffer.concat([zstdCompressSync(t), Buffer.from('junk')]), 't')), want);
+  const bad = Buffer.from(checked);
+  bad[bad.length - 1] = bad[bad.length - 1]! ^ 1;
+  await rejects(bad, 'E_ARCHIVE', /corrupt compressed data/);
+  const z = zstdCompressSync(t);
+  await rejects(z.subarray(0, z.length - 5), 'E_ARCHIVE', /corrupt compressed data/);
+  await rejects(Buffer.from([0x28, 0xb5, 0x2f, 0xfd]), 'E_ARCHIVE', /corrupt compressed data/);
+  // A window over 128 MiB (windowLog 28) is refused before anything is decoded.
+  await rejects(Buffer.from([0x28, 0xb5, 0x2f, 0xfd, 0x00, 18 << 3, 0x09, 0, 0, 0x41]), 'E_ARCHIVE', /corrupt compressed data/);
+  await rejects(zstdCompressSync(Buffer.from('not a tar')), 'E_TYPE', /zstd content is not a tar archive/);
+  await rejects(zstdCompressSync(Buffer.alloc(4 << 20)), 'E_ARCHIVE_LIMIT', /compression ratio exceeds 100:1/);
+  await rejects(zstdCompressSync(tar([{ name: 'big', data: 'x'.repeat(5000) }])), 'E_ARCHIVE_LIMIT', /expands beyond 100 bytes/, { maxTotalBytes: 100, maxEntries: 1 });
 });

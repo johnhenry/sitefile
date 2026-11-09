@@ -88,6 +88,11 @@ const INSTRUCTIONS: &[(&str, &str, &str)] = &[
         "Adds `<link rel=\"canonical\" href=\"<base><path>\">` before `</head>` of every page of the stage below the EXPORT path that has no canonical link (`…/index.html` becomes `…/`). `PRETTY` drops `.html`. Pages without `</head>` are left alone, with a warning.",
     ),
     (
+        "LANGUAGES",
+        "LANGUAGES <code>… [DEFAULT <code>]",
+        "Names the site's language folders (BCP 47 codes such as `en`, `fr`, `pt-BR`): `/en/about.html` and `/fr/about.html` are the same page, and with DEFAULT a page outside the folders is that language's. A document with frontmatter `lang` and `translationKey` (rendered by an earlier `RENDER … FOR` of the stage) is grouped by its key instead. CANONICAL then adds `<link rel=\"alternate\" hreflang=\"…\">` for every translation (and `x-default`, the DEFAULT language's page), and SITEMAP adds `xhtml:link` alternates.",
+    ),
+    (
         "PRECOMPRESS",
         "PRECOMPRESS [--overwrite] [gzip] <pattern>… [MIN <bytes>]",
         "Writes a gzip sidecar `<file>.gz` next to each matching compressible file (text, scripts, data, SVG, fonts) of at least MIN bytes (default 1024), when it is smaller, for servers that send it in place of the file (nginx `gzip_static`, Caddy `precompressed`). Deterministic: the shared deflate encoder, a fixed header. `br` and `zstd` are not supported yet.",
@@ -187,6 +192,7 @@ const CLAUSES: &[(&str, &str, &str)] = &[
     ("FINGERPRINT", "INTEGRITY", "`INTEGRITY`: adds `integrity=\"sha384-…\"` (Subresource Integrity) to each `<script src>` and `<link rel=stylesheet|modulepreload>` that loads a renamed file, unless it has one."),
     ("CANONICAL", "BASE", "`BASE <url>`: the absolute http(s) URL the site is published at."),
     ("CANONICAL", "PRETTY", "`PRETTY`: canonical URLs without `.html` (`/about.html` → `<base>/about`)."),
+    ("LANGUAGES", "DEFAULT", "`DEFAULT <code>`: the language of the pages outside the language folders, and the `x-default` alternate (one of the listed codes)."),
     ("PRECOMPRESS", "MIN", "`MIN <bytes>`: the smallest file compressed (a whole number; default 1024)."),
     ("PRECOMPRESS", "gzip", "`gzip`: write `<file>.gz` (the default, and the only format so far)."),
     ("ROBOTS", "ALLOW", "`ALLOW <path>`: an `Allow:` rule (an absolute path; `*` and `$` work as robots.txt wildcards)."),
@@ -447,6 +453,7 @@ mod tests {
             ("REDIRECT", &REDIRECT_CLAUSES[..]),
             ("FINGERPRINT", &FINGERPRINT_CLAUSES[..]),
             ("CANONICAL", &crate::language::parser::CANONICAL_CLAUSES[..]),
+            ("LANGUAGES", &crate::language::parser::LANGUAGES_CLAUSES[..]),
             (
                 "PRECOMPRESS",
                 &crate::language::parser::PRECOMPRESS_CLAUSES[..],

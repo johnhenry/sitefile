@@ -504,6 +504,13 @@ pub enum Instruction {
         base: Operand,
         pretty: bool,
     },
+    /// `LANGUAGES <code>… [DEFAULT <code>]`: the site's language folders; CANONICAL and SITEMAP write
+    /// hreflang alternates for the pages that translate each other.
+    Languages {
+        span: SourceSpan,
+        codes: Vec<Operand>,
+        default: Option<Operand>,
+    },
     /// `PRECOMPRESS [--overwrite] [gzip]… <pattern>… [MIN <bytes>]`: write a `.gz` sidecar next to each
     /// matching compressible file of at least MIN bytes, when it is smaller. `formats` is `["gzip"]`
     /// when none is given.
@@ -590,6 +597,7 @@ impl Instruction {
             | Instruction::Mime { span, .. }
             | Instruction::Fingerprint { span, .. }
             | Instruction::Canonical { span, .. }
+            | Instruction::Languages { span, .. }
             | Instruction::Precompress { span, .. }
             | Instruction::Robots { span, .. }
             | Instruction::SecurityTxt { span, .. }
@@ -618,6 +626,7 @@ impl Instruction {
             Instruction::Mime { .. } => "MIME",
             Instruction::Fingerprint { .. } => "FINGERPRINT",
             Instruction::Canonical { .. } => "CANONICAL",
+            Instruction::Languages { .. } => "LANGUAGES",
             Instruction::Precompress { .. } => "PRECOMPRESS",
             Instruction::Robots { .. } => "ROBOTS",
             Instruction::SecurityTxt { .. } => "SECURITY_TXT",

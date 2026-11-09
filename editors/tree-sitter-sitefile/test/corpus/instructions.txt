@@ -458,6 +458,29 @@ FINGERPRINT /app.js INTEGRITY
     (path)))
 
 ================================================================================
+LANGUAGES with and without DEFAULT
+================================================================================
+
+LANGUAGES en fr pt-BR
+languages ${A} de default ${A}
+
+---
+
+(source_file
+  (languages_instruction
+    (word)
+    (word)
+    (word))
+  (languages_instruction
+    (word
+      (substitution
+        (identifier)))
+    (word)
+    (word
+      (substitution
+        (identifier)))))
+
+================================================================================
 CANONICAL with and without PRETTY
 ================================================================================
 

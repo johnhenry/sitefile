@@ -1,0 +1,8 @@
+FROM scratch
+IMPORT posts FROM ./posts AS markdown
+RENDER <<HTML TO /${post.slug}.html FOR post IN posts
+<html><head></head><body>${post.title}</body></html>
+HTML
+LANGUAGES en fr
+CANONICAL BASE https://example.com
+EXPORT /
