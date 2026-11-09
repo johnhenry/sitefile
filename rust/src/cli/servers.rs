@@ -56,10 +56,14 @@ pub(crate) fn received() -> Option<&'static str> {
     }
 }
 
-fn wait_for_signal() -> &'static str {
+/// [`wait_for_signal`], or `None` once `deadline` passes.
+fn wait_for_signal_until(deadline: Option<std::time::Instant>) -> Option<&'static str> {
     loop {
         if let Some(s) = received() {
-            return s;
+            return Some(s);
+        }
+        if deadline.is_some_and(|d| std::time::Instant::now() >= d) {
+            return None;
         }
         std::thread::sleep(Duration::from_millis(50));
     }
@@ -253,12 +257,149 @@ fn cache_of(v: &Parsed) -> Result<Option<crate::server::CachePreview>> {
     }))
 }
 
+/// What `--auth`, `--auth-file` and `SITEFILE_SERVE_AUTH` give: the server's checker, the verifiers
+/// and the absolute htpasswd path the record keeps (never a password).
+type AuthSetup = (
+    Option<Arc<crate::serve_auth::BasicAuth>>,
+    Vec<crate::serve_auth::AuthEntry>,
+    Option<String>,
+);
+
+fn auth_of(v: &Parsed, bind_host: &str) -> Result<AuthSetup> {
+    use crate::serve_auth::{
+        make_verifier, parse_auth_pair, parse_htpasswd, AuthEntry, BasicAuth, AUTH_ITERATIONS,
+    };
+    let mut pairs = Vec::new();
+    for a in v.strs("auth") {
+        pairs.push(parse_auth_pair(&a, "--auth")?);
+    }
+    if let Ok(env) = std::env::var("SITEFILE_SERVE_AUTH") {
+        if !env.is_empty() {
+            pairs.push(parse_auth_pair(&env, "SITEFILE_SERVE_AUTH")?);
+        }
+    }
+    let entries: Vec<AuthEntry> = pairs
+        .into_iter()
+        .map(|(user, pw)| AuthEntry {
+            user,
+            verifier: make_verifier(&pw, None, AUTH_ITERATIONS),
+        })
+        .collect();
+    let auth_file = v.str("auth-file").map(str::to_string);
+    let from_file = match &auth_file {
+        Some(f) => {
+            let Ok(text) = std::fs::read_to_string(f) else {
+                return usage(format!("--auth-file: cannot read {f}"));
+            };
+            parse_htpasswd(&text, f)?
+        }
+        None => Vec::new(),
+    };
+    if entries.is_empty() && auth_file.is_none() {
+        return Ok((None, Vec::new(), None));
+    }
+    let loopback = bind_host == "localhost" || bind_host == "::1" || bind_host.starts_with("127.");
+    if !loopback {
+        err(&format!("warning: basic authentication over plain HTTP on {bind_host}: the password crosses the network in the clear\n"));
+    }
+    let abs = auth_file.map(|f| {
+        std::path::absolute(&f)
+            .map(|p| p.display().to_string())
+            .unwrap_or(f)
+    });
+    let mut all = entries.clone();
+    all.extend(from_file);
+    Ok((Some(Arc::new(BasicAuth::new(all))), entries, abs))
+}
+
+/// `--max-connections-per-ip <n>` (0 when absent: no limit).
+fn per_ip_of(v: &Parsed) -> Result<usize> {
+    let Some(raw) = v.str("max-connections-per-ip") else {
+        return Ok(0);
+    };
+    if !(1..=6).contains(&raw.len()) || !raw.bytes().all(|b| b.is_ascii_digit()) {
+        return usage(format!(
+            "--max-connections-per-ip must be a number (0 to 999999), not '{raw}'"
+        ));
+    }
+    Ok(raw.parse().unwrap_or(0))
+}
+
 /// `  Network: <url>` lines for a server bound to all interfaces (none otherwise).
 fn network_lines(host: &str, port: u16, base: Option<&str>) -> String {
     crate::server::network_urls(host, port)
         .iter()
         .map(|u| format!("  Network: {u}{}\n", &base.unwrap_or("/")[1..]))
         .collect()
+}
+
+/// `--random-route`, `--allow-ip`, `--deny-ip`, `--stop-after` (`sharingOf` in src/cli/servers.ts).
+struct Sharing {
+    /// `--random-route`: a secret `--base` (`/<24 hex>/`).
+    random_base: Option<String>,
+    ip_rules: Option<crate::server::IpRules>,
+    noindex: bool,
+    allow_text: Vec<String>,
+    deny_text: Vec<String>,
+    stop_after: Option<(u64, String)>,
+}
+
+fn sharing_of(v: &Parsed, bind_host: &str) -> Result<Sharing> {
+    let cidrs = |flag: &str| -> Result<(Vec<String>, Vec<crate::server::Cidr>)> {
+        let text = v.strs(flag);
+        let mut parsed = Vec::new();
+        for t in &text {
+            match crate::server::parse_cidr(t) {
+                Some(c) => parsed.push(c),
+                None => return usage(format!("--{flag}: invalid address or CIDR block '{t}'")),
+            }
+        }
+        Ok((text, parsed))
+    };
+    let (allow_text, allow) = cidrs("allow-ip")?;
+    let (deny_text, deny) = cidrs("deny-ip")?;
+    if v.flag("random-route") && v.has("base") {
+        return usage("--random-route and --base both set the path prefix; use one");
+    }
+    let random_base = v
+        .flag("random-route")
+        .then(|| format!("/{}/", crate::export::exporter::random_hex(12)));
+    let stop_after = match v.str("stop-after") {
+        None => None,
+        Some(raw) => {
+            let (num, unit) = raw.split_at(raw.len().saturating_sub(1));
+            let mult = match unit {
+                "s" => 1,
+                "m" => 60,
+                "h" => 3600,
+                "d" => 86400,
+                _ => 0,
+            };
+            let n: u64 = if (1..=6).contains(&num.len()) && num.bytes().all(|b| b.is_ascii_digit())
+            {
+                num.parse().unwrap_or(0)
+            } else {
+                0
+            };
+            if mult == 0 || n == 0 {
+                return usage(format!(
+                    "--stop-after expects a duration like 90s, 30m, 2h or 1d, not '{raw}'"
+                ));
+            }
+            Some((n * mult, raw.to_string()))
+        }
+    };
+    let loopback = bind_host == "localhost" || bind_host == "::1" || bind_host.starts_with("127.");
+    let ip_rules =
+        (!allow.is_empty() || !deny.is_empty()).then_some(crate::server::IpRules { allow, deny });
+    Ok(Sharing {
+        random_base,
+        ip_rules,
+        noindex: !loopback,
+        allow_text,
+        deny_text,
+        stop_after,
+    })
 }
 
 /// `--log-format`, `--log-ip`, `--quiet`: (json, log_ip, quiet).
@@ -325,6 +466,13 @@ const SERVE_OPTS: &[OptSpec] = &[
     string("log-format"),
     flag("log-ip"),
     flag("quiet"),
+    strings("auth"),
+    string("auth-file"),
+    string("max-connections-per-ip"),
+    flag("random-route"),
+    strings("allow-ip"),
+    strings("deny-ip"),
+    string("stop-after"),
     flag("watch"),
     string_s("file", 'f'),
     string("target"),
@@ -378,6 +526,13 @@ pub const SERVE: Command = Command {
         "--log-format <text|json>     access-log lines as text (default) or one JSON object per line (a stable format; docs/CLI.md)",
         "--log-ip          add the client address to access-log lines",
         "--quiet           no access-log lines",
+        "--auth <user:password>       require HTTP basic authentication (repeatable; or SITEFILE_SERVE_AUTH); only a hash is stored",
+        "--auth-file <htpasswd>       users from an htpasswd file ({SHA} entries, htpasswd -s)",
+        "--max-connections-per-ip <n> open connections one non-loopback client may hold (default 0: no limit; 503 over it)",
+        "--random-route    serve the site only under a random secret path (printed in the URL)",
+        "--allow-ip <cidr>            only answer clients in this block (repeatable; loopback is always allowed)",
+        "--deny-ip <cidr>             refuse clients in this block (repeatable; checked first)",
+        "--stop-after <n>[s|m|h|d]    stop the server after this long (not with --watch)",
         "--allowed-host <name>        also answer requests for this Host (repeatable; .example.com: and subdomains; *: any)",
         "--spa             answer page navigations to missing paths with the nearest 200.html or index.html",
         "--spa-exclude <glob>         paths that never fall back to the app shell (* matches anything; repeatable)",
@@ -432,8 +587,14 @@ fn run_serve(v: &Parsed) -> Result<i32> {
     let isolate = isolate_of(v)?;
     let cache = cache_of(v)?;
     let (log_json, log_ip, quiet) = logging_of(v)?;
+    let (auth, auth_entries, auth_file) = auth_of(v, &bind.host)?;
+    let per_ip = per_ip_of(v)?;
+    let sharing = sharing_of(v, &bind.host)?;
     let (spa, spa_exclude, spa_fallback) = spa_options(v)?;
-    let base = parse_base(v.str("base"))?;
+    let base = match &sharing.random_base {
+        Some(b) => Some(b.clone()),
+        None => parse_base(v.str("base"))?,
+    };
     let rewrite_base = parse_rewrite_base(v.str("rewrite-base"))?;
     let (host_profile, html_handling) = profile_options(v)?;
     let profile = crate::server::routing_for(host_profile.as_deref(), html_handling.as_deref());
@@ -499,6 +660,13 @@ fn run_serve(v: &Parsed) -> Result<i32> {
                 log_json,
                 log_ip,
                 quiet,
+                auth: auth.clone(),
+                max_connections_per_ip: per_ip,
+                limit_loopback: false,
+                hide_base: sharing.random_base.is_some(),
+                ip_rules: sharing.ip_rules.clone(),
+                noindex: sharing.noindex,
+                client_info: true,
                 content: site.content,
                 ..Default::default()
             },
@@ -566,12 +734,22 @@ fn run_serve(v: &Parsed) -> Result<i32> {
             base.as_deref(),
             restart,
         );
+        let deadline = sharing
+            .stop_after
+            .as_ref()
+            .map(|(secs, _)| std::time::Instant::now() + Duration::from_secs(*secs));
         loop {
             if received().is_some()
                 || keys
                     .as_ref()
                     .is_some_and(|k| k.quit.load(std::sync::atomic::Ordering::SeqCst))
             {
+                break;
+            }
+            if deadline.is_some_and(|d| std::time::Instant::now() >= d) {
+                if let Some((_, text)) = &sharing.stop_after {
+                    out(&format!("Stopping: --stop-after {text} reached\n"));
+                }
                 break;
             }
             std::thread::sleep(Duration::from_millis(50));
@@ -607,6 +785,15 @@ fn run_serve(v: &Parsed) -> Result<i32> {
             log_format: log_json.then(|| "json".to_string()),
             log_ip,
             quiet,
+            auth: auth_entries,
+            auth_file,
+            max_connections_per_ip: per_ip,
+            hide_base: sharing.random_base.is_some(),
+            allow_ip: (!sharing.allow_text.is_empty()).then(|| sharing.allow_text.clone()),
+            deny_ip: (!sharing.deny_text.is_empty()).then(|| sharing.deny_text.clone()),
+            expires: sharing.stop_after.as_ref().map(|(secs, _)| {
+                crate::store::iso_of_time(std::time::SystemTime::now() + Duration::from_secs(*secs))
+            }),
             country,
             strict_site_files,
             project: None,
@@ -638,6 +825,12 @@ fn serve_watch(v: &Parsed) -> Result<i32> {
     let isolate = isolate_of(v)?;
     let cache = cache_of(v)?;
     let (log_json, log_ip, quiet) = logging_of(v)?;
+    let (auth, _, _) = auth_of(v, &bind.host)?;
+    let per_ip = per_ip_of(v)?;
+    if v.has("stop-after") {
+        return usage("--stop-after does not apply to --watch");
+    }
+    let sharing = sharing_of(v, &bind.host)?;
     let context = v.positionals.first().cloned().unwrap_or_else(|| ".".into());
     let file = v.str("file").filter(|s| !s.is_empty()).map(str::to_string);
     let arg_files = v.strs("build-arg-file");
@@ -655,7 +848,10 @@ fn serve_watch(v: &Parsed) -> Result<i32> {
         other => return usage(format!("--reload expects full or morph, got '{other}'")),
     };
     let (spa, spa_exclude, spa_fallback) = spa_options(v)?;
-    let base_flag = parse_base(v.str("base"))?;
+    let base_flag = match &sharing.random_base {
+        Some(b) => Some(b.clone()),
+        None => parse_base(v.str("base"))?,
+    };
     // `--base`, else the path of the last good build's EXPORT BASE URL.
     let base: Arc<RwLock<Option<String>>> = Arc::new(RwLock::new(base_flag.clone()));
     let rewrite_flag = parse_rewrite_base(v.str("rewrite-base"))?;
@@ -858,6 +1054,13 @@ fn serve_watch(v: &Parsed) -> Result<i32> {
             log_json,
             log_ip,
             quiet,
+            auth: auth.clone(),
+            max_connections_per_ip: per_ip,
+            limit_loopback: false,
+            hide_base: sharing.random_base.is_some(),
+            ip_rules: sharing.ip_rules.clone(),
+            noindex: sharing.noindex,
+            client_info: true,
             content: None,
         };
         let s = listen_shared(current.clone(), opts, &bind.host, bind.port)?;
@@ -921,6 +1124,18 @@ fn serve_watch(v: &Parsed) -> Result<i32> {
     Ok(code)
 }
 
+/// A detached server's checker: its verifiers and its htpasswd file, read again at every start.
+fn worker_auth(state: &ServerState) -> Result<Option<Arc<crate::serve_auth::BasicAuth>>> {
+    let mut all = state.auth.clone();
+    if let Some(f) = &state.auth_file {
+        let text = std::fs::read_to_string(f)
+            .map_err(|e| SitefileError::plain(E_SERVER, format!("--auth-file {f}: {e}")))?;
+        all.extend(crate::serve_auth::parse_htpasswd(&text, f)?);
+    }
+    Ok((!all.is_empty() || state.auth_file.is_some())
+        .then(|| Arc::new(crate::serve_auth::BasicAuth::new(all))))
+}
+
 /// `sitefile __serve-worker <id>`: the detached server process.
 pub fn serve_worker(id: &str) -> i32 {
     let reg = match ServerRegistry::open(None) {
@@ -957,7 +1172,30 @@ pub fn serve_worker(id: &str) -> i32 {
         }
     };
     catch_signals();
+    // --stop-after: the record's expiry.
+    let left_ms = state
+        .expires
+        .as_deref()
+        .and_then(super::common::parse_iso)
+        .map(|ms| {
+            ms - std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_millis() as i64)
+                .unwrap_or(0)
+        });
+    let deadline = left_ms
+        .filter(|l| *l > 0)
+        .map(|l| std::time::Instant::now() + Duration::from_millis(l as u64));
     let started = (|| -> Result<crate::server::ListeningServer> {
+        if left_ms.is_some_and(|l| l <= 0) {
+            return Err(SitefileError::plain(
+                E_SERVER,
+                format!(
+                    "server expired at {} (--stop-after)",
+                    state.expires.as_deref().unwrap_or("")
+                ),
+            ));
+        }
         let warn = |m: &str| stamp(&format!("warning: {m}"));
         let site = load_served_site(
             &reg.store,
@@ -1014,6 +1252,26 @@ pub fn serve_worker(id: &str) -> i32 {
                 log_json: json,
                 log_ip: state.log_ip,
                 quiet: state.quiet,
+                auth: worker_auth(&state)?,
+                max_connections_per_ip: state.max_connections_per_ip,
+                limit_loopback: false,
+                hide_base: state.hide_base,
+                ip_rules: (state.allow_ip.is_some() || state.deny_ip.is_some()).then(|| {
+                    let parse = |v: &Option<Vec<String>>| -> Vec<crate::server::Cidr> {
+                        v.iter()
+                            .flatten()
+                            .filter_map(|t| crate::server::parse_cidr(t))
+                            .collect()
+                    };
+                    crate::server::IpRules {
+                        allow: parse(&state.allow_ip),
+                        deny: parse(&state.deny_ip),
+                    }
+                }),
+                noindex: !(state.bind.host == "localhost"
+                    || state.bind.host == "::1"
+                    || state.bind.host.starts_with("127.")),
+                client_info: true,
                 content: site.content,
                 ..Default::default()
             },
@@ -1046,11 +1304,11 @@ pub fn serve_worker(id: &str) -> i32 {
     })();
     match started {
         Ok(server) => {
-            let sig = wait_for_signal();
-            if json {
-                stamp(&crate::server::stopped_log_line(&now_iso(), sig));
-            } else {
-                stamp(&format!("received {sig}, shutting down"));
+            match wait_for_signal_until(deadline) {
+                Some(sig) if json => stamp(&crate::server::stopped_log_line(&now_iso(), sig)),
+                Some(sig) => stamp(&format!("received {sig}, shutting down")),
+                None if json => stamp(&crate::server::stopped_log_line(&now_iso(), "expired")),
+                None => stamp("--stop-after reached, shutting down"),
             }
             let (tx, rx) = std::sync::mpsc::channel();
             std::thread::spawn(move || {
@@ -1112,7 +1370,8 @@ fn run_ps(v: &Parsed) -> Result<i32> {
                 let mut m = Map::new();
                 if let Ok(Value::Object(st)) = serde_json::to_value(&s.state) {
                     for (k, val) in st {
-                        if k != "image" {
+                        // Credentials never leave the record: a server that needs them shows auth: true.
+                        if k != "image" && k != "auth" {
                             m.insert(k, val);
                         }
                     }
@@ -1130,6 +1389,9 @@ fn run_ps(v: &Parsed) -> Result<i32> {
                         "networkUrls".into(),
                         Value::Array(net.into_iter().map(Value::String).collect()),
                     );
+                }
+                if !s.state.auth.is_empty() || s.state.auth_file.is_some() {
+                    m.insert("auth".into(), Value::Bool(true));
                 }
                 m.insert("site".into(), Value::String(s.state.image.clone()));
                 Value::Object(m)

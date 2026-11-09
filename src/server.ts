@@ -8,6 +8,7 @@ import type { Tree } from './tree.js';
 import { nfc } from './paths.js';
 import { mimeTypeFor } from './wbn.js';
 import { RELOAD_CLIENT } from './reload-client.js';
+import type { BasicAuth } from './serve-auth.js';
 
 export interface SiteServerOptions {
   /**
@@ -77,6 +78,20 @@ export interface SiteServerOptions {
   readonly logIp?: boolean;
   /** `--quiet`: no access-log lines (other log lines still go to {@link log}). */
   readonly quiet?: boolean;
+  /** `--auth`, `--auth-file`: every request needs one of these credentials (`Authorization: Basic`), else `401`. */
+  readonly auth?: BasicAuth;
+  /** `--max-connections-per-ip`: open connections one non-loopback client may hold (0 or unset: no limit); a connection over it gets `503` with `Retry-After: 1` and is closed. */
+  readonly maxConnectionsPerIp?: number;
+  /** Count loopback clients against {@link maxConnectionsPerIp} too (tests only). */
+  readonly limitLoopback?: boolean;
+  /** `--random-route`: {@link base} is a secret, so `/` is a plain `404` instead of a redirect into it. */
+  readonly hideBase?: boolean;
+  /** `--allow-ip`, `--deny-ip` (CIDRs, {@link parseCidr}): a non-loopback client they refuse gets `403` before anything else. */
+  readonly ipRules?: { readonly allow: readonly Cidr[]; readonly deny: readonly Cidr[] };
+  /** `X-Robots-Tag: noindex` on every response (the CLI sets it on non-loopback binds). */
+  readonly noindex?: boolean;
+  /** Add the client address and device (from `User-Agent`) to access-log lines of non-loopback clients. */
+  readonly clientInfo?: boolean;
   /**
    * Where file contents come from when the tree holds only digests (a zip served in place,
    * `openZipFile`): `read` returns a file's bytes (undefined: use the node's), `deflated` a
@@ -399,6 +414,8 @@ export function injectReloadScript(html: Uint8Array): Uint8Array {
 
 const NOT_FOUND_PAGE = '<!doctype html><meta charset="utf-8"><title>404 Not Found</title><h1>404 Not Found</h1>\n';
 const BAD_REQUEST_PAGE = '<!doctype html><meta charset="utf-8"><title>400 Bad Request</title><h1>400 Bad Request</h1>\n';
+const FORBIDDEN_PAGE = '<!doctype html><meta charset="utf-8"><title>403 Forbidden</title><h1>403 Forbidden</h1>\n';
+const UNAUTHORIZED_PAGE = '<!doctype html><meta charset="utf-8"><title>401 Unauthorized</title><h1>401 Unauthorized</h1>\n';
 const FORBIDDEN_HOST_PAGE =
   '<!doctype html><meta charset="utf-8"><title>403 Forbidden</title><h1>403 Forbidden</h1><p>This server answers requests for localhost and IP addresses only. To allow another host name, restart it with <code>--allowed-host &lt;name&gt;</code>.</p>\n';
 const ERROR_PAGE = '<!doctype html><meta charset="utf-8"><title>500 Internal Server Error</title><h1>500 Internal Server Error</h1>\n';
@@ -440,10 +457,13 @@ export interface AccessLogEntry {
   readonly ms: number;
   /** `Content-Range` of a `206`/`416`, else undefined. */
   readonly range?: string;
+  /** The client address (`--log-ip`, or a non-loopback client with client info), else undefined. */
   /** What answered, as the `_redirects` log note (` → /new (_redirects:3)`), else undefined. */
   readonly note?: string;
   /** The client address (`--log-ip`), else undefined. */
   readonly remote?: string;
+  /** The client's device ({@link deviceOf}), for non-loopback clients with client info. */
+  readonly device?: string;
 }
 
 /**
@@ -454,7 +474,7 @@ export interface AccessLogEntry {
  */
 export function accessLogLine(format: 'text' | 'json', e: AccessLogEntry): string {
   const target = printable(e.target);
-  if (format === 'text') return `${e.method} ${target} ${e.status} ${e.bytes} ${e.ms.toFixed(1)}ms${e.note ?? ''}${e.remote !== undefined ? ` ${e.remote}` : ''}`;
+  if (format === 'text') return `${e.method} ${target} ${e.status} ${e.bytes} ${e.ms.toFixed(1)}ms${e.note ?? ''}${e.remote !== undefined ? ` ${e.remote}` : ''}${e.device !== undefined ? ` ${e.device}` : ''}`;
   const q = target.indexOf('?');
   const path = q === -1 ? target : target.slice(0, q);
   const query = q === -1 ? '' : target.slice(q + 1);
@@ -462,7 +482,7 @@ export function accessLogLine(format: 'text' | 'json', e: AccessLogEntry): strin
     `{"type":"request","ts":${JSON.stringify(e.ts)},"method":${JSON.stringify(e.method)},"path":${JSON.stringify(path)},"query":${JSON.stringify(query)},` +
     `"status":${e.status},"bytes":${e.bytes},"ms":${e.ms.toFixed(1)},"encoding":"identity","range":${e.range === undefined ? 'null' : JSON.stringify(e.range)}` +
     `${e.note !== undefined ? `,"note":${JSON.stringify(e.note.replace(/^ \u2192 /, ''))}` : ''}` +
-    `${e.remote !== undefined ? `,"remote":${JSON.stringify(e.remote)}` : ''}}`
+    `${e.remote !== undefined ? `,"remote":${JSON.stringify(e.remote)}` : ''}${e.device !== undefined ? `,"device":${JSON.stringify(e.device)}` : ''}}`
   );
 }
 
@@ -529,6 +549,80 @@ export function cacheControlFor(type: string, cache: CachePreview | undefined): 
 export function preflightHeaders(value: string | undefined): string | undefined {
   const v = value?.trim();
   return v !== undefined && v !== '' && /^[A-Za-z0-9 \t,!#$%&'*+\-.^_`|~]+$/.test(v) ? v : undefined;
+}
+
+/** Loopback, also as an IPv4-mapped IPv6 address (`::ffff:127.0.0.1`). */
+function isLoopbackAddress(ip: string): boolean {
+  return ip === '::1' || /^(::ffff:)?127\./i.test(ip);
+}
+
+/** A parsed CIDR block: 4 or 16 address bytes and a prefix length. */
+export interface Cidr {
+  readonly bytes: readonly number[];
+  readonly prefix: number;
+}
+
+/** Address bytes of an IPv4 or IPv6 literal (`::ffff:a.b.c.d` becomes IPv4), else undefined. */
+export function ipBytes(text: string): number[] | undefined {
+  const t = text.replace(/^::ffff:(?=[0-9]+\.)/i, '');
+  if (isIpv4(t)) return t.split('.').map(Number);
+  if (!/^[0-9A-Fa-f:]+$/.test(t) || !t.includes(':')) return undefined;
+  const halves = t.split('::');
+  if (halves.length > 2) return undefined;
+  const words = (h: string): number[] | undefined => {
+    if (h === '') return [];
+    const out: number[] = [];
+    for (const w of h.split(':')) {
+      if (!/^[0-9A-Fa-f]{1,4}$/.test(w)) return undefined;
+      out.push(parseInt(w, 16));
+    }
+    return out;
+  };
+  const a = words(halves[0]!);
+  const b = halves.length === 2 ? words(halves[1]!) : [];
+  if (a === undefined || b === undefined) return undefined;
+  const fill = halves.length === 2 ? 8 - a.length - b.length : 0;
+  if (fill < (halves.length === 2 ? 1 : 0) || a.length + b.length + fill !== 8) return undefined;
+  return [...a, ...new Array<number>(fill).fill(0), ...b].flatMap((w) => [w >> 8, w & 0xff]);
+}
+
+/** `a.b.c.d/n`, `x::y/n` or a bare address (a /32 or /128), else undefined. */
+export function parseCidr(text: string): Cidr | undefined {
+  const [addr, len, extra] = text.trim().split('/');
+  if (extra !== undefined || addr === undefined) return undefined;
+  const bytes = ipBytes(addr);
+  if (bytes === undefined) return undefined;
+  const max = bytes.length * 8;
+  if (len !== undefined && !/^[0-9]{1,3}$/.test(len)) return undefined;
+  const prefix = len === undefined ? max : Number(len);
+  return prefix <= max ? { bytes, prefix } : undefined;
+}
+
+function cidrContains(c: Cidr, ip: readonly number[]): boolean {
+  if (c.bytes.length !== ip.length) return false;
+  for (let bit = 0; bit < c.prefix; bit++) {
+    const mask = 0x80 >> bit % 8;
+    if ((c.bytes[bit >> 3]! & mask) !== (ip[bit >> 3]! & mask)) return false;
+  }
+  return true;
+}
+
+/** Whether `--allow-ip`/`--deny-ip` let a client in: loopback always; else not denied, and allowed when an allow list is given. */
+export function ipAllowed(rules: SiteServerOptions['ipRules'], remote: string): boolean {
+  if (rules === undefined || isLoopbackAddress(remote)) return true;
+  const ip = ipBytes(remote);
+  if (ip === undefined) return false;
+  if (rules.deny.some((c) => cidrContains(c, ip))) return false;
+  return rules.allow.length === 0 || rules.allow.some((c) => cidrContains(c, ip));
+}
+
+/** A short device name from a `User-Agent` (`iPhone`, `iPad`, `Android`, `Windows`, `Mac`, `Linux`), or `other`. */
+export function deviceOf(userAgent: string | undefined): string {
+  const ua = userAgent ?? '';
+  for (const [needle, name] of [['iPhone', 'iPhone'], ['iPad', 'iPad'], ['Android', 'Android'], ['Windows', 'Windows'], ['Macintosh', 'Mac'], ['Linux', 'Linux']] as const) {
+    if (ua.includes(needle)) return name;
+  }
+  return 'other';
 }
 
 /** Whether `s` is a dotted-decimal IPv4 address. */
@@ -855,6 +949,7 @@ export function createSiteServer(site: Tree | (() => Tree), options: SiteServerO
   const base: Record<string, string> = { 'x-content-type-options': 'nosniff', 'cache-control': 'no-cache' };
   if (options.serverId) base['x-sitefile-server'] = options.serverId;
   if (options.cors) base['access-control-allow-origin'] = '*';
+  if (options.noindex) base['x-robots-tag'] = 'noindex';
   if (options.isolate !== undefined) {
     base['cross-origin-opener-policy'] = 'same-origin';
     base['cross-origin-embedder-policy'] = options.isolate;
@@ -886,9 +981,13 @@ export function createSiteServer(site: Tree | (() => Tree), options: SiteServerO
     options.warn(`live reload: the Content-Security-Policy that _headers sets for ${served} does not allow ${what}, so open pages will not reload: ${policy}`);
   };
 
+  /** Connections over --max-connections-per-ip: they get one 503. */
+  const busy = new WeakSet<object>();
   const handler = (req: http.IncomingMessage, res: http.ServerResponse): void => {
     const started = process.hrtime.bigint();
     const method = req.method ?? 'GET';
+    /** A non-loopback client of a server with client info: its address and device go into the access log. */
+    const shared = !!options.clientInfo && !isLoopbackAddress(req.socket.remoteAddress ?? '');
     const target = req.url ?? '/';
     const url = originForm(target);
     let bytes = 0;
@@ -925,6 +1024,8 @@ export function createSiteServer(site: Tree | (() => Tree), options: SiteServerO
           bytes,
           ms,
           ...(range !== undefined ? { range: String(range) } : {}),
+          ...(options.logIp || shared ? { remote: req.socket.remoteAddress ?? '' } : {}),
+          ...(shared ? { device: deviceOf(req.headers['user-agent']) } : {}),
           ...(note !== '' ? { note } : {}),
           ...(options.logIp ? { remote: req.socket.remoteAddress ?? '' } : {}),
         }),
@@ -933,9 +1034,15 @@ export function createSiteServer(site: Tree | (() => Tree), options: SiteServerO
     const page = (status: number, html: string, extra: Record<string, string> = {}): void =>
       finish(status, { 'content-type': 'text/html; charset=utf-8', 'content-length': Buffer.byteLength(html), ...extra }, html);
 
+    if (!ipAllowed(options.ipRules, req.socket.remoteAddress ?? '')) return page(403, FORBIDDEN_PAGE);
+    if (busy.has(req.socket)) return finish(503, { 'retry-after': '1', 'content-length': 0, connection: 'close' }, undefined);
     // DNS rebinding: a page on another name must not read this server (before anything else).
     const hostHeader = req.headers.host;
     if (!hostAllowed(options.allowedHosts, hostHeader)) return page(403, FORBIDDEN_HOST_PAGE);
+    // Basic authentication covers everything, the live-reload endpoints too.
+    if (options.auth !== undefined && !options.auth.allows(req.headers.authorization)) {
+      return page(401, UNAUTHORIZED_PAGE, { 'www-authenticate': 'Basic realm="sitefile", charset="UTF-8"' });
+    }
 
     const live = options.liveReload;
     if (live && url.split(/[?#]/, 1)[0] === CONSOLE_PATH) {
@@ -1005,7 +1112,7 @@ export function createSiteServer(site: Tree | (() => Tree), options: SiteServerO
     if (baseSegs.length > 0) {
       const inside = baseSegs.every((b, i) => allSegs[i] === b);
       if (inside && allSegs.length === baseSegs.length && !trailingSlash) return finish(301, { location: `${mount}/${search}`, 'content-length': 0 }, undefined);
-      if (!inside && allSegs.length === 0) return finish(302, { location: `${mount}/${search}`, 'content-length': 0 }, undefined);
+      if (!inside && allSegs.length === 0 && !options.hideBase) return finish(302, { location: `${mount}/${search}`, 'content-length': 0 }, undefined);
       if (!inside) return page(404, NOT_FOUND_PAGE);
       segs = allSegs.slice(baseSegs.length);
     }
@@ -1186,6 +1293,22 @@ export function createSiteServer(site: Tree | (() => Tree), options: SiteServerO
   };
 
   const server = http.createServer(handler);
+  const limit = options.maxConnectionsPerIp ?? 0;
+  if (limit > 0) {
+    const perIp = new Map<string, number>();
+    server.on('connection', (socket) => {
+      const ip = socket.remoteAddress ?? '';
+      if (!options.limitLoopback && isLoopbackAddress(ip)) return;
+      const n = (perIp.get(ip) ?? 0) + 1;
+      perIp.set(ip, n);
+      if (n > limit) busy.add(socket);
+      socket.once('close', () => {
+        const left = (perIp.get(ip) ?? 1) - 1;
+        if (left === 0) perIp.delete(ip);
+        else perIp.set(ip, left);
+      });
+    });
+  }
   server.on('clientError', (_err, socket) => {
     if (socket.writable) socket.end('HTTP/1.1 400 Bad Request\r\nconnection: close\r\ncontent-length: 0\r\n\r\n');
     else socket.destroy();

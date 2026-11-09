@@ -60,6 +60,21 @@ pub struct SiteServerOptions {
     pub log_ip: bool,
     /// `--quiet`: no access-log lines (other log lines still go to `log`).
     pub quiet: bool,
+    /// `--auth`, `--auth-file`: every request needs one of these credentials, else `401`.
+    pub auth: Option<Arc<crate::serve_auth::BasicAuth>>,
+    /// `--max-connections-per-ip`: open connections one non-loopback client may hold (0: no limit);
+    /// a connection over it gets `503` with `Retry-After: 1` and is closed.
+    pub max_connections_per_ip: usize,
+    /// Count loopback clients against `max_connections_per_ip` too (tests only).
+    pub limit_loopback: bool,
+    /// `--random-route`: `base` is a secret, so `/` is a plain `404` instead of a redirect into it.
+    pub hide_base: bool,
+    /// `--allow-ip`, `--deny-ip`: a non-loopback client they refuse gets `403` before anything else.
+    pub ip_rules: Option<IpRules>,
+    /// `X-Robots-Tag: noindex` on every response (non-loopback binds).
+    pub noindex: bool,
+    /// Add the client address and device to access-log lines of non-loopback clients.
+    pub client_info: bool,
     /// `--base /repo/`: serve the site under this path prefix (a GitHub Pages project site); `/`
     /// redirects to it, `/repo` gets its slash, everything else is 404. Read per request (a
     /// watched server takes it from the last good build); [`normalize_base`] makes the value.
@@ -836,6 +851,159 @@ fn raw_path_of(url: &str) -> &str {
 const NOT_FOUND_PAGE: &str =
     "<!doctype html><meta charset=\"utf-8\"><title>404 Not Found</title><h1>404 Not Found</h1>\n";
 const BAD_REQUEST_PAGE: &str = "<!doctype html><meta charset=\"utf-8\"><title>400 Bad Request</title><h1>400 Bad Request</h1>\n";
+/// A parsed CIDR block: 4 or 16 address bytes and a prefix length.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Cidr {
+    pub bytes: Vec<u8>,
+    pub prefix: u32,
+}
+
+/// `--allow-ip` / `--deny-ip` blocks.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct IpRules {
+    pub allow: Vec<Cidr>,
+    pub deny: Vec<Cidr>,
+}
+
+/// Address bytes of an IPv4 or IPv6 literal (`::ffff:a.b.c.d` becomes IPv4; `ipBytes` in
+/// src/server.ts).
+pub fn ip_bytes(text: &str) -> Option<Vec<u8>> {
+    let t = match text.get(..7) {
+        Some(p) if p.eq_ignore_ascii_case("::ffff:") && text[7..].contains('.') => &text[7..],
+        _ => text,
+    };
+    if is_ipv4(t) {
+        return Some(t.split('.').map(|p| p.parse::<u8>().unwrap_or(0)).collect());
+    }
+    if t.is_empty() || !t.contains(':') || !t.bytes().all(|b| b.is_ascii_hexdigit() || b == b':') {
+        return None;
+    }
+    let halves: Vec<&str> = t.split("::").collect();
+    if halves.len() > 2 {
+        return None;
+    }
+    let words = |h: &str| -> Option<Vec<u16>> {
+        if h.is_empty() {
+            return Some(Vec::new());
+        }
+        h.split(':')
+            .map(|w| {
+                if (1..=4).contains(&w.len()) {
+                    u16::from_str_radix(w, 16).ok()
+                } else {
+                    None
+                }
+            })
+            .collect()
+    };
+    let a = words(halves[0])?;
+    let b = if halves.len() == 2 {
+        words(halves[1])?
+    } else {
+        Vec::new()
+    };
+    let used = a.len() + b.len();
+    let fill = if halves.len() == 2 {
+        if used >= 8 {
+            return None;
+        }
+        8 - used
+    } else {
+        0
+    };
+    if used + fill != 8 {
+        return None;
+    }
+    let mut all = a;
+    all.extend(std::iter::repeat_n(0u16, fill));
+    all.extend(b);
+    Some(all.iter().flat_map(|w| w.to_be_bytes()).collect())
+}
+
+/// `a.b.c.d/n`, `x::y/n` or a bare address (`parseCidr` in src/server.ts).
+pub fn parse_cidr(text: &str) -> Option<Cidr> {
+    let parts: Vec<&str> = text.trim().split('/').collect();
+    if parts.len() > 2 {
+        return None;
+    }
+    let bytes = ip_bytes(parts[0])?;
+    let max = (bytes.len() * 8) as u32;
+    let prefix = match parts.get(1) {
+        None => max,
+        Some(l) if (1..=3).contains(&l.len()) && l.bytes().all(|b| b.is_ascii_digit()) => {
+            l.parse().ok()?
+        }
+        Some(_) => return None,
+    };
+    (prefix <= max).then_some(Cidr { bytes, prefix })
+}
+
+fn cidr_contains(c: &Cidr, ip: &[u8]) -> bool {
+    c.bytes.len() == ip.len()
+        && (0..c.prefix as usize).all(|bit| {
+            let mask = 0x80u8 >> (bit % 8);
+            c.bytes[bit / 8] & mask == ip[bit / 8] & mask
+        })
+}
+
+/// Whether `--allow-ip`/`--deny-ip` let a client in (`ipAllowed` in src/server.ts).
+pub fn ip_allowed(rules: Option<&IpRules>, remote: &str) -> bool {
+    let Some(r) = rules else { return true };
+    if is_loopback_text(remote) {
+        return true;
+    }
+    let Some(ip) = ip_bytes(remote) else {
+        return false;
+    };
+    if r.deny.iter().any(|c| cidr_contains(c, &ip)) {
+        return false;
+    }
+    r.allow.is_empty() || r.allow.iter().any(|c| cidr_contains(c, &ip))
+}
+
+/// `isLoopbackAddress` in src/server.ts.
+fn is_loopback_text(ip: &str) -> bool {
+    let t = match ip.get(..7) {
+        Some(p) if p.eq_ignore_ascii_case("::ffff:") => &ip[7..],
+        _ => ip,
+    };
+    ip == "::1" || t.starts_with("127.")
+}
+
+/// A short device name from a `User-Agent` (`deviceOf` in src/server.ts).
+pub fn device_of(user_agent: Option<&str>) -> &'static str {
+    let ua = user_agent.unwrap_or("");
+    for (needle, name) in [
+        ("iPhone", "iPhone"),
+        ("iPad", "iPad"),
+        ("Android", "Android"),
+        ("Windows", "Windows"),
+        ("Macintosh", "Mac"),
+        ("Linux", "Linux"),
+    ] {
+        if ua.contains(needle) {
+            return name;
+        }
+    }
+    "other"
+}
+
+/// Loopback, also as an IPv4-mapped IPv6 address (`::ffff:127.0.0.1`).
+fn is_loopback_ip(ip: &std::net::IpAddr) -> bool {
+    match ip {
+        std::net::IpAddr::V4(a) => a.is_loopback(),
+        std::net::IpAddr::V6(a) => {
+            a.is_loopback() || a.to_ipv4_mapped().is_some_and(|v4| v4.is_loopback())
+        }
+    }
+}
+
+/// The first of repeated header values (ours are joined with `, `; Node keeps the first
+/// `Authorization`).
+fn first_value(v: Option<&String>) -> Option<&str> {
+    v.map(|s| s.split(',').next().unwrap_or("").trim())
+}
+
 /// The headers every response starts with (`base` in src/server.ts).
 fn base_headers(options: &SiteServerOptions) -> Vec<(String, String)> {
     let mut base: Vec<(String, String)> = vec![
@@ -847,6 +1015,9 @@ fn base_headers(options: &SiteServerOptions) -> Vec<(String, String)> {
     }
     if options.cors {
         base.push(("access-control-allow-origin".into(), "*".into()));
+    }
+    if options.noindex {
+        base.push(("x-robots-tag".into(), "noindex".into()));
     }
     base.extend(isolation_headers(options));
     base
@@ -863,10 +1034,13 @@ pub struct AccessLogEntry<'a> {
     pub ms: f64,
     /// `Content-Range` of a `206`/`416`.
     pub range: Option<&'a str>,
+    /// The client address (`--log-ip`, or a non-loopback client with client info).
     /// What answered, as the `_redirects` log note (` → /new (_redirects:3)`).
     pub note: Option<&'a str>,
     /// The client address (`--log-ip`).
     pub remote: Option<&'a str>,
+    /// The client's device ([`device_of`]).
+    pub device: Option<&'a str>,
 }
 
 fn json_str(s: &str) -> String {
@@ -879,13 +1053,14 @@ pub fn access_log_line(json: bool, e: &AccessLogEntry) -> String {
     let target = printable(e.target);
     if !json {
         return format!(
-            "{} {target} {} {} {:.1}ms{}{}",
+            "{} {target} {} {} {:.1}ms{}{}{}",
             e.method,
             e.status,
             e.bytes,
             e.ms,
             e.note.unwrap_or(""),
-            e.remote.map(|r| format!(" {r}")).unwrap_or_default()
+            e.remote.map(|r| format!(" {r}")).unwrap_or_default(),
+            e.device.map(|d| format!(" {d}")).unwrap_or_default()
         );
     }
     let (path, query) = match target.find('?') {
@@ -893,7 +1068,7 @@ pub fn access_log_line(json: bool, e: &AccessLogEntry) -> String {
         None => (target.as_str(), ""),
     };
     format!(
-        "{{\"type\":\"request\",\"ts\":{},\"method\":{},\"path\":{},\"query\":{},\"status\":{},\"bytes\":{},\"ms\":{:.1},\"encoding\":\"identity\",\"range\":{}{}{}}}",
+        "{{\"type\":\"request\",\"ts\":{},\"method\":{},\"path\":{},\"query\":{},\"status\":{},\"bytes\":{},\"ms\":{:.1},\"encoding\":\"identity\",\"range\":{}{}{}{}}}",
         json_str(e.ts),
         json_str(e.method),
         json_str(path),
@@ -907,6 +1082,9 @@ pub fn access_log_line(json: bool, e: &AccessLogEntry) -> String {
             .unwrap_or_default(),
         e.remote
             .map(|r| format!(",\"remote\":{}", json_str(r)))
+            .unwrap_or_default(),
+        e.device
+            .map(|d| format!(",\"device\":{}", json_str(d)))
             .unwrap_or_default()
     )
 }
@@ -983,6 +1161,7 @@ pub fn log_line_as_json(line: &str) -> String {
                 range: None,
                 note: None,
                 remote: r.5,
+                device: None,
             },
         );
     }
@@ -1100,6 +1279,9 @@ fn preflight_headers(value: Option<&str>) -> Option<String> {
     ok.then(|| v.to_string())
 }
 
+const FORBIDDEN_PAGE: &str =
+    "<!doctype html><meta charset=\"utf-8\"><title>403 Forbidden</title><h1>403 Forbidden</h1>\n";
+const UNAUTHORIZED_PAGE: &str = "<!doctype html><meta charset=\"utf-8\"><title>401 Unauthorized</title><h1>401 Unauthorized</h1>\n";
 const FORBIDDEN_HOST_PAGE: &str = "<!doctype html><meta charset=\"utf-8\"><title>403 Forbidden</title><h1>403 Forbidden</h1><p>This server answers requests for localhost and IP addresses only. To allow another host name, restart it with <code>--allowed-host &lt;name&gt;</code>.</p>\n";
 const ERROR_PAGE: &str = "<!doctype html><meta charset=\"utf-8\"><title>500 Internal Server Error</title><h1>500 Internal Server Error</h1>\n";
 const METHOD_PAGE: &str = "<!doctype html><meta charset=\"utf-8\"><title>405 Method Not Allowed</title><h1>405 Method Not Allowed</h1>\n";
@@ -1822,9 +2004,11 @@ fn reason(status: u16) -> &'static str {
         206 => "Partial Content",
         304 => "Not Modified",
         400 => "Bad Request",
+        401 => "Unauthorized",
         403 => "Forbidden",
         404 => "Not Found",
         405 => "Method Not Allowed",
+        503 => "Service Unavailable",
         500 => "Internal Server Error",
         416 => "Range Not Satisfiable",
         410 => "Gone",
@@ -1908,7 +2092,7 @@ pub struct ServeHeaders {
 }
 
 /// Headers the server owns; `_headers` cannot set them.
-const PROTECTED_HEADERS: [&str; 9] = [
+const PROTECTED_HEADERS: [&str; 10] = [
     "content-length",
     "transfer-encoding",
     "connection",
@@ -1918,6 +2102,7 @@ const PROTECTED_HEADERS: [&str; 9] = [
     "accept-ranges",
     "content-range",
     "last-modified",
+    "www-authenticate",
 ];
 pub const SERVE_STATUSES: [u16; 9] = [200, 301, 302, 303, 307, 308, 404, 410, 451];
 
@@ -2547,6 +2732,19 @@ pub fn respond(
     ) {
         return page(403, FORBIDDEN_HOST_PAGE, vec![]);
     }
+    // Basic authentication covers everything, the live-reload endpoints too.
+    if let Some(a) = &options.auth {
+        if !a.allows(first_value(headers.get("authorization"))) {
+            return page(
+                401,
+                UNAUTHORIZED_PAGE,
+                vec![(
+                    "www-authenticate".into(),
+                    "Basic realm=\"sitefile\", charset=\"UTF-8\"".into(),
+                )],
+            );
+        }
+    }
     if options.cors && method == "OPTIONS" {
         // A CORS preflight: any path, nothing is looked up.
         let mut h = owned(vec![("access-control-allow-methods", "GET, HEAD".into())]);
@@ -2644,7 +2842,7 @@ pub fn respond(
         if inside && all_segs.len() == base_segs.len() && !trailing {
             return to_mount(301);
         }
-        if !inside && all_segs.is_empty() {
+        if !inside && all_segs.is_empty() && !options.hide_base {
             return to_mount(302);
         }
         if !inside {
@@ -3223,6 +3421,7 @@ fn serve_connection(
     tree: &SharedTree,
     rules: &RulesCache,
     options: &SiteServerOptions,
+    busy: bool,
 ) {
     let _ = stream.set_read_timeout(Some(Duration::from_secs(30)));
     let _ = stream.set_nodelay(true);
@@ -3243,11 +3442,18 @@ fn serve_connection(
             _ => break,
         };
         let started = Instant::now();
-        let mut keep = req.keep_alive && !req.chunked && req.body_len <= MAX_DISCARD_BODY;
-        let host_ok = host_allowed(
-            options.allowed_hosts.as_deref(),
-            req.headers.get("host").map(String::as_str),
-        );
+        let mut keep = !busy && req.keep_alive && !req.chunked && req.body_len <= MAX_DISCARD_BODY;
+        let ip_ok = ip_allowed(options.ip_rules.as_ref(), peer.as_deref().unwrap_or(""));
+        let host_ok = ip_ok
+            && !busy
+            && host_allowed(
+                options.allowed_hosts.as_deref(),
+                req.headers.get("host").map(String::as_str),
+            )
+            && options
+                .auth
+                .as_ref()
+                .is_none_or(|a| a.allows(first_value(req.headers.get("authorization"))));
         let console = options
             .live_reload
             .as_ref()
@@ -3285,6 +3491,34 @@ fn serve_connection(
         };
         let site_rules = rules_for(rules, &current, options.content.as_deref());
         let res = match console {
+            // --allow-ip / --deny-ip refuse this client (checked first).
+            _ if !ip_ok => {
+                let mut headers = base_headers(options);
+                headers.push(("content-type".into(), "text/html; charset=utf-8".into()));
+                headers.push(("content-length".into(), FORBIDDEN_PAGE.len().to_string()));
+                Response {
+                    status: 403,
+                    headers,
+                    body: if req.method == "HEAD" {
+                        Vec::new()
+                    } else {
+                        FORBIDDEN_PAGE.as_bytes().to_vec()
+                    },
+                    note: None,
+                }
+            }
+            // Over --max-connections-per-ip: one 503, then the connection closes.
+            _ if busy => {
+                let mut headers = base_headers(options);
+                headers.push(("retry-after".into(), "1".into()));
+                headers.push(("content-length".into(), "0".into()));
+                Response {
+                    status: 503,
+                    headers,
+                    body: Vec::new(),
+                    note: None,
+                }
+            }
             Some(live) => live.console_response(
                 options,
                 &req.method,
@@ -3349,7 +3583,12 @@ fn serve_connection(
             && [RELOAD_SCRIPT_PATH, CONSOLE_PATH].contains(&raw_path_of(&req.url));
         if !probe && !quiet && !options.quiet {
             if let Some(log) = &options.log {
-                let remote = if options.log_ip { peer.clone() } else { None };
+                let shared = options.client_info && !peer.as_deref().is_some_and(is_loopback_text);
+                let remote = if options.log_ip || shared {
+                    peer.clone()
+                } else {
+                    None
+                };
                 log(&access_log_line(
                     options.log_json,
                     &AccessLogEntry {
@@ -3362,6 +3601,8 @@ fn serve_connection(
                         range: res.header("content-range"),
                         note: res.note.as_deref(),
                         remote: remote.as_deref(),
+                        device: shared
+                            .then(|| device_of(req.headers.get("user-agent").map(String::as_str))),
                     },
                 ));
             }
@@ -3431,6 +3672,7 @@ pub fn listen_shared(
     let stop = Arc::new(AtomicBool::new(false));
     let conns: Arc<Mutex<HashMap<u64, TcpStream>>> = Arc::new(Mutex::new(HashMap::new()));
     let (s2, c2) = (stop.clone(), conns.clone());
+    let per_ip: Arc<Mutex<HashMap<std::net::IpAddr, usize>>> = Arc::new(Mutex::new(HashMap::new()));
     let accept = std::thread::spawn(move || {
         let next = AtomicU64::new(0);
         for stream in listener.incoming() {
@@ -3444,12 +3686,41 @@ pub fn listen_shared(
                     m.insert(id, c);
                 }
             }
-            let (tree, rules, options, conns) =
-                (tree.clone(), rules.clone(), options.clone(), c2.clone());
+            // --max-connections-per-ip: count this client's open connections.
+            let ip = stream.peer_addr().ok().map(|a| a.ip());
+            let limited = ip.filter(|ip| {
+                options.max_connections_per_ip > 0
+                    && (options.limit_loopback || !is_loopback_ip(ip))
+            });
+            let busy = match limited {
+                Some(ip) => {
+                    let mut m = per_ip.lock().unwrap_or_else(|p| p.into_inner());
+                    let n = m.entry(ip).or_insert(0);
+                    *n += 1;
+                    *n > options.max_connections_per_ip
+                }
+                None => false,
+            };
+            let (tree, rules, options, conns, per_ip) = (
+                tree.clone(),
+                rules.clone(),
+                options.clone(),
+                c2.clone(),
+                per_ip.clone(),
+            );
             std::thread::spawn(move || {
-                serve_connection(stream, &tree, &rules, &options);
+                serve_connection(stream, &tree, &rules, &options, busy);
                 if let Ok(mut m) = conns.lock() {
                     m.remove(&id);
+                }
+                if let Some(ip) = limited {
+                    let mut m = per_ip.lock().unwrap_or_else(|p| p.into_inner());
+                    if let Some(n) = m.get_mut(&ip) {
+                        *n -= 1;
+                        if *n == 0 {
+                            m.remove(&ip);
+                        }
+                    }
                 }
             });
         }
@@ -3982,6 +4253,105 @@ mod tests {
     }
 
     #[test]
+    fn max_connections_per_ip() {
+        let opts = SiteServerOptions {
+            max_connections_per_ip: 2,
+            limit_loopback: true,
+            ..Default::default()
+        };
+        let srv = listen(site(), opts, "127.0.0.1", 0).unwrap();
+        let port = srv.port;
+        let open = || TcpStream::connect(("127.0.0.1", port)).unwrap();
+        let ask = |c: &mut TcpStream| {
+            c.write_all(b"GET /app.js HTTP/1.1\r\nhost: 127.0.0.1\r\n\r\n")
+                .unwrap();
+            let mut buf = [0u8; 4096];
+            let n = c.read(&mut buf).unwrap();
+            String::from_utf8_lossy(&buf[..n]).into_owned()
+        };
+        let mut a = open();
+        let b = open();
+        let mut c = open();
+        std::thread::sleep(Duration::from_millis(50));
+        assert!(ask(&mut a).starts_with("HTTP/1.1 200"));
+        let busy = ask(&mut c);
+        assert!(busy.starts_with("HTTP/1.1 503"), "{busy}");
+        assert!(busy.contains("retry-after: 1"));
+        drop(b);
+        drop(c);
+        std::thread::sleep(Duration::from_millis(100));
+        let mut d = open();
+        assert!(ask(&mut d).starts_with("HTTP/1.1 200"));
+        srv.close();
+    }
+
+    #[test]
+    fn sharing_safety() {
+        let opts = SiteServerOptions {
+            base: Some(Arc::new(|| Some("/s3cr3t/".to_string()))),
+            hide_base: true,
+            noindex: true,
+            ..Default::default()
+        };
+        let t = site();
+        let h = HashMap::new();
+        let get = |u: &str| handle_request(&t, &opts, "GET", u, &h);
+        assert_eq!(get("/app.js").status, 404);
+        assert_eq!(
+            get("/").status,
+            404,
+            "the secret is not given away by a redirect"
+        );
+        assert_eq!(get("/s3cr3t/app.js").status, 200);
+        let r = get("/s3cr3t?x=1");
+        assert_eq!(
+            (r.status, r.header("location")),
+            (301, Some("/s3cr3t/?x=1"))
+        );
+        assert_eq!(
+            get("/s3cr3t/about").header("location"),
+            Some("/s3cr3t/about/")
+        );
+        assert_eq!(get("/s3cr3tx/app.js").status, 404);
+        assert_eq!(r.header("x-robots-tag"), Some("noindex"));
+        assert_eq!(ip_bytes("10.1.2.3"), Some(vec![10, 1, 2, 3]));
+        assert_eq!(ip_bytes("::ffff:10.1.2.3"), Some(vec![10, 1, 2, 3]));
+        let mut one = vec![0u8; 15];
+        one.push(1);
+        assert_eq!(ip_bytes("::1"), Some(one));
+        for bad in ["1.2.3", "::1::2", "1:2:3:4:5:6:7:8:9", "g::1", ""] {
+            assert_eq!(ip_bytes(bad), None, "{bad}");
+        }
+        let rules = IpRules {
+            allow: vec![
+                parse_cidr("192.168.0.0/16").unwrap(),
+                parse_cidr("fd00::/8").unwrap(),
+            ],
+            deny: vec![parse_cidr("192.168.9.0/24").unwrap()],
+        };
+        assert!(ip_allowed(Some(&rules), "192.168.1.5"));
+        assert!(ip_allowed(Some(&rules), "::ffff:192.168.1.5"));
+        assert!(!ip_allowed(Some(&rules), "192.168.9.5"));
+        assert!(!ip_allowed(Some(&rules), "10.0.0.1"));
+        assert!(ip_allowed(Some(&rules), "fd12::1"));
+        assert!(ip_allowed(Some(&rules), "127.0.0.1"));
+        for bad in ["10.0.0.0/33", "10/8", "x", "1.2.3.4/a", "::/129"] {
+            assert_eq!(parse_cidr(bad), None, "{bad}");
+        }
+        assert_eq!(
+            device_of(Some(
+                "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X)"
+            )),
+            "iPhone"
+        );
+        assert_eq!(
+            device_of(Some("Mozilla/5.0 (Macintosh; Intel Mac OS X 14_0)")),
+            "Mac"
+        );
+        assert_eq!(device_of(None), "other");
+    }
+
+    #[test]
     fn json_access_log() {
         let e = AccessLogEntry {
             ts: "2026-01-01T00:00:00.000Z",
@@ -3993,6 +4363,7 @@ mod tests {
             range: Some("bytes 0-1/10"),
             note: None,
             remote: None,
+            device: None,
         };
         assert_eq!(
             access_log_line(true, &e),

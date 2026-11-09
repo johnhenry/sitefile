@@ -1230,6 +1230,35 @@ on disk after the server started answers `500` for the entries that changed (`se
   HTML pages `public, max-age=<secs>` too (without it they keep `no-cache`, the common production practice).
   `404` pages keep `no-cache`, and a `_headers` `Cache-Control` for the path wins. This previews the headers a
   host would send; it is not a CDN. Stored in the server record (`cache`: `maxAge`, `immutable`, `maxAgeHtml`).
+- **Basic authentication (for sharing).** `--auth user:password` (repeatable; `SITEFILE_SERVE_AUTH=user:password`
+  keeps it out of shell history and `ps`) and `--auth-file <htpasswd>` (`user:{SHA}…` lines as `htpasswd -s`
+  writes them; bcrypt, `$apr1$`, crypt and plain-text entries are refused, bcrypt support is a follow-up) make every
+  request, the live-reload endpoints included, need `Authorization: Basic`; otherwise the answer is `401` with
+  `WWW-Authenticate: Basic realm="sitefile", charset="UTF-8"` (and the server-id header, so `servers` still
+  detects it). Passwords are compared in constant time and never stored: the record keeps a PBKDF2-SHA256
+  verifier per `--auth` user (`auth`) and the htpasswd path (`authFile`, read at every start); `servers --json`
+  shows `auth: true`, never the entries. Logs never contain the `Authorization` header. On a non-loopback bind a
+  warning says that basic auth over plain HTTP sends the password in the clear. `_headers` cannot set
+  `www-authenticate`.
+- **`--max-connections-per-ip <n>`** caps the connections one non-loopback client may hold open (default `0`, no
+  limit; loopback clients are never limited). A connection over the cap gets one `503` with `Retry-After: 1` (and
+  the usual access-log line), then it is closed; the count drops as connections close. Stored in the server record
+  (`maxConnectionsPerIp`), so `servers --json` shows it.
+- **Sharing a server** (on a LAN with `-p 0.0.0.0:<port>`, or through a tunnel). Besides `--auth`,
+  `--max-connections-per-ip` and the Host allow-list:
+  - `--random-route` is a secret `--base`: the site is served only under `/<24 hex>/` (printed in the URL and kept
+    in the record as `base`, so `server restart` keeps the link). Unlike `--base`, `/` does not redirect to it:
+    every path outside it is a plain `404`, never the site's `404.html` (`hideBase` in the record). It cannot be
+    combined with `--base`.
+  - `--allow-ip <cidr>` / `--deny-ip <cidr>` (repeatable; `192.168.0.0/16`, `fd00::/8` or one address) are checked
+    before anything else: a client in a deny block, or outside every allow block when there are some, gets `403`.
+    Loopback clients are always allowed (the `servers` probe is one). Kept in the record (`allowIp`, `denyIp`).
+  - `--stop-after <n>s|m|h|d` stops the server after that long (foreground: `Stopping: --stop-after 30m
+    reached`; detached: the record's `expires` time, shown by `servers --json`; a server restarted after it
+    fails with `server expired at …`). Not with `--watch`.
+  - On a non-loopback bind every response carries `X-Robots-Tag: noindex`.
+  - Access-log lines of non-loopback clients end with the client address and a device name from `User-Agent`
+    (`iPhone`, `iPad`, `Android`, `Windows`, `Mac`, `Linux` or `other`); in JSON, `remote` and `device`.
 - **Host allow-list (DNS rebinding).** A request whose `Host` names something other than `localhost`, a
   `*.localhost` name or an IP address (any IPv4 or bracketed IPv6 literal, so the bind address and, on
   `0.0.0.0`, every interface address work) gets `403` with a page naming `--allowed-host`, before anything
@@ -1403,6 +1432,8 @@ on disk after the server started answers `500` for the entries that changed (`se
     lines. Every matching block applies, in file order; a header set by several blocks gets its values joined
     with `, `. They are added to file, `206`, `304`, `404` and `416` responses (not to redirects) and can replace
     `cache-control` and the other defaults; `content-length`, `etag`, `location`, `connection`,
+    `keep-alive`, `transfer-encoding`, `accept-ranges`, `content-range`, `last-modified` and `www-authenticate` cannot be set. Lines with an invalid name or a control character in
+    the value are ignored, as are `! Name` detach lines and patterns that are not paths.
     `keep-alive`, `transfer-encoding`, `accept-ranges`, `content-range` and `last-modified` cannot be set. Lines with an invalid name or a control character in
     the value are ignored, as are `! Name` detach lines, patterns that are not paths and header lines before
     the first pattern (each with a warning).

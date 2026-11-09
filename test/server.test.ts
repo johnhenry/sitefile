@@ -4,7 +4,7 @@ import http from 'node:http';
 import net from 'node:net';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
-import { accessLogLine, networkAddresses, networkUrls, byteRange, cacheControlFor, logLineAsJson, closeServer, createSiteServer, hostAllowed, preflightHeaders, parseAllowedHost, earlyHints, httpDate, parseHttpDate, listen, LiveReload, originForm, RELOAD_SCRIPT, safeSegments, normalizeBase, normalizeProductionUrl, rewriteBaseUrls, hostProfile } from '../src/server.js';
+import { accessLogLine, deviceOf, ipAllowed, ipBytes, parseCidr, networkAddresses, networkUrls, byteRange, cacheControlFor, logLineAsJson, closeServer, createSiteServer, hostAllowed, preflightHeaders, parseAllowedHost, earlyHints, httpDate, parseHttpDate, listen, LiveReload, originForm, RELOAD_SCRIPT, safeSegments, normalizeBase, normalizeProductionUrl, rewriteBaseUrls, hostProfile } from '../src/server.js';
 import type { RoutingProfile } from '../src/server.js';
 import { makeFile, Tree } from '../src/tree.js';
 import { siteFileWarnings } from '../src/serve-rules.js';
@@ -445,6 +445,92 @@ test('network URLs for a server bound to all interfaces (johnhenry/sitefile#169)
   assert.deepEqual(all.slice(0, v4.length), v4, 'IPv4 first');
   for (const a of all.slice(v4.length)) assert.ok(a.includes(':') && !/^fe[89ab]/.test(a) && a !== '::1', a);
   assert.deepEqual(networkUrls('0.0.0.0', 8080), v4.map((a) => `http://${a}:8080/`));
+});
+
+test('--max-connections-per-ip: a connection over the limit gets 503 with Retry-After (johnhenry/sitefile#178)', async () => {
+  const s = createSiteServer(tree, { maxConnectionsPerIp: 2, limitLoopback: true });
+  const { port } = await listen(s, '127.0.0.1', 0);
+  const open = async (): Promise<net.Socket> => {
+    const c = net.connect(port, '127.0.0.1');
+    await new Promise((r) => c.once('connect', r));
+    return c;
+  };
+  const ask = (c: net.Socket): Promise<string> =>
+    new Promise((resolve) => {
+      let d = '';
+      c.on('data', (x) => {
+        d += x;
+        if (d.includes('\r\n\r\n')) resolve(d);
+      });
+      c.write('GET /app.js HTTP/1.1\r\nhost: 127.0.0.1\r\n\r\n');
+    });
+  try {
+    const a = await open();
+    const b = await open();
+    const c = await open();
+    await new Promise((r) => setTimeout(r, 50));
+    assert.match(await ask(a), /^HTTP\/1\.1 200/);
+    const busy = await ask(c);
+    assert.match(busy, /^HTTP\/1\.1 503/);
+    assert.match(busy, /retry-after: 1/i);
+    b.destroy();
+    c.destroy();
+    await new Promise((r) => setTimeout(r, 50));
+    const d = await open();
+    assert.match(await ask(d), /^HTTP\/1\.1 200/, 'a slot is free again');
+    a.destroy();
+    d.destroy();
+  } finally {
+    await closeServer(s);
+  }
+  // Loopback clients are not limited unless asked.
+  const t = createSiteServer(tree, { maxConnectionsPerIp: 1 });
+  const tp = await listen(t, '127.0.0.1', 0);
+  try {
+    const x = net.connect(tp.port, '127.0.0.1');
+    await new Promise((r) => x.once('connect', r));
+    assert.equal((await req(tp.port, '/app.js')).status, 200);
+    x.destroy();
+  } finally {
+    await closeServer(t);
+  }
+});
+
+test('sharing safety: random route, IP rules, noindex, client info (johnhenry/sitefile#191)', async () => {
+  const s = createSiteServer(tree, { base: '/s3cr3t/', hideBase: true, noindex: true });
+  const { port } = await listen(s, '127.0.0.1', 0);
+  try {
+    assert.equal((await req(port, '/app.js')).status, 404);
+    assert.equal((await req(port, '/')).status, 404, 'the secret is not given away by a redirect');
+    assert.equal((await req(port, '/s3cr3t/app.js')).status, 200);
+    const r = await req(port, '/s3cr3t?x=1');
+    assert.equal(r.status, 301);
+    assert.equal(r.headers.location, '/s3cr3t/?x=1');
+    const d = await req(port, '/s3cr3t/about');
+    assert.equal(d.headers.location, '/s3cr3t/about/', 'directory redirects stay under the prefix');
+    assert.equal((await req(port, '/s3cr3t/')).body, '<h1>home</h1>');
+    assert.equal((await req(port, '/s3cr3tx/app.js')).status, 404);
+    assert.equal(r.headers['x-robots-tag'], 'noindex');
+  } finally {
+    await closeServer(s);
+  }
+  assert.deepEqual(ipBytes('10.1.2.3'), [10, 1, 2, 3]);
+  assert.deepEqual(ipBytes('::ffff:10.1.2.3'), [10, 1, 2, 3]);
+  assert.deepEqual(ipBytes('::1'), [...new Array(15).fill(0), 1]);
+  assert.deepEqual(ipBytes('fe80::1:2'), [0xfe, 0x80, ...new Array(10).fill(0), 0, 1, 0, 2]);
+  for (const bad of ['1.2.3', '::1::2', '1:2:3:4:5:6:7:8:9', 'g::1', '']) assert.equal(ipBytes(bad), undefined, bad);
+  const rules = { allow: [parseCidr('192.168.0.0/16')!, parseCidr('fd00::/8')!], deny: [parseCidr('192.168.9.0/24')!] };
+  assert.equal(ipAllowed(rules, '192.168.1.5'), true);
+  assert.equal(ipAllowed(rules, '::ffff:192.168.1.5'), true);
+  assert.equal(ipAllowed(rules, '192.168.9.5'), false, 'deny wins');
+  assert.equal(ipAllowed(rules, '10.0.0.1'), false, 'not in an allow block');
+  assert.equal(ipAllowed(rules, 'fd12::1'), true);
+  assert.equal(ipAllowed(rules, '127.0.0.1'), true, 'loopback always');
+  assert.equal(ipAllowed({ allow: [], deny: [parseCidr('10.0.0.0/8')!] }, '172.16.0.1'), true);
+  for (const bad of ['10.0.0.0/33', '10/8', 'x', '1.2.3.4/a', '::/129']) assert.equal(parseCidr(bad), undefined, bad);
+  assert.equal(deviceOf('Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X)'), 'iPhone');
+  assert.equal(deviceOf('Mozilla/5.0 (Macintosh; Intel Mac OS X 14_0)'), 'Mac');
+  assert.equal(deviceOf(undefined), 'other');
 });
 
 test('an access log line is written per request: method path status bytes ms', async () => {

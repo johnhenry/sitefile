@@ -70,6 +70,10 @@ pub struct Bind {
     pub port: u16,
 }
 
+fn is_zero(n: &usize) -> bool {
+    *n == 0
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ServerState {
@@ -141,6 +145,27 @@ pub struct ServerState {
     /// `--quiet`.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub quiet: bool,
+    /// `--auth`, `SITEFILE_SERVE_AUTH`: users and password verifiers (never passwords).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub auth: Vec<crate::serve_auth::AuthEntry>,
+    /// `--auth-file`: an htpasswd file, read at every start.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auth_file: Option<String>,
+    /// `--max-connections-per-ip` (0: no limit).
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub max_connections_per_ip: usize,
+    /// `--random-route`: `base` is a secret, so `/` is a plain 404.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub hide_base: bool,
+    /// `--allow-ip` blocks as given.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub allow_ip: Option<Vec<String>>,
+    /// `--deny-ip` blocks as given.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deny_ip: Option<Vec<String>>,
+    /// `--stop-after`: when the server stops itself (ISO time).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expires: Option<String>,
     /// `--country`: what `_redirects` `Country=` conditions match (absent: none matches).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub country: Option<String>,
@@ -979,6 +1004,19 @@ pub struct DetachedServe {
     pub log_ip: bool,
     /// `--quiet`.
     pub quiet: bool,
+    /// `--auth` verifiers.
+    pub auth: Vec<crate::serve_auth::AuthEntry>,
+    /// `--auth-file`, an absolute path.
+    pub auth_file: Option<String>,
+    /// `--max-connections-per-ip` (0: no limit).
+    pub max_connections_per_ip: usize,
+    /// `--random-route`: `base` is a secret.
+    pub hide_base: bool,
+    /// `--allow-ip`, `--deny-ip` blocks as given.
+    pub allow_ip: Option<Vec<String>>,
+    pub deny_ip: Option<Vec<String>>,
+    /// `--stop-after`: when the server stops (ISO time).
+    pub expires: Option<String>,
     /// `--country`.
     pub country: Option<String>,
     /// `--strict-site-files`.
@@ -1012,6 +1050,13 @@ impl DetachedServe {
             log_format: None,
             log_ip: false,
             quiet: false,
+            auth: Vec::new(),
+            auth_file: None,
+            max_connections_per_ip: 0,
+            hide_base: false,
+            allow_ip: None,
+            deny_ip: None,
+            expires: None,
             country: None,
             strict_site_files: false,
             project: None,
@@ -1082,6 +1127,13 @@ pub fn serve_detached_with(
         log_format: serve.log_format.clone(),
         log_ip: serve.log_ip,
         quiet: serve.quiet,
+        auth: serve.auth.clone(),
+        auth_file: serve.auth_file.clone(),
+        max_connections_per_ip: serve.max_connections_per_ip,
+        hide_base: serve.hide_base,
+        allow_ip: serve.allow_ip.clone(),
+        deny_ip: serve.deny_ip.clone(),
+        expires: serve.expires.clone(),
         country: serve.country.clone(),
         strict_site_files: serve.strict_site_files,
         host: serve.bind.host.clone(),
@@ -1306,6 +1358,13 @@ mod tests {
             log_format: None,
             log_ip: false,
             quiet: false,
+            auth: Vec::new(),
+            auth_file: None,
+            max_connections_per_ip: 0,
+            hide_base: false,
+            allow_ip: None,
+            deny_ip: None,
+            expires: None,
             country: None,
             strict_site_files: false,
             bind: Bind {

@@ -14,6 +14,7 @@ import { DEFAULT_ARCHIVE_LIMITS, type ArchiveLimits } from './resources/types.js
 import { Store } from './store.js';
 import { Tree } from './tree.js';
 import type { CachePreview } from './server.js';
+import type { AuthEntry } from './serve-auth.js';
 
 /**
  * Detached site servers ("containers"). One state file per server:
@@ -65,6 +66,19 @@ export interface ServerState {
   readonly logIp?: boolean;
   /** `--quiet` (absent: false). */
   readonly quiet?: boolean;
+  /** `--auth`, `SITEFILE_SERVE_AUTH`: users and password verifiers (never passwords; absent: none). */
+  readonly auth?: readonly AuthEntry[];
+  /** `--auth-file`: an htpasswd file, read at every start (absent: none). */
+  readonly authFile?: string;
+  /** `--max-connections-per-ip` (absent: no limit). */
+  readonly maxConnectionsPerIp?: number;
+  /** `--random-route`: `base` is a secret, so `/` is a plain 404 (absent: false). */
+  readonly hideBase?: boolean;
+  /** `--allow-ip` / `--deny-ip` blocks as given (absent: none). */
+  readonly allowIp?: readonly string[];
+  readonly denyIp?: readonly string[];
+  /** `--stop-after`: when the server stops itself (ISO time; absent: never). */
+  readonly expires?: string;
   /** `--country`: what `_redirects` `Country=` conditions match (absent: none matches). */
   readonly country?: string;
   /** `--strict-site-files`: an ignored `_redirects`/`_headers` line stops the server from starting (absent: false). */
