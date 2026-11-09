@@ -270,7 +270,7 @@ export const NO_CACHE = 'no-cache';
  * URL paths of every file in the exported directory, `hashed` those of the fingerprinted ones. A
  * fingerprinted file gets `Cache-Control: public, max-age=31536000, immutable`, by a `/dir/*` rule for the
  * topmost directory (below the root) that holds only fingerprinted files, or else by its own path; pages
- * get `Cache-Control: no-cache` through `/`, `/*​/` and `/*.html` (each only when a page it matches
+ * get `Cache-Control: no-cache` through `/`, `/*/` and `/*.html` (each only when a page it matches
  * exists). Paths with spaces or control characters are left out (a `_headers` path cannot hold them).
  * Rules are in path order (UTF-8), immutable ones first; none when nothing is fingerprinted.
  */
@@ -315,4 +315,105 @@ export function cacheHeaderRules(files: readonly string[], hashed: ReadonlySet<s
   if (pages.some((f) => f !== '/index.html' && /\/index\.html$/i.test(f))) add('/*/', NO_CACHE);
   if (pages.length > 0) add('/*.html', NO_CACHE);
   return out;
+}
+// ---------------------------------------------------------------- robots.txt and security.txt
+
+/** `/robots.txt` (RFC 9309) for every user agent: the rules in order (an empty `Disallow:` when none), then a `Sitemap:` line per URL. */
+export function robotsTxt(rules: ReadonlyArray<{ readonly allow: boolean; readonly path: string }>, sitemaps: readonly string[]): string {
+  let out = 'User-agent: *\n';
+  if (rules.length === 0) out += 'Disallow:\n';
+  for (const r of rules) out += `${r.allow ? 'Allow' : 'Disallow'}: ${r.path}\n`;
+  if (sitemaps.length > 0) out += '\n' + sitemaps.map((u) => `Sitemap: ${u}\n`).join('');
+  return out;
+}
+
+/** A security.txt URI field: one of `schemes` (lowercase, with their `:` or `://`), no spaces or control characters. */
+export function checkFieldUri(raw: string, field: string, schemes: readonly string[], span: SourceSpan): string {
+  const lower = raw.toLowerCase();
+  if (SPACE_OR_CONTROL.test(raw) || !schemes.some((s) => lower.startsWith(s) && raw.length > s.length)) {
+    throw new SitefileError('E_VALIDATION', `SECURITY_TXT ${field} '${raw}' must be a ${schemes.map((s) => s.replace(/\/\/$/, '//…')).join(', ')} URI with no spaces`, span);
+  }
+  return raw;
+}
+
+export interface SecurityTxt {
+  readonly contact: readonly string[];
+  /** RFC 3339, as {@link parseFeedDate} writes it. */
+  readonly expires: string;
+  readonly encryption: readonly string[];
+  readonly policy: readonly string[];
+}
+
+/** RFC 9116 `security.txt`: Contact lines, Expires, then Encryption and Policy lines, in source order. */
+export function securityTxt(s: SecurityTxt): string {
+  return [
+    ...s.contact.map((v) => `Contact: ${v}\n`),
+    `Expires: ${s.expires}\n`,
+    ...s.encryption.map((v) => `Encryption: ${v}\n`),
+    ...s.policy.map((v) => `Policy: ${v}\n`),
+  ].join('');
+}
+
+// ---------------------------------------------------------------- CSP
+
+/** Check a CSP POLICY: non-empty, no control characters (so it cannot break a header line), no `,` (which would make it two policies). */
+export function checkCspPolicy(raw: string, span: SourceSpan): string {
+  const v = raw.replace(/^[ \t]+|[ \t]+$/g, '');
+  if (CONTROL.test(raw) || v === '' || v.includes(',')) {
+    throw new SitefileError('E_VALIDATION', `CSP POLICY '${raw}' must be a non-empty policy without control characters or commas (directives separated by ';')`, span);
+  }
+  return v;
+}
+
+/**
+ * A page's policy: `base` with `'sha256-…'` sources for its inline scripts and styles (deduplicated, in page
+ * order) added to `script-src` and `style-src`. A directive the base already has gets the hashes appended;
+ * otherwise one is added (`script-src 'self' …`) when the page has hashes of that kind. Directives are
+ * joined with `; `.
+ */
+export function cspPolicy(base: string, scriptHashes: readonly string[], styleHashes: readonly string[]): string {
+  const directives = base
+    .split(';')
+    .map((d) => d.replace(/^[ \t]+|[ \t]+$/g, ''))
+    .filter((d) => d !== '');
+  const add = (name: string, hashes: readonly string[]): void => {
+    if (hashes.length === 0) return;
+    const sources = [...new Set(hashes)].map((h) => `'${h}'`).join(' ');
+    const at = directives.findIndex((d) => d.split(/[ \t]+/)[0]!.toLowerCase() === name);
+    if (at === -1) directives.push(`${name} 'self' ${sources}`);
+    else directives[at] = `${directives[at]} ${sources}`;
+  };
+  add('script-src', scriptHashes);
+  add('style-src', styleHashes);
+  return directives.join('; ');
+}
+
+/** The `_headers` paths of a page URL: `/a/index.html` -> `/a/`, `/a/index.html`; `/b.html` -> `/b.html`, `/b`; others as they are. */
+export function pagePatterns(url: string): string[] {
+  if (url.endsWith('/index.html')) return [url.slice(0, -'index.html'.length), url];
+  if (url.endsWith('.html')) return [url, url.slice(0, -'.html'.length)];
+  return [url];
+}
+
+/** `<meta http-equiv="Content-Security-Policy" content="…">`, with `&` and `"` of the policy escaped. */
+export function cspMeta(policy: string): string {
+  return `<meta http-equiv="Content-Security-Policy" content="${policy.replace(/&/g, '&amp;').replace(/"/g, '&quot;')}">`;
+}
+
+// ---------------------------------------------------------------- MIME
+
+/** Check a MIME extension: `.` and letters, digits, `+`, `-` or `_` (`.usdz`, `.tar-gz`); returned in lowercase. */
+export function checkMimeExtension(raw: string, span: SourceSpan): string {
+  if (!/^\.[A-Za-z0-9+_-]+$/.test(raw)) {
+    throw new SitefileError('E_VALIDATION', `MIME extension '${raw}' must be a dot and letters, digits, '+', '-' or '_' (e.g. .usdz)`, span);
+  }
+  return raw.toLowerCase();
+}
+
+/** Check a MIME media type: `type/subtype`, both RFC 6838 restricted names (no parameters); returned in lowercase. */
+export function checkMimeType(raw: string, span: SourceSpan): string {
+  if (!/^[A-Za-z0-9][A-Za-z0-9!#$&^_.+-]{0,126}\/[A-Za-z0-9][A-Za-z0-9!#$&^_.+-]{0,126}$/.test(raw)) {
+    throw new SitefileError('E_VALIDATION', `MIME type '${raw}' must be type/subtype (e.g. model/vnd.usdz+zip), without parameters`, span);
+  }
+  return raw.toLowerCase();
 }

@@ -15,6 +15,8 @@ import { checkSecretHosts, type NetworkSettings } from './resources/network.js';
 const ID_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
 /** Visible ASCII, space and tab: what every HTTP client sends unchanged in a header value. */
 const HEADER_VALUE_RE = /^[\t\x20-\x7e]+$/;
+/** What a secret may hold: printable ASCII, tabs and line breaks (a PEM key for EXPORT ... KEY). */
+const SECRET_VALUE_RE = /^[\t\n\r\x20-\x7e]+$/;
 
 export type Secrets = ReadonlyMap<string, string>;
 
@@ -25,7 +27,8 @@ function usage(message: string): SitefileError {
 /**
  * Parse `--secret` flags: `id=<id>,env=<VAR>` (an environment variable) or `id=<id>,src=<file>` (a
  * file, relative to the working directory; one trailing newline is dropped). Values are checked to
- * be usable as an HTTP header value. Messages never include a value.
+ * be printable ASCII (tabs and line breaks allowed: a PEM key for EXPORT ... KEY); one used as an HTTP
+ * header (IMPORT ... SECRET) must have no line breaks. Messages never include a value.
  */
 export async function loadSecrets(flags: readonly string[], env: NodeJS.ProcessEnv = process.env): Promise<Map<string, string>> {
   const out = new Map<string, string>();
@@ -61,8 +64,8 @@ export async function loadSecrets(flags: readonly string[], env: NodeJS.ProcessE
       value = bytes.toString('latin1').replace(/\r?\n$/, '');
     }
     if (value === '') throw new SitefileError('E_SECRET', `--secret id=${id} is empty`);
-    if (!HEADER_VALUE_RE.test(value)) {
-      throw new SitefileError('E_SECRET', `--secret id=${id} cannot be sent in an HTTP header (only printable ASCII, spaces and tabs)`);
+    if (!SECRET_VALUE_RE.test(value)) {
+      throw new SitefileError('E_SECRET', `--secret id=${id} must be printable ASCII (spaces, tabs and line breaks allowed)`);
     }
     out.set(id, value);
   }
@@ -100,6 +103,9 @@ export function secretHeaders(
     const v = secrets?.get(s.id);
     if (v === undefined) {
       throw new SitefileError('E_SECRET', `IMPORT ${spec.name}: secret '${s.id}' was not given; pass --secret id=${s.id},env=<VAR> or --secret id=${s.id},src=<file>`, spec.span);
+    }
+    if (!HEADER_VALUE_RE.test(v)) {
+      throw new SitefileError('E_SECRET', `IMPORT ${spec.name}: secret '${s.id}' cannot be sent in an HTTP header (only printable ASCII, spaces and tabs)`, spec.span);
     }
     headers[s.header.toLowerCase()] = s.bearer ? `Bearer ${v}` : v;
   }

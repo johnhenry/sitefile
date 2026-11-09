@@ -7,8 +7,10 @@ use crate::language::ast::{
     is_ident, EscapeMode, ExportFormat, ImportKind, OciCompression, ValueType,
 };
 use crate::language::parser::{
-    flags_of, Shape, EXPORT_CLAUSES, FEED_CLAUSES, FINGERPRINT_CLAUSES, IMPORT_CLAUSES,
-    INSTRUCTIONS, REDIRECT_CLAUSES, SECRET_FORMS, SITEMAP_CLAUSES, SORT_ORDERS, TRANSFORM_CLAUSES,
+    flags_of, Shape, CSP_CLAUSES, EXPORT_CLAUSES, FEED_CLAUSES, FINGERPRINT_CLAUSES,
+    IMPORT_CLAUSES, INSTRUCTIONS, PRECACHE_CLAUSES, PRECOMPRESS_CLAUSES, REDIRECT_CLAUSES,
+    ROBOTS_CLAUSES, SECRET_FORMS, SECURITY_TXT_CLAUSES, SITEMAP_CLAUSES, SORT_ORDERS,
+    TRANSFORM_CLAUSES,
 };
 use crate::language::scanner::{is_js_space, js_trim, version_directive};
 use crate::lsp::diagnostics::Analysis;
@@ -423,6 +425,100 @@ pub fn completion(lines: &Lines, ix: &Index, line: u32, col: u32) -> Completion 
                 kw_items(["PRETTY"], CIK_KEYWORD)
             } else {
                 Vec::new()
+            }
+        }
+        "PRECOMPRESS" => {
+            // [gzip] (before the patterns), then patterns, then MIN <bytes> once.
+            let ops: Vec<String> = prior
+                .iter()
+                .skip(1)
+                .filter(|w| !w.text.starts_with("--"))
+                .map(|w| w.upper())
+                .collect();
+            let patterns = ops
+                .iter()
+                .filter(|w| !w.eq_ignore_ascii_case("gzip"))
+                .count();
+            if prev == "MIN" || ops.iter().any(|w| w == "MIN") {
+                Vec::new()
+            } else if patterns == 0 {
+                if ops.is_empty() {
+                    kw_items(["gzip"], CIK_KEYWORD)
+                } else {
+                    Vec::new()
+                }
+            } else {
+                kw_items(PRECOMPRESS_CLAUSES.iter().copied(), CIK_KEYWORD)
+            }
+        }
+        "ROBOTS" => {
+            // [ALLOW|DISALLOW <path>]… [SITEMAP] [TO <dest>], in this order.
+            let ops: Vec<String> = prior
+                .iter()
+                .skip(1)
+                .filter(|w| !w.text.starts_with("--"))
+                .map(|w| w.upper())
+                .collect();
+            if ["ALLOW", "DISALLOW", "TO"].contains(&prev.as_str()) || ops.iter().any(|w| w == "TO")
+            {
+                Vec::new()
+            } else if ops.iter().any(|w| w == "SITEMAP") {
+                kw_items(["TO"], CIK_KEYWORD)
+            } else {
+                kw_items(ROBOTS_CLAUSES.iter().copied(), CIK_KEYWORD)
+            }
+        }
+        "SECURITY_TXT" => {
+            // Clauses in any order; EXPIRES and TO once.
+            let ops: Vec<String> = prior
+                .iter()
+                .skip(1)
+                .filter(|w| !w.text.starts_with("--"))
+                .map(|w| w.upper())
+                .collect();
+            if SECURITY_TXT_CLAUSES.contains(&prev.as_str()) {
+                Vec::new()
+            } else {
+                kw_items(
+                    SECURITY_TXT_CLAUSES.iter().copied().filter(|c| {
+                        !((*c == "EXPIRES" || *c == "TO") && ops.iter().any(|w| w == c))
+                    }),
+                    CIK_KEYWORD,
+                )
+            }
+        }
+        "PRECACHE" => {
+            // Patterns, then [TO <dest>] [INTO <service-worker>], in this order.
+            let ops: Vec<String> = prior
+                .iter()
+                .skip(1)
+                .filter(|w| !w.text.starts_with("--"))
+                .map(|w| w.upper())
+                .collect();
+            let last = ops
+                .iter()
+                .filter_map(|w| PRECACHE_CLAUSES.iter().position(|c| w == c))
+                .max();
+            if ops.is_empty() || PRECACHE_CLAUSES.contains(&prev.as_str()) {
+                Vec::new()
+            } else {
+                kw_items(
+                    PRECACHE_CLAUSES[last.map_or(0, |l| l + 1)..]
+                        .iter()
+                        .copied(),
+                    CIK_KEYWORD,
+                )
+            }
+        }
+        "CSP" => {
+            // [POLICY <policy>] [META], in this order.
+            let ops: Vec<String> = prior.iter().skip(1).map(|w| w.upper()).collect();
+            if prev == "POLICY" || ops.iter().any(|w| w == "META") {
+                Vec::new()
+            } else if ops.iter().any(|w| w == "POLICY") {
+                kw_items(["META"], CIK_KEYWORD)
+            } else {
+                kw_items(CSP_CLAUSES.iter().copied(), CIK_KEYWORD)
             }
         }
         "SITEMAP" | "FEED" | "REDIRECT" => {
@@ -1132,7 +1228,10 @@ mod tests {
             ExportFormat::ALL.map(|f| f.as_str().to_string())
         );
         assert_eq!(labels("EXPORT / "), EXPORT_CLAUSES.map(String::from));
-        assert_eq!(labels("EXPORT / AS oci BASE x "), ["AT", "COMPRESSION"]);
+        assert_eq!(
+            labels("EXPORT / AS oci BASE x "),
+            ["AT", "COMPRESSION", "KEY"]
+        );
         assert_eq!(labels("EXPORT / AS oci COMPRESSION "), ["gzip", "none"]);
         assert_eq!(labels("RENDER --escape="), ["none", "html"]);
         assert_eq!(labels("ARG N: "), ["string", "number", "boolean"]);
@@ -1280,6 +1379,44 @@ mod tests {
         assert!(labels("CANONICAL BASE ").is_empty());
         assert_eq!(labels("CANONICAL BASE https://e.x "), ["PRETTY"]);
         assert!(labels("CANONICAL BASE https://e.x PRETTY ").is_empty());
+        // PRECOMPRESS: gzip first, then patterns, then MIN once
+        assert_eq!(labels("PRECOMPRESS "), ["gzip"]);
+        assert_eq!(labels("PRECOMPRESS --"), ["--overwrite"]);
+        assert!(labels("PRECOMPRESS gzip ").is_empty());
+        assert_eq!(labels("PRECOMPRESS /a/ "), ["MIN"]);
+        assert_eq!(labels("PRECOMPRESS gzip /a/ "), ["MIN"]);
+        assert!(labels("PRECOMPRESS /a/ MIN ").is_empty());
+        assert!(labels("PRECOMPRESS /a/ MIN 10 ").is_empty());
+        // ROBOTS: rules, then SITEMAP, then TO
+        assert_eq!(labels("ROBOTS "), ["ALLOW", "DISALLOW", "SITEMAP", "TO"]);
+        assert!(labels("ROBOTS ALLOW ").is_empty());
+        assert_eq!(
+            labels("ROBOTS DISALLOW /a/ "),
+            ["ALLOW", "DISALLOW", "SITEMAP", "TO"]
+        );
+        assert_eq!(labels("ROBOTS SITEMAP "), ["TO"]);
+        assert!(labels("ROBOTS TO /r.txt ").is_empty());
+        // SECURITY_TXT: any order, EXPIRES and TO once
+        assert_eq!(
+            labels("SECURITY_TXT "),
+            ["CONTACT", "EXPIRES", "ENCRYPTION", "POLICY", "TO"]
+        );
+        assert!(labels("SECURITY_TXT CONTACT ").is_empty());
+        assert_eq!(
+            labels("SECURITY_TXT EXPIRES 2099-01-01 "),
+            ["CONTACT", "ENCRYPTION", "POLICY", "TO"]
+        );
+        // PRECACHE: patterns, then TO, then INTO
+        assert!(labels("PRECACHE ").is_empty());
+        assert_eq!(labels("PRECACHE /assets/ "), ["TO", "INTO"]);
+        assert!(labels("PRECACHE /a/ TO ").is_empty());
+        assert_eq!(labels("PRECACHE /a/ TO /m.json "), ["INTO"]);
+        assert!(labels("PRECACHE /a/ INTO /sw.js ").is_empty());
+        // CSP: POLICY, then META
+        assert_eq!(labels("CSP "), ["POLICY", "META"]);
+        assert!(labels("CSP POLICY ").is_empty());
+        assert_eq!(labels("CSP POLICY x "), ["META"]);
+        assert!(labels("CSP META ").is_empty());
         // CHECKLINKS: flags only
         assert_eq!(labels("CHECKLINKS --"), ["--warn", "--external"]);
         assert_eq!(labels("CHECKLINKS --warn --"), ["--external"]);

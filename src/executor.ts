@@ -1,3 +1,5 @@
+import { addDictionaryDeltas } from './dictionary.js';
+import { writeSignedWebBundle } from './swbn.js';
 import { encodeCar } from './car.js';
 import { chmod, mkdir, mkdtemp, readdir, readFile, realpath, rm, writeFile } from 'node:fs/promises';
 import { statSync } from 'node:fs';
@@ -48,7 +50,11 @@ import { parseYaml } from './yaml.js';
 import { brokenLinks, reportBrokenLinks } from './checklinks.js';
 import { canonical } from './canonical.js';
 import { composeRenames, fingerprint, type Fingerprinted } from './fingerprint.js';
+import { portabilityProblems } from './portable.js';
+import { precache } from './precache.js';
+import { precompress } from './precompress.js';
 import { atomXml, cacheHeaderRules, headersFile, pageUrl, parseFeedDate, redirectsFile, sitemapFiles, type FeedEntry, type HeaderRule } from './site.js';
+import { cspPages } from './csp.js';
 
 export interface BuildOptions {
   /** Build context directory; local paths resolve from here. */
@@ -92,6 +98,8 @@ export interface BuildOptions {
    * INTEGRITY nor a lockfile entry, or the BASE image is neither `@sha256:`-pinned nor locked.
    */
   readonly strictPins?: boolean;
+  /** `--strict-paths`: exported paths Windows or GitHub Pages cannot hold are E_PATH_PORTABLE, not warnings. */
+  readonly strictPaths?: boolean;
   /** Maximum imports resolved at once (default 4). */
   readonly concurrency?: number;
   /** Plugin process limits (per-call timeout, maximum result size). */
@@ -547,6 +555,11 @@ async function buildWith(options: BuildOptions, tempDirs: string[]): Promise<Bui
   }
   tree = withSiteRules(tree, p, label, currentRenames, warn);
   const output = tree.subtree(p.exportPath);
+  const portability = portabilityProblems(output.entries().map(([f]) => f).sort((a, b) => Buffer.compare(Buffer.from(a, 'utf8'), Buffer.from(b, 'utf8'))));
+  if (portability.length > 0 && options.strictPaths) {
+    throw new SitefileError('E_PATH_PORTABLE', `EXPORT ${p.exportPath}: ${portability.length === 1 ? 'a path is' : `${portability.length} paths are`} not portable (--strict-paths):${portability.map((m) => `\n  ${m}`).join('')}`);
+  }
+  for (const m of portability) warn(`EXPORT ${p.exportPath}: ${m}`);
   if (output.size === 0) warn(p.target === undefined ? `EXPORT ${p.exportPath} contains no files` : `--target ${p.target}: stage '${p.target}' contains no files`);
 
   // BASE: the image to build on. Resolved after the files so a failing build never pulls anything; its
@@ -657,6 +670,11 @@ export function checkPins(p: Plan, lock: Lockfile | undefined, baseRef: string |
 }
 
 export interface ExportTarget {
+  /**
+   * `--experimental-dictionary`: the previous build's files. The export gets `.dcz` deltas against them
+   * and `Use-As-Dictionary` headers (src/dictionary.ts).
+   */
+  readonly dictionaryFrom?: Tree;
   /** Overrides the Sitefile's EXPORT format. */
   readonly format?: ExportFormat;
   /** Overrides the Sitefile's EXPORT ... BASE (wbn). */
@@ -667,7 +685,7 @@ export interface ExportTarget {
   readonly ociCompression?: OciCompression;
   /** oci: split the site's files over this many layers (`--oci-layers`, default 1). */
   readonly ociLayers?: number;
-  /** wbn: `gzip` wraps the bundle in gzip (overrides EXPORT ... COMPRESSION; default none). */
+  /** wbn: `gzip` wraps the bundle in gzip; warc: each record is a gzip member (overrides EXPORT ... COMPRESSION; default none). */
   readonly wbnCompression?: OciCompression;
   /** Extra OCI config labels. */
   readonly imageLabels?: Readonly<Record<string, string>>;
@@ -681,6 +699,8 @@ export interface ExportTarget {
 
 export interface ExportedBuild extends BuildResult {
   readonly format: ExportFormat;
+  /** `--experimental-dictionary`: the paths that got a `.dcz` delta. */
+  readonly dictionaryDeltas?: readonly string[];
   /** Real path written: a directory for `directory`, otherwise the archive file. */
   readonly outDir: string;
   /** Archive size in bytes (archive formats only). */
@@ -691,6 +711,8 @@ export interface ExportedBuild extends BuildResult {
   readonly manifestDigest?: string;
   /** car: the root CID (CIDv1, base32). */
   readonly rootCid?: string;
+  /** swbn: the Web Bundle ID (the Isolated Web App is `isolated-app://<id>/`). */
+  readonly webBundleId?: string;
   /** Watch mode: set when the directory export applied only the changes (src/exporter.ts). */
   readonly incremental?: { readonly written: number; readonly removed: number };
 }
@@ -713,10 +735,12 @@ export async function buildToDirectory(
 }
 
 async function exportBuild(
-  result: BuildResult,
+  built: BuildResult,
   format: ExportFormat,
   options: BuildOptions & ExportTarget & { readonly outDir: string; readonly force?: boolean },
 ): Promise<ExportedBuild> {
+  const dictionary = options.dictionaryFrom ? addDictionaryDeltas(built.output, options.dictionaryFrom) : undefined;
+  const result: BuildResult & { readonly dictionaryDeltas?: readonly string[] } = dictionary ? { ...built, output: dictionary.tree, dictionaryDeltas: dictionary.deltas } : built;
   const exportOptions = { contextDir: options.contextDir, ...(options.force ? { force: true } : {}) };
   // Watch mode: a directory export writes only what changed since the session's last one.
   const exportState = options.memo?.exportState;
@@ -747,6 +771,15 @@ async function exportBuild(
     const written = await exportDirectory(result.output, options.outDir, { ...exportOptions, ...(exportState ? { incremental: exportState } : {}) });
     return { ...result, format, outDir: written.outDir, ...(written.incremental ? { incremental: written.incremental } : {}) };
   }
+  if (format === 'swbn') {
+    const keyId = result.plan.exportFormat === 'swbn' ? result.plan.exportKey : undefined;
+    if (keyId === undefined) throw new SitefileError('E_VALIDATION', "swbn export needs a signing key: build with 'EXPORT ... AS swbn KEY <secret-id>' and --secret");
+    const pem = options.secrets?.get(keyId);
+    if (pem === undefined) throw new SitefileError('E_SECRET', `EXPORT ... KEY ${keyId}: no --secret id=${keyId} was given`);
+    const signed = writeSignedWebBundle(result.output, pem, keyId);
+    const written = await exportFile(signed.bytes, options.outDir, exportOptions);
+    return { ...result, format, outDir: written.outFile, bytes: written.bytes, fileDigest: sha256(signed.bytes), webBundleId: signed.id };
+  }
   if (format === 'car') {
     const car = encodeCar(result.output);
     const written = await exportFile(car.bytes, options.outDir, exportOptions);
@@ -755,7 +788,7 @@ async function exportBuild(
   const data = encodeTree(result.output, format, {
     epoch: sourceDateEpoch(),
     baseUrl: options.baseUrl ?? result.plan.exportBase,
-    ...(format === 'wbn' ? { compression: options.wbnCompression ?? sitefileCompression(result.plan, 'wbn') } : {}),
+    ...(format === 'wbn' || format === 'warc' ? { compression: options.wbnCompression ?? sitefileCompression(result.plan, format) } : {}),
   });
   const written = await exportFile(data, options.outDir, exportOptions);
   return { ...result, format, outDir: written.outFile, bytes: written.bytes, fileDigest: sha256(data) };
@@ -925,7 +958,8 @@ export interface RemoteEnv {
 export function warnUnusedSecrets(p: Plan, secrets: Secrets | undefined, warn: (m: string) => void): void {
   if (!secrets) return;
   const used = new Set(p.imports.flatMap((s) => (s.secrets ?? []).map((x) => x.id)));
-  for (const id of [...secrets.keys()].sort()) if (!used.has(id)) warn(`--secret ${id} is not used by any IMPORT … SECRET`);
+  if (p.exportKey !== undefined) used.add(p.exportKey);
+  for (const id of [...secrets.keys()].sort()) if (!used.has(id)) warn(`--secret ${id} is not used by any IMPORT … SECRET or EXPORT … KEY`);
 }
 
 /**
@@ -1739,6 +1773,8 @@ async function executeOp(
     if (op.kind === 'SITEMAP') return { tree: sitemap(op, tree, env), key: '' };
     if (op.kind === 'FINGERPRINT') return { ...fingerprintOp(op, tree, env), key: '' };
     if (op.kind === 'CANONICAL') return { tree: canonicalOp(op, tree, env), key: '' };
+    if (op.kind === 'PRECOMPRESS') return { tree: precompressOp(op, tree, env), key: '' };
+    if (op.kind === 'PRECACHE') return { tree: precacheOp(op, tree, env), key: '' };
     if (op.kind === 'CHECKLINKS') {
       await checkLinks(op, tree, env, env.warn);
       return { tree, key: '' };
@@ -1746,7 +1782,7 @@ async function executeOp(
     return { tree: tree.withFiles((await produce(op, tree, recording(env), '', '')).files, policy, op.span), key: '' };
   }
   const opId = memoKey('op', env.envKey, valueKey(op));
-  if (op.kind === 'SITEMAP' || op.kind === 'FINGERPRINT' || op.kind === 'CANONICAL' || op.kind === 'CHECKLINKS') {
+  if (op.kind === 'SITEMAP' || op.kind === 'FINGERPRINT' || op.kind === 'CANONICAL' || op.kind === 'PRECOMPRESS' || op.kind === 'PRECACHE' || op.kind === 'CHECKLINKS') {
     // Reads the whole tree: only the chain key can say it is unchanged.
     const key = memoKey('chain', prevKey, opId);
     if (op.kind === 'CHECKLINKS') {
@@ -1783,6 +1819,29 @@ async function executeOp(
       memo.set(key, { tree: out, warnings });
       return { tree: out, key, memo: 'miss' };
     }
+    if (op.kind === 'PRECOMPRESS') {
+      const hit = memo.get<{ tree: Tree; warnings: readonly string[] }>(key);
+      if (hit) {
+        hit.warnings.forEach(env.warn);
+        return { tree: hit.tree, key, memo: 'hit' };
+      }
+      const warnings: string[] = [];
+      const out = precompressOp(op, tree, { ...env, warn: (m) => (warnings.push(m), env.warn(m)) });
+      memo.set(key, { tree: out, warnings });
+      return { tree: out, key, memo: 'miss' };
+    }
+    if (op.kind === 'PRECACHE') {
+      // The chain key covers the stage's earlier steps, so also what its FINGERPRINTs renamed.
+      const hit = memo.get<{ tree: Tree; warnings: readonly string[] }>(key);
+      if (hit) {
+        hit.warnings.forEach(env.warn);
+        return { tree: hit.tree, key, memo: 'hit' };
+      }
+      const warnings: string[] = [];
+      const out = precacheOp(op, tree, { ...env, warn: (m) => (warnings.push(m), env.warn(m)) });
+      memo.set(key, { tree: out, warnings });
+      return { tree: out, key, memo: 'miss' };
+    }
     const hit = memo.get<Tree>(key);
     if (hit) return { tree: hit, key, memo: 'hit' };
     const out = sitemap(op, tree, env);
@@ -1811,6 +1870,14 @@ function fingerprintOp(op: Extract<Operation, { kind: 'FINGERPRINT' }>, tree: Tr
 
 function canonicalOp(op: Extract<Operation, { kind: 'CANONICAL' }>, tree: Tree, env: Pick<ExecEnv, 'label' | 'warn'>): Tree {
   return canonical(tree, op, `${env.label}:${op.span.line} CANONICAL`, env.warn);
+}
+
+function precompressOp(op: Extract<Operation, { kind: 'PRECOMPRESS' }>, tree: Tree, env: Pick<ExecEnv, 'label' | 'warn'>): Tree {
+  return precompress(tree, op, `${env.label}:${op.span.line} PRECOMPRESS`, env.warn);
+}
+
+function precacheOp(op: Extract<Operation, { kind: 'PRECACHE' }>, tree: Tree, env: Pick<ExecEnv, 'label' | 'warn' | 'renames'>): Tree {
+  return precache(tree, op, new Set(env.renames?.values() ?? []), `${env.label}:${op.span.line} PRECACHE`, env.warn);
 }
 
 function sitemap(op: Extract<Operation, { kind: 'SITEMAP' }>, tree: Tree, env: ExecEnv): Tree {
@@ -2334,7 +2401,9 @@ async function transformFiles(
  * REDIRECT and HEADER lines become `/_redirects` and `/_headers` at the root of the exported directory.
  * A HEADER pattern or REDIRECT target that is the URL of a file FINGERPRINT renamed in the exported stage
  * names its new URL. Unless the plan turns them off, the renamed files (and the pages) also get
- * `Cache-Control` lines in `/_headers` (after the HEADER lines; see {@link cacheHeaderRules}).
+ * `Cache-Control` lines in `/_headers` (after the HEADER lines; see {@link cacheHeaderRules}). A CSP adds a
+ * Content-Security-Policy for every exported page: lines after those, or with META a `<meta>` in each page
+ * (see {@link cspPages}).
  */
 function withSiteRules(tree: Tree, p: Plan, label: string, renames: ReadonlyMap<string, string>, warn: (m: string) => void): Tree {
   const url = new Map<string, string>();
@@ -2346,7 +2415,7 @@ function withSiteRules(tree: Tree, p: Plan, label: string, renames: ReadonlyMap<
   const redirects = p.redirects.map((r) => ({ ...r, to: url.get(r.to) ?? r.to }));
   const headers: HeaderRule[] = p.headers.map((h) => ({ ...h, pattern: url.get(h.pattern) ?? h.pattern }));
   let headerRules: ReadonlyArray<{ overwrite: boolean; span: SourceSpan }> = p.headers;
-  let headerKind = 'HEADER';
+  let headerKind: string = p.headers[0]?.instruction ?? 'HEADER';
   const headersPath = joinVirtual(p.exportPath, '_headers');
   if (p.cacheHeaders && url.size > 0) {
     const files = tree.subtree(p.exportPath).entries().map(([f]) => f);
@@ -2360,6 +2429,21 @@ function withSiteRules(tree: Tree, p: Plan, label: string, renames: ReadonlyMap<
         headerRules = [{ overwrite: false, span: p.cacheHeaders.span }];
         headerKind = 'FINGERPRINT';
       }
+    }
+  }
+  if (p.csp) {
+    const origin = `${label}:${p.csp.span.line} CSP`;
+    const r = cspPages(tree, p.exportPath, p.csp.policy, p.csp.meta, origin);
+    if (r.headless.length > 0) warn(`${origin}: ${r.headless.length === 1 ? '1 page has' : `${r.headless.length} pages have`} no <head>, so no policy was added: ${r.headless.join(', ')}`);
+    if (r.pages.length > 0) tree = tree.withFiles(r.pages, 'overwrite', p.csp.span);
+    if (r.rules.length > 0 && headers.length === 0 && tree.isFile(headersPath)) {
+      warn(`${origin}: ${headersPath} already exists (not written by HEADER), so no Content-Security-Policy lines were added; add them to that file, use HEADER, or CSP … META`);
+    } else if (r.rules.length > 0) {
+      if (headers.length === 0) {
+        headerRules = [{ overwrite: false, span: p.csp.span }];
+        headerKind = 'CSP';
+      }
+      headers.push(...r.rules);
     }
   }
   const files: Array<{ name: string; text: string; rules: ReadonlyArray<{ overwrite: boolean; span: SourceSpan }>; kind: string }> = [
@@ -2435,7 +2519,7 @@ function feedFiles(op: Extract<Operation, { kind: 'FEED' }>, env: ExecEnv): File
  * The files an operation (other than SITEMAP, FINGERPRINT and CHECKLINKS) adds; `opId` is its memo identity
  * ('' without a memo), `treeKey` the key of the input tree (a RENDER with `${file …}` reads it).
  */
-async function produce(op: Exclude<Operation, { kind: 'SITEMAP' | 'FINGERPRINT' | 'CANONICAL' | 'CHECKLINKS' }>, tree: Tree, env: RecEnv, opId: string, treeKey: string): Promise<Produced> {
+async function produce(op: Exclude<Operation, { kind: 'SITEMAP' | 'FINGERPRINT' | 'CANONICAL' | 'PRECOMPRESS' | 'PRECACHE' | 'CHECKLINKS' }>, tree: Tree, env: RecEnv, opId: string, treeKey: string): Promise<Produced> {
   if (op.kind === 'TRANSFORM') return produceTransform(op, env, opId);
   // A feed reads its list and what its LINK names.
   if (op.kind === 'FEED') {
@@ -2443,6 +2527,10 @@ async function produce(op: Exclude<Operation, { kind: 'SITEMAP' | 'FINGERPRINT' 
     return memoFiles(env, key, async () => feedFiles(op, env));
   }
   const origin = `${env.label}:${op.span.line} ${op.kind}`;
+  // The planner wrote the text; it reads nothing.
+  if (op.kind === 'ROBOTS' || op.kind === 'SECURITY_TXT') {
+    return memoFiles(env, env.memo ? memoKey('text', opId) : undefined, async () => [[op.dest, makeFile(new TextEncoder().encode(op.text), origin)]]);
+  }
 
   if (op.kind === 'COPY') {
     const exclude = op.exclude ? IgnoreRules.fromPatterns(op.exclude) : undefined;

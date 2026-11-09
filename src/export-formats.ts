@@ -1,3 +1,4 @@
+import { SitefileError } from './errors.js';
 import { writeTar, writeTgz, writeZip, type WriterOptions } from './archive-writers.js';
 import { gzip } from './deflate.js';
 import type { ExportFormat, OciCompression } from './language/ast.js';
@@ -5,6 +6,7 @@ import type { Tree } from './tree.js';
 import { writeWebBundle } from './wbn.js';
 import { writeCar } from './car.js';
 import { writeMhtml, writeSingleFile } from './single-file.js';
+import { writeWarc } from './warc.js';
 
 export type ArchiveFormat = Exclude<ExportFormat, 'directory' | 'oci'>;
 
@@ -15,7 +17,7 @@ export function isArchiveFormat(f: ExportFormat): f is ArchiveFormat {
 
 /**
  * Default output path relative to the context: `dist`, `dist.zip`, `dist.tar`, `dist.tar.gz`, `dist.wbn`
- * (`dist.wbn.gz` for a gzipped bundle), `dist.oci.tar`, `dist.car`, `dist.html`, `dist.mhtml`.
+ * (`dist.wbn.gz` for a gzipped bundle), `dist.oci.tar`, `dist.car`, `dist.html`, `dist.mhtml`, `dist.warc` (`dist.warc.gz` gzipped), `dist.swbn`.
  */
 export function defaultOutName(format: ExportFormat, compression?: OciCompression): string {
   switch (format) {
@@ -37,6 +39,10 @@ export function defaultOutName(format: ExportFormat, compression?: OciCompressio
       return 'dist.html';
     case 'mhtml':
       return 'dist.mhtml';
+    case 'warc':
+      return compression === 'gzip' ? 'dist.warc.gz' : 'dist.warc';
+    case 'swbn':
+      return 'dist.swbn';
   }
 }
 
@@ -67,6 +73,11 @@ export function encodeTree(tree: Tree, format: ArchiveFormat, options: EncodeOpt
       return writeSingleFile(tree);
     case 'mhtml':
       return writeMhtml(tree, undefined, options.baseUrl);
+    case 'warc':
+      return writeWarc(tree, { baseUrl: options.baseUrl, epoch: options.epoch, compression: options.compression });
+    case 'swbn':
+      // Signing needs the build's secrets: see exportBuild in executor.ts.
+      throw new SitefileError('E_VALIDATION', "swbn export needs a signing key: build with 'EXPORT ... AS swbn KEY <secret-id>' and --secret");
   }
 }
 
@@ -79,11 +90,15 @@ export function formatFromExtension(out: string): ExportFormat | undefined {
   if (name.endsWith('.zip')) return 'zip';
   if (name.endsWith('.wbn') || name.endsWith('.wbn.gz')) return 'wbn';
   if (name.endsWith('.car')) return 'car';
+  if (name.endsWith('.swbn')) return 'swbn';
+  if (name.endsWith('.warc') || name.endsWith('.warc.gz')) return 'warc';
   if (name.endsWith('.mhtml') || name.endsWith('.mht')) return 'mhtml';
   return undefined;
 }
 
 /** The compression implied by an output file name for `format`: `gzip` for a wbn written to `*.wbn.gz`. */
 export function compressionFromExtension(out: string, format: ExportFormat): OciCompression | undefined {
-  return format === 'wbn' && out.toLowerCase().endsWith('.wbn.gz') ? 'gzip' : undefined;
+  const name = out.toLowerCase();
+  if (format === 'wbn') return name.endsWith('.wbn.gz') ? 'gzip' : undefined;
+  return format === 'warc' && name.endsWith('.warc.gz') ? 'gzip' : undefined;
 }

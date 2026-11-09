@@ -4,7 +4,7 @@
 import { readFile } from 'node:fs/promises';
 import { SitefileError } from '../errors.js';
 import { BasicAuth, parseHtpasswd } from '../serve-auth.js';
-import { closeServer, createSiteServer, formatUrl, jsonLogLine, listen, parseCidr, startedLogLine, stoppedLogLine } from '../server.js';
+import { closeServer, createSiteServer, formatUrl, jsonLogLine, listen, parseCidr, startedLogLine, stoppedLogLine, routingFor } from '../server.js';
 import { loadServedSite, servedLastModified, ServerRegistry, loadServedTree, checkSiteFiles } from '../servers.js';
 
 let json = false; // `--log-format json`: every line is a JSON object
@@ -25,10 +25,10 @@ async function main(): Promise<void> {
     const ipRules = state.allowIp !== undefined || state.denyIp !== undefined ? { allow: (state.allowIp ?? []).flatMap((t) => parseCidr(t) ?? []), deny: (state.denyIp ?? []).flatMap((t) => parseCidr(t) ?? []) } : undefined;
     const loopback = state.bind.host === 'localhost' || state.bind.host === '::1' || /^127\./.test(state.bind.host);
     const { tree, content } = await loadServedSite(reg.store, state.source, { keepOsMetadata: !!state.keepOsMetadata, warn: (m) => stamp(`warning: ${m}`) });
-    checkSiteFiles(tree, !!state.strictSiteFiles, (m) => stamp(`warning: ${m}`), content);
+    if (routingFor(state)?.siteFiles !== false) checkSiteFiles(tree, !!state.strictSiteFiles, (m) => stamp(`warning: ${m}`), content);
     const modified = await servedLastModified(reg.store, state.source);
     const authEntries = [...(state.auth ?? []), ...(state.authFile !== undefined ? parseHtpasswd(await readFile(state.authFile, 'utf8'), state.authFile) : [])];
-    const server = createSiteServer(tree, { spa: state.spa, allowedHosts: state.allowedHosts ?? [], cors: !!state.cors, ...(state.isolate ? { isolate: state.isolate } : {}), ...(state.cache ? { cache: state.cache } : {}), ...(json ? { logFormat: 'json' as const } : {}), logIp: !!state.logIp, quiet: !!state.quiet, ...(authEntries.length > 0 || state.authFile !== undefined ? { auth: new BasicAuth(authEntries) } : {}), ...(state.maxConnectionsPerIp ? { maxConnectionsPerIp: state.maxConnectionsPerIp } : {}), ...(state.hideBase ? { hideBase: true } : {}), ...(ipRules ? { ipRules } : {}), ...(loopback ? {} : { noindex: true }), clientInfo: true, serverId: id, lastModified: () => modified, log: stamp, ...(content ? { content } : {}), ...(state.country !== undefined ? { country: state.country } : {}), ...(state.spaExclude ? { spaExclude: state.spaExclude } : {}), ...(state.spaFallback !== undefined ? { spaFallback: state.spaFallback } : {}), ...(state.base !== undefined ? { base: state.base } : {}) });
+    const server = createSiteServer(tree, { spa: state.spa, allowedHosts: state.allowedHosts ?? [], cors: !!state.cors, ...(state.isolate ? { isolate: state.isolate } : {}), ...(state.cache ? { cache: state.cache } : {}), ...(json ? { logFormat: 'json' as const } : {}), logIp: !!state.logIp, quiet: !!state.quiet, ...(authEntries.length > 0 || state.authFile !== undefined ? { auth: new BasicAuth(authEntries) } : {}), ...(state.maxConnectionsPerIp ? { maxConnectionsPerIp: state.maxConnectionsPerIp } : {}), ...(state.hideBase ? { hideBase: true } : {}), ...(ipRules ? { ipRules } : {}), ...(loopback ? {} : { noindex: true }), clientInfo: true, serverId: id, lastModified: () => modified, log: stamp, ...(content ? { content } : {}), ...(state.country !== undefined ? { country: state.country } : {}), ...(state.spaExclude ? { spaExclude: state.spaExclude } : {}), ...(state.spaFallback !== undefined ? { spaFallback: state.spaFallback } : {}), ...(state.base !== undefined ? { base: state.base } : {}), ...(state.rewriteBase !== undefined ? { rewriteBase: state.rewriteBase } : {}), ...(routingFor(state) ? { profile: routingFor(state)! } : {}) });
     const addr = await listen(server, state.bind.host, state.bind.port);
     await reg.update(id, { pid: process.pid, host: addr.host, port: addr.port, ready: true, error: undefined });
     const url = `${formatUrl(addr.host, addr.port)}${(state.base ?? '/').slice(1)}`;

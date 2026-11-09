@@ -4,7 +4,8 @@ import http from 'node:http';
 import net from 'node:net';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
-import { accessLogLine, deviceOf, ipAllowed, ipBytes, parseCidr, networkAddresses, networkUrls, byteRange, cacheControlFor, logLineAsJson, closeServer, createSiteServer, hostAllowed, preflightHeaders, parseAllowedHost, earlyHints, httpDate, parseHttpDate, listen, LiveReload, originForm, RELOAD_SCRIPT, safeSegments, normalizeBase } from '../src/server.js';
+import { accessLogLine, deviceOf, ipAllowed, ipBytes, parseCidr, networkAddresses, networkUrls, byteRange, cacheControlFor, logLineAsJson, closeServer, createSiteServer, hostAllowed, preflightHeaders, parseAllowedHost, earlyHints, httpDate, parseHttpDate, listen, LiveReload, originForm, RELOAD_SCRIPT, safeSegments, normalizeBase, normalizeProductionUrl, rewriteBaseUrls, hostProfile } from '../src/server.js';
+import type { RoutingProfile } from '../src/server.js';
 import { makeFile, Tree } from '../src/tree.js';
 import { siteFileWarnings } from '../src/serve-rules.js';
 import { makeSite, runCli, tmpDir } from './helpers/cli.js';
@@ -579,6 +580,18 @@ async function poll<T>(fn: () => Promise<T | undefined>, ms = 8000): Promise<T> 
   }
 }
 
+test('serve -d --base prints one Started line with the base', async () => {
+  const home = await tmpDir();
+  homes.push(home);
+  const dir = await tmpDir();
+  await fs.writeFile(path.join(dir, 'index.html'), 'x');
+  const r = await runCli(home, ['serve', '-d', '--name', 'based', '--base', '/repo/', dir + '/']);
+  assert.equal(r.code, 0, r.stderr);
+  assert.equal(r.stdout.match(/^Started /gm)?.length, 1, r.stdout);
+  assert.match(r.stdout, /^Started based \([0-9a-f]{12}\) serving .* at http:\/\/127\.0\.0\.1:\d+\/repo\/\n$/);
+  await runCli(home, ['server', 'rm', '-f', 'based']);
+});
+
 test('serve -d / servers / server logs|stop|restart|rm lifecycle with a real port', async () => {
   const home = await tmpDir();
   homes.push(home);
@@ -588,6 +601,7 @@ test('serve -d / servers / server logs|stop|restart|rm lifecycle with a real por
   assert.equal(r.code, 0, r.stderr);
   const m = /Started web \(([0-9a-f]{12})\) serving life at (http:\/\/127\.0\.0\.1:(\d+)\/)/.exec(r.stdout);
   assert.ok(m, r.stdout);
+  assert.equal(r.stdout.match(/^Started /gm)?.length, 1, 'one Started line (the #283 merge printed two)');
   const [, id, url, port] = m!;
   assert.equal((await fetch(url!)).status, 200);
   assert.match(await (await fetch(url! + 'about/')).text(), /About/);
@@ -712,7 +726,7 @@ test('run: bad -p values, unknown images, registries, port in use, foreground --
 
 // ---------------------------------------------------------------- 404.html, clean URLs, _redirects, _headers
 
-async function withTree(files: Record<string, string>, opts: { spa?: boolean; spaExclude?: string[]; spaFallback?: string; base?: string }, fn: (port: number) => Promise<void>): Promise<void> {
+async function withTree(files: Record<string, string>, opts: { spa?: boolean; spaExclude?: string[]; spaFallback?: string; base?: string; rewriteBase?: string; profile?: RoutingProfile }, fn: (port: number) => Promise<void>): Promise<void> {
   const t = Tree.fromFiles(Object.entries(files).map(([p, c]) => [p, makeFile(enc(c), 't')] as const));
   const s = createSiteServer(t, opts);
   const { port } = await listen(s, '127.0.0.1', 0);
@@ -971,6 +985,91 @@ test('serve --base: the site under a path prefix; / redirects there, outside is 
     assert.match(r.body, /404 Not Found/, 'outside the base: the built-in page');
     assert.equal((await req(port, '/repository/')).status, 404);
   });
+});
+
+// johnhenry/sitefile#196
+test('serve --rewrite-base: the production URL becomes the local origin in HTML, CSS and XML', async () => {
+  assert.equal(normalizeProductionUrl('https://example.com/blog/?x#y'), 'https://example.com/blog');
+  assert.equal(normalizeProductionUrl('https://example.com'), 'https://example.com');
+  assert.equal(normalizeProductionUrl('/blog'), undefined);
+  const enc2 = (x: string): string => Buffer.from(rewriteBaseUrls(enc(x), 'https://e.x/b', 'http://h:1')).toString();
+  assert.equal(enc2('https://e.x/b/a https://e.x/bc https://e.x/b https://e.x/b.x https://e.x/b?q'), 'http://h:1/a https://e.x/bc http://h:1 https://e.x/b.x http://h:1?q');
+  const files = { '/index.html': '<a href="https://e.x/b/about">x</a>', '/a.css': 'url(https://e.x/b/i.png)', '/feed.xml': '<id>https://e.x/b/</id>', '/t.txt': 'https://e.x/b/' };
+  await withTree(files, { rewriteBase: 'https://e.x/b' }, async (port) => {
+    let r = await req(port, '/');
+    assert.equal(r.body, `<a href="http://127.0.0.1:${port}/about">x</a>`);
+    assert.match(String(r.headers.etag), /-rebased"$/);
+    assert.equal((await req(port, '/a.css')).body, `url(http://127.0.0.1:${port}/i.png)`);
+    assert.equal((await req(port, '/feed.xml')).body, `<id>http://127.0.0.1:${port}/</id>`);
+    assert.equal((await req(port, '/t.txt')).body, 'https://e.x/b/', 'other types are left alone');
+    r = await req(port, '/', 'GET', { host: 'evil"><script>' });
+    assert.equal(r.body, files['/index.html'], 'an unsafe Host is never written into a page');
+  });
+});
+
+// johnhenry/sitefile#192
+test('serve --host-profile and --html-handling: canonical URLs, site files and 404s per host', async () => {
+  const files = { '/index.html': 'home', '/about.html': 'about', '/docs/index.html': 'docs', '/_redirects': '/old /about 301\n' };
+  const loc = async (port: number, p: string): Promise<string> => {
+    const r = await req(port, p);
+    return `${r.status}${r.headers.location ? ' ' + r.headers.location : ''}`;
+  };
+  await withTree(files, { profile: hostProfile('cloudflare') }, async (port) => {
+    assert.equal(await loc(port, '/about.html'), '307 /about');
+    assert.equal(await loc(port, '/about/'), '307 /about');
+    assert.equal(await loc(port, '/docs'), '307 /docs/');
+    assert.equal(await loc(port, '/docs/index.html'), '307 /docs/');
+    assert.equal(await loc(port, '/old'), '301 /about');
+    assert.equal((await req(port, '/nope')).body, 'home', 'no 404.html: the SPA shell');
+  });
+  await withTree(files, { profile: hostProfile('github-pages') }, async (port) => {
+    assert.equal(await loc(port, '/about'), '200');
+    assert.equal(await loc(port, '/about/'), '404');
+    assert.equal(await loc(port, '/old'), '404', '_redirects is not read');
+    assert.equal(await loc(port, '/_redirects'), '200', 'and is served as a file');
+  });
+  await withTree(files, { profile: hostProfile(undefined, 'drop-slash') }, async (port) => {
+    assert.equal(await loc(port, '/docs'), '200');
+    assert.equal(await loc(port, '/docs/'), '307 /docs');
+    assert.equal(await loc(port, '/about.html'), '307 /about');
+  });
+  await withTree(files, { profile: hostProfile('vercel', 'force-slash') }, async (port) => {
+    assert.equal(await loc(port, '/about'), '308 /about/', '--html-handling replaces the profile\'s');
+    assert.equal(await loc(port, '/about/'), '200');
+  });
+});
+
+// johnhenry/sitefile#201
+test('serve: the dev 404 lists near misses; the access log says what answered', async () => {
+  const files = { '/index.html': 'home', '/About.html': 'about', '/docs/Guide/index.html': 'guide', '/app/index.html': 'app', '/sub/404.html': 'sub 404', '/_redirects': '/promo /sale 302 Country=nz\n/item id=:id /items/:id\n' };
+  const t = Tree.fromFiles(Object.entries(files).map(([p, c]) => [p, makeFile(enc(c), 't')] as const));
+  const log: string[] = [];
+  const s = createSiteServer(t, { spa: true, devNotFound: true, log: (l) => log.push(l) });
+  const { port } = await listen(s, '127.0.0.1', 0);
+  try {
+    let r = await req(port, '/about');
+    assert.equal(r.status, 404);
+    assert.match(r.body, /<li><a href="\/About\.html">\/About\.html<\/a>: the letter case differs/);
+    r = await req(port, '/docs/guide/');
+    assert.match(r.body, /href="\/docs\/Guide\/index\.html"/);
+    r = await req(port, '/promo');
+    assert.match(r.body, /<code>_redirects:1<\/code>: matches the path but not its conditions/);
+    assert.match((await req(port, '/item')).body, /_redirects:2<\/code>: matches the path but not its query parameters/);
+    assert.equal((await req(port, '/zzz')).body, '<!doctype html><meta charset="utf-8"><title>404 Not Found</title><h1>404 Not Found</h1>\n', 'no near miss: the plain page');
+    await req(port, '/sub/x');
+    await req(port, '/app/route', 'GET', { 'sec-fetch-mode': 'navigate' });
+  } finally {
+    await closeServer(s);
+  }
+  assert.ok(log.includes(log.find((l) => /^GET \/sub\/x 404 7 [0-9.]+ms \u2192 \/sub\/404\.html$/.test(l))!), log.join('\n'));
+  assert.ok(log.some((l) => /^GET \/app\/route 200 3 [0-9.]+ms \u2192 \/app\/index\.html \(spa fallback\)$/.test(l)), log.join('\n'));
+  await withTree(files, {}, async (port) => assert.doesNotMatch((await req(port, '/about')).body, /Near misses/, 'only with devNotFound'));
+  const clean: string[] = [];
+  const c = createSiteServer(Tree.fromFiles([['/a.html', makeFile(enc('a'), 't')]]), { log: (l) => clean.push(l) });
+  const cp = (await listen(c, '127.0.0.1', 0)).port;
+  await req(cp, '/a');
+  await closeServer(c);
+  assert.match(clean[0]!, /^GET \/a 200 1 [0-9.]+ms \u2192 \/a\.html \(clean URL\)$/);
 });
 
 const NAV = { 'sec-fetch-mode': 'navigate', 'sec-fetch-dest': 'document' };

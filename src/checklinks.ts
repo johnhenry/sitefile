@@ -3,6 +3,7 @@
 // same messages.
 import { isSitefileError, SitefileError, type SourceSpan } from './errors.js';
 import { resolveReference, scanFile } from './links.js';
+import { foldCase } from './paths.js';
 import { fetchRemote } from './resources/https.js';
 import type { FetchPolicy } from './resources/types.js';
 import type { Tree } from './tree.js';
@@ -87,6 +88,7 @@ function externalReason(e: SitefileError, url: string, policy: FetchPolicy): str
 export async function brokenLinks(tree: Tree, op: CheckLinksOp, policy: FetchPolicy): Promise<BrokenLink[]> {
   const out: BrokenLink[] = [];
   const external = new Map<string, string | undefined>();
+  let folded: Map<string, string> | undefined;
   const entries = tree.entries().sort(([a], [b]) => Buffer.compare(Buffer.from(a, 'utf8'), Buffer.from(b, 'utf8')));
   for (const [file, node] of entries) {
     const scan = scanFile(file, node.bytes);
@@ -111,7 +113,12 @@ export async function brokenLinks(tree: Tree, op: CheckLinksOp, policy: FetchPol
       } else if (!isServed(tree, t.path, t.dir)) {
         const url = urlPath(op.root, t.path);
         const display = t.dir && t.path !== '/' ? t.path + '/' : t.path;
-        if (url === undefined || !redirected(op.redirects, t.dir && url !== '/' ? url + '/' : url)) reason = `not found: ${display}`;
+        if (url === undefined || !redirected(op.redirects, t.dir && url !== '/' ? url + '/' : url)) {
+          // A case-insensitive file system (macOS, Windows) finds a file whose name differs only in case.
+          folded ??= new Map(entries.map(([f]) => [foldCase(f), f] as const));
+          const near = t.dir ? undefined : folded.get(foldCase(t.path));
+          reason = near === undefined ? `not found: ${display}` : `not found: ${display}; '${near}' differs only in case, which works on macOS and Windows but not on Linux hosts`;
+        }
       }
       if (reason !== undefined) out.push({ file, line: r.line, url: r.url, reason });
     }

@@ -177,11 +177,13 @@ pub enum ExportFormat {
     Car,
     Html,
     Mhtml,
+    Warc,
+    Swbn,
 }
 
 impl ExportFormat {
     /// Every format, in the order docs/LANGUAGE.md lists them (`tar.gz` is an alias, not listed).
-    pub const ALL: [ExportFormat; 9] = [
+    pub const ALL: [ExportFormat; 11] = [
         ExportFormat::Directory,
         ExportFormat::Zip,
         ExportFormat::Tar,
@@ -191,6 +193,8 @@ impl ExportFormat {
         ExportFormat::Car,
         ExportFormat::Html,
         ExportFormat::Mhtml,
+        ExportFormat::Warc,
+        ExportFormat::Swbn,
     ];
     /// `tar.gz` is an alias for `tgz`; case-insensitive.
     pub fn parse(name: &str) -> Option<ExportFormat> {
@@ -211,6 +215,8 @@ impl ExportFormat {
             ExportFormat::Car => "car",
             ExportFormat::Html => "html",
             ExportFormat::Mhtml => "mhtml",
+            ExportFormat::Warc => "warc",
+            ExportFormat::Swbn => "swbn",
         }
     }
 }
@@ -458,6 +464,12 @@ pub enum Instruction {
         value: Vec<Operand>,
         overwrite: bool,
     },
+    /// `MIME <.ext> <type/subtype>`: the Content-Type of the files with that extension, as a `/_headers` rule.
+    Mime {
+        span: SourceSpan,
+        ext: Operand,
+        media_type: Operand,
+    },
     /// `FINGERPRINT [--overwrite] [--no-cache-headers] <pattern>… [MANIFEST <dest>] [INTEGRITY]`: rename
     /// matching files to `name.<hash>.ext` and rewrite the HTML and CSS that reference them. `integrity`
     /// adds SRI attributes; `no_cache_headers` turns off EXPORT's `Cache-Control` lines.
@@ -475,6 +487,51 @@ pub enum Instruction {
         base: Operand,
         pretty: bool,
     },
+    /// `PRECOMPRESS [--overwrite] [gzip]… <pattern>… [MIN <bytes>]`: write a `.gz` sidecar next to each
+    /// matching compressible file of at least MIN bytes, when it is smaller. `formats` is `["gzip"]`
+    /// when none is given.
+    Precompress {
+        span: SourceSpan,
+        formats: Vec<String>,
+        patterns: Vec<Operand>,
+        min: Option<Operand>,
+        overwrite: bool,
+    },
+    /// `ROBOTS [--overwrite] [ALLOW <path> | DISALLOW <path>]… [SITEMAP] [TO <dest>]`: a `/robots.txt`;
+    /// `rules` are (allow, path, span) in source order.
+    Robots {
+        span: SourceSpan,
+        rules: Vec<(bool, Operand, SourceSpan)>,
+        sitemap: bool,
+        dest: Option<Operand>,
+        overwrite: bool,
+    },
+    /// `SECURITY_TXT [--overwrite] CONTACT <uri>… EXPIRES <date> [ENCRYPTION <uri>]… [POLICY <uri>]… [TO <dest>]`:
+    /// an RFC 9116 `/.well-known/security.txt`.
+    SecurityTxt {
+        span: SourceSpan,
+        contact: Vec<Operand>,
+        expires: Operand,
+        encryption: Vec<Operand>,
+        policy: Vec<Operand>,
+        dest: Option<Operand>,
+        overwrite: bool,
+    },
+    /// `PRECACHE [--overwrite] <pattern>… [TO <dest>] [INTO <service-worker>]`: a Workbox-style precache manifest.
+    Precache {
+        span: SourceSpan,
+        patterns: Vec<Operand>,
+        dest: Option<Operand>,
+        into: Option<Operand>,
+        overwrite: bool,
+    },
+    /// `CSP [POLICY <policy>] [META]`: a Content-Security-Policy for every exported page, with the hashes of
+    /// its inline scripts and styles (at EXPORT).
+    Csp {
+        span: SourceSpan,
+        policy: Option<Operand>,
+        meta: bool,
+    },
     /// `CHECKLINKS [--warn] [--external]`: report references in the stage's HTML and CSS that point at nothing.
     CheckLinks {
         span: SourceSpan,
@@ -489,6 +546,8 @@ pub enum Instruction {
         at: Option<Operand>,
         /// `COMPRESSION gzip|none` (oci only) and the span of its value.
         compression: Option<(OciCompression, SourceSpan)>,
+        /// `KEY <secret-id>` (swbn only) and its span.
+        key: Option<(String, SourceSpan)>,
     },
 }
 
@@ -509,8 +568,14 @@ impl Instruction {
             | Instruction::Feed { span, .. }
             | Instruction::Redirect { span, .. }
             | Instruction::Header { span, .. }
+            | Instruction::Mime { span, .. }
             | Instruction::Fingerprint { span, .. }
             | Instruction::Canonical { span, .. }
+            | Instruction::Precompress { span, .. }
+            | Instruction::Robots { span, .. }
+            | Instruction::SecurityTxt { span, .. }
+            | Instruction::Precache { span, .. }
+            | Instruction::Csp { span, .. }
             | Instruction::CheckLinks { span, .. }
             | Instruction::Export { span, .. } => span,
         }
@@ -531,8 +596,14 @@ impl Instruction {
             Instruction::Feed { .. } => "FEED",
             Instruction::Redirect { .. } => "REDIRECT",
             Instruction::Header { .. } => "HEADER",
+            Instruction::Mime { .. } => "MIME",
             Instruction::Fingerprint { .. } => "FINGERPRINT",
             Instruction::Canonical { .. } => "CANONICAL",
+            Instruction::Precompress { .. } => "PRECOMPRESS",
+            Instruction::Robots { .. } => "ROBOTS",
+            Instruction::SecurityTxt { .. } => "SECURITY_TXT",
+            Instruction::Precache { .. } => "PRECACHE",
+            Instruction::Csp { .. } => "CSP",
             Instruction::CheckLinks { .. } => "CHECKLINKS",
             Instruction::Export { .. } => "EXPORT",
         }

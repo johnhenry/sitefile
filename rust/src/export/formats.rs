@@ -26,6 +26,9 @@ pub fn default_out_name(format: ExportFormat, compression: Option<OciCompression
         ExportFormat::Car => "dist.car",
         ExportFormat::Html => "dist.html",
         ExportFormat::Mhtml => "dist.mhtml",
+        ExportFormat::Warc if compression == Some(OciCompression::Gzip) => "dist.warc.gz",
+        ExportFormat::Warc => "dist.warc",
+        ExportFormat::Swbn => "dist.swbn",
     }
 }
 
@@ -56,6 +59,16 @@ pub fn encode_tree(tree: &Tree, format: ExportFormat, options: &EncodeOptions) -
         }
         ExportFormat::Car => Ok(super::car::encode_car(tree)?.0),
         ExportFormat::Html => super::single_file::write_single_file(tree, None),
+        ExportFormat::Warc => crate::warc::write_warc(
+            tree,
+            options.base_url.as_deref(),
+            options.writer.epoch,
+            options.compression,
+        ),
+        ExportFormat::Swbn => Err(crate::error::SitefileError::plain(
+            crate::error::ErrorCode::E_VALIDATION,
+            "swbn export needs a signing key: build with 'EXPORT ... AS swbn KEY <secret-id>' and --secret",
+        )),
         ExportFormat::Mhtml => {
             super::single_file::write_mhtml(tree, None, options.base_url.as_deref())
         }
@@ -81,6 +94,10 @@ pub fn format_from_extension(out: &str) -> Option<ExportFormat> {
         Some(ExportFormat::Wbn)
     } else if name.ends_with(".car") {
         Some(ExportFormat::Car)
+    } else if name.ends_with(".swbn") {
+        Some(ExportFormat::Swbn)
+    } else if name.ends_with(".warc") || name.ends_with(".warc.gz") {
+        Some(ExportFormat::Warc)
     } else if name.ends_with(".mhtml") || name.ends_with(".mht") {
         Some(ExportFormat::Mhtml)
     } else {
@@ -90,8 +107,12 @@ pub fn format_from_extension(out: &str) -> Option<ExportFormat> {
 
 /// The compression implied by an output file name for `format`: `gzip` for a wbn written to `*.wbn.gz`.
 pub fn compression_from_extension(out: &str, format: ExportFormat) -> Option<OciCompression> {
-    (format == ExportFormat::Wbn && out.to_lowercase().ends_with(".wbn.gz"))
-        .then_some(OciCompression::Gzip)
+    let name = out.to_lowercase();
+    match format {
+        ExportFormat::Wbn => name.ends_with(".wbn.gz").then_some(OciCompression::Gzip),
+        ExportFormat::Warc => name.ends_with(".warc.gz").then_some(OciCompression::Gzip),
+        _ => None,
+    }
 }
 
 #[cfg(test)]
