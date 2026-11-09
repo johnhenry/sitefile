@@ -1,3 +1,0 @@
-{
-  "steps": [["serve", "-d", "--watch", "${CTX}/proj"]]
-}

@@ -1,0 +1,3 @@
+{
+  "steps": [["serve", "-d", "--watch", "--target", "x", "--no-rewrite-base", "--rewrite-base", "https://example.com/", "${CTX}/site"]]
+}

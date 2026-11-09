@@ -10,7 +10,7 @@ import { build } from '../executor.js';
 import { networkOption } from './network.js';
 import { DEFAULT_FETCH_POLICY } from '../resources/types.js';
 import { BUILDING_EVENT, closeServer, createSiteServer, type ServeProxy, errorEvent, formatUrl, jsonLogLine, listen, logLineAsJson, networkUrls, parseCidr, parseMimeFlag, parseMimeTypes, parseThrottle, type Cidr, type Throttle, startedLogLine, type CachePreview, LiveReload, OK_EVENT, parseAllowedHost, reloadEventFor, normalizeBase, safeSegments, normalizeProductionUrl, routingFor, HOST_PROFILES, HTML_HANDLINGS, type HostProfileName, type HtmlHandling, type RoutingProfile, type SyncMode } from '../server.js';
-import { isRunning, loadDirectoryTree, loadServedTree, pidAlive, servedLastModified, ServerRegistry, type ServerState, loadServedSite, checkSiteFiles } from '../servers.js';
+import { isRunning, loadDirectoryTree, loadServedTree, pidAlive, servedLastModified, ServerRegistry, type ServerState, type WatchBuild, loadServedSite, checkSiteFiles } from '../servers.js';
 import { BasicAuth, makeVerifier, parseAuthPair, parseHtpasswd, type AuthEntry } from '../serve-auth.js';
 import type { Plan } from '../planner.js';
 import { Store } from '../store.js';
@@ -185,7 +185,7 @@ const run: Command = {
   summary: 'serve an image, directory or archive file over HTTP',
   usage: 'serve [--name n] [-p [host:]port] [-d] [--spa] <ref|id|./dir|file>  |  serve [-d] --watch [options] [context]',
   description:
-    'Serve an image from the local store, a directory (paths starting with ./, ../ or /), or an archive file over HTTP:\nzip, tar, tar.gz, wbn, or an OCI archive as build -o x.oci.tar and save write it (the format is read from the\nbytes). A directory or archive is a snapshot read at start. GET and HEAD only; no directory listings.\nBinds 127.0.0.1 on a free port unless -p is given;\n0.0.0.0 is bound only when you pass it explicitly. Foreground by default (Ctrl-C stops it); -d detaches and\nrecords the server for servers, server stop, rm, logs and restart.\n\nWith --watch the argument is a build context (default .): its Sitefile is built in memory and served, rebuilt\nwhen the context, the Sitefile or a --build-arg-file changes, and open pages reload after each good rebuild\n(page loads get a small script, /__sitefile/reload.js). A failed rebuild keeps serving the last\ngood build. Nothing is written to the context except Sitefile.lock. A directory with no Sitefile (and no -f,\n--target or --build-arg*) is served as it is and re-read on change. When only stylesheets changed, pages\nswap them in place. With -d, --watch takes such a directory only: the detached server re-reads it on change,\nopen pages reload, and pages left open across server restart reload once it is back.',
+    'Serve an image from the local store, a directory (paths starting with ./, ../ or /), or an archive file over HTTP:\nzip, tar, tar.gz, wbn, or an OCI archive as build -o x.oci.tar and save write it (the format is read from the\nbytes). A directory or archive is a snapshot read at start. GET and HEAD only; no directory listings.\nBinds 127.0.0.1 on a free port unless -p is given;\n0.0.0.0 is bound only when you pass it explicitly. Foreground by default (Ctrl-C stops it); -d detaches and\nrecords the server for servers, server stop, rm, logs and restart.\n\nWith --watch the argument is a build context (default .): its Sitefile is built in memory and served, rebuilt\nwhen the context, the Sitefile or a --build-arg-file changes, and open pages reload after each good rebuild\n(page loads get a small script, /__sitefile/reload.js). A failed rebuild keeps serving the last\ngood build. Nothing is written to the context except Sitefile.lock. A directory with no Sitefile (and no -f,\n--target or --build-arg*) is served as it is and re-read on change. When only stylesheets changed, pages\nswap them in place. With -d the detached server does the same (a build context or a plain directory) and keeps\nthe build and page options in its record; pages left open across server restart reload once it is back.',
   flags: [
     '--name <n>        name for the server (-d only; default site-<6 hex>)',
     '-p, --publish <[host:]port>  address to bind (default 127.0.0.1, a free port)',
@@ -234,7 +234,7 @@ const run: Command = {
     '--keep-os-metadata  serve __MACOSX, ._*, Thumbs.db and desktop.ini of a directory or archive (default: skipped)',
     '--open[=<path>]   open the site (at <path>) in the browser once it is served ($BROWSER, else the system default)',
     '--qr              print a QR code of the network URL (with -p 0.0.0.0:...), else of the local URL',
-    '--watch           build the context, serve it, rebuild on change and live-reload pages (-d: a plain directory only)',
+    '--watch           build the context, serve it, rebuild on change and live-reload pages (also with -d)',
     '-f, --file <path>            Sitefile path (--watch; default <context>/Sitefile)',
     '--target <stage>             build up to this stage and serve its whole tree (--watch)',
     '--build-arg <NAME=value>     set an ARG (--watch; repeatable)',
@@ -317,12 +317,10 @@ const run: Command = {
   },
   async run(v, pos) {
     if (v.watch && !v.detach) return serveWatch(v, pos);
-    // `-d --watch`: a plain directory, re-read on change by the detached worker (with live reload).
+    // `-d --watch`: a plain directory re-read on change, or a build context built and rebuilt on change,
+    // by the detached worker (with live reload).
     const watchDetached = !!v.watch;
-    for (const f of WATCH_ONLY) {
-      if (v[f] === undefined || (watchDetached && (DETACHED_WATCH as readonly string[]).includes(f))) continue;
-      usage(watchDetached ? `--${f} is for serve --watch in the foreground, not -d` : `--${f} needs --watch`);
-    }
+    if (!watchDetached) for (const f of WATCH_ONLY) if (v[f] !== undefined) usage(`--${f} needs --watch`);
     if (watchDetached) requireArgs(pos, 0, 1, 'a directory');
     else requireArgs(pos, 1, 1, 'an image reference, ./directory or archive file');
     const pollMs = watchDetached ? pollOption(!!v.poll, str(v['poll-interval'])) : undefined;
@@ -351,6 +349,7 @@ const run: Command = {
     if (name !== undefined && !v.detach) usage('--name needs -d (only detached servers are tracked)');
     const store = await Store.open();
     const { label, source } = watchDetached ? await watchedDirectory(pos[0] ?? '.') : await resolveSource(store, pos[0] as string);
+    const watchRecord = watchDetached ? await detachedWatchOf(v, source) : {};
     if (isWildcard(bind.host)) process.stderr.write(`warning: binding ${bind.host}: the site will be reachable from other machines\n`);
 
     const keepOsMetadata = !!v['keep-os-metadata'];
@@ -391,7 +390,7 @@ const run: Command = {
     if (v.open !== undefined || v.qr) usage('--open and --qr are for a server in the foreground, not -d');
     const reg = await ServerRegistry.open(store);
     for (const f of PROXY_FLAGS) if (v[f] !== undefined) usage(`--${f} is for a server in the foreground (or --watch), not -d`);
-    const up = await serveDetached(reg, { label, source, name, bind, keepOsMetadata, allowedHosts, cors: !!v.cors, ...(isolate ? { isolate } : {}), ...(cache ? { cache } : {}), ...logging, ...auth.record, ...perIp, ...sharing.record, ...tls.record, ...(v.compress ? { compress: true } : {}), ...(throttle ? { throttle: throttle.spec } : {}), ...(mime ? { mime: Object.fromEntries(mime) } : {}), country, strictSiteFiles, ...spa, base, rewriteBase, ...profiles, ...(watchDetached ? { watch: true, pollMs, sync } : {}), ...(reload !== undefined ? { reload } : {}) }, warn);
+    const up = await serveDetached(reg, { label, source, name, bind, keepOsMetadata, allowedHosts, cors: !!v.cors, ...(isolate ? { isolate } : {}), ...(cache ? { cache } : {}), ...logging, ...auth.record, ...perIp, ...sharing.record, ...tls.record, ...(v.compress ? { compress: true } : {}), ...(throttle ? { throttle: throttle.spec } : {}), ...(mime ? { mime: Object.fromEntries(mime) } : {}), country, strictSiteFiles, ...spa, base, rewriteBase, ...profiles, ...(watchDetached ? { watch: true, pollMs, sync } : {}), ...(reload !== undefined ? { reload } : {}), ...watchRecord }, warn);
     process.stdout.write(`Started ${up.name} (${up.id}) serving ${label} at ${siteUrl(up.host, up.port, up.base, up.tlsCert ? 'https' : 'http')}\n${networkLines(up.host, up.port, up.base, up.tlsCert ? 'https' : 'http')}${throttleLine(up.throttle)}`);
     return 0;
   },
@@ -466,6 +465,14 @@ export interface DetachedServe {
   readonly sync?: SyncMode | undefined;
   /** `--reload`: inject the live-reload script (with or without --watch) in this mode. */
   readonly reload?: 'full' | 'morph' | undefined;
+  /** `-d --watch` on a build context: the build inputs. */
+  readonly build?: WatchBuild | undefined;
+  /** `-d --watch` page-script flags. */
+  readonly noCssInject?: boolean | undefined;
+  readonly console?: boolean | undefined;
+  readonly noOverlay?: boolean | undefined;
+  readonly navigateToChanged?: boolean | undefined;
+  readonly keepServiceWorkers?: boolean | undefined;
   /** The servers file it belongs to (`sitefile up`). */
   readonly project?: string | undefined;
 }
@@ -475,12 +482,15 @@ export interface DetachedServe {
  * wait until it listens. On failure the record is removed.
  */
 export async function serveDetached(reg: ServerRegistry, d: DetachedServe, warn?: (m: string) => void): Promise<ServerState> {
-  // fail fast on a bad image, directory or archive (or an ignored site-file line with --strict-site-files)
-  const site = await loadServedSite(reg.store, d.source, { keepOsMetadata: !!d.keepOsMetadata, ...(warn ? { warn } : {}) });
-  try {
-    if (routingFor(d)?.siteFiles !== false) checkSiteFiles(site.tree, !!d.strictSiteFiles, warn ?? (() => undefined), site.content);
-  } finally {
-    site.close();
+  // fail fast on a bad image, directory or archive (or an ignored site-file line with --strict-site-files);
+  // a build context is built by the worker (a failed first build is served as an error page)
+  if (!(d.watch && d.build !== undefined)) {
+    const site = await loadServedSite(reg.store, d.source, { keepOsMetadata: !!d.keepOsMetadata, ...(warn ? { warn } : {}) });
+    try {
+      if (routingFor(d)?.siteFiles !== false) checkSiteFiles(site.tree, !!d.strictSiteFiles, warn ?? (() => undefined), site.content);
+    } finally {
+      site.close();
+    }
   }
   const { id, name: finalName } = await reg.allocate(d.name);
   const state: ServerState = {
@@ -520,6 +530,12 @@ export async function serveDetached(reg: ServerRegistry, d: DetachedServe, warn?
     ...(d.watch && d.pollMs !== undefined ? { pollMs: d.pollMs } : {}),
     ...(d.watch && d.sync !== undefined ? { sync: d.sync } : {}),
     ...(d.reload !== undefined ? { reload: d.reload } : {}),
+    ...(d.watch && d.build !== undefined ? { build: d.build } : {}),
+    ...(d.watch && d.noCssInject ? { noCssInject: true } : {}),
+    ...(d.watch && d.console ? { console: true } : {}),
+    ...(d.watch && d.noOverlay ? { noOverlay: true } : {}),
+    ...(d.watch && d.navigateToChanged ? { navigateToChanged: true } : {}),
+    ...(d.watch && d.keepServiceWorkers ? { keepServiceWorkers: true } : {}),
     bind: d.bind,
     host: d.bind.host,
     port: d.bind.port,
@@ -544,7 +560,7 @@ export async function serveDetached(reg: ServerRegistry, d: DetachedServe, warn?
  */
 export async function restartDetached(reg: ServerRegistry, s: ServerState, graceMs: number): Promise<ServerState> {
   await stopServer(reg, s, graceMs);
-  (await loadServedSite(reg.store, s.source, { keepOsMetadata: !!s.keepOsMetadata })).close();
+  if (!(s.watch && s.build !== undefined)) (await loadServedSite(reg.store, s.source, { keepOsMetadata: !!s.keepOsMetadata })).close();
   const fresh: ServerState = { ...s, host: s.bind.host, port: s.bind.port, pid: 0, ready: false, started: new Date().toISOString() };
   delete (fresh as { error?: string }).error;
   await reg.write(fresh);
@@ -588,21 +604,50 @@ async function terminal(
 }
 
 /** The --watch flags `serve -d --watch` takes (it watches a plain directory; the rest are for builds or the page script). */
-const DETACHED_WATCH = ['poll', 'poll-interval', 'sync'] as const;
-
-/**
- * `serve -d --watch [dir]`: the directory (default .) as a source, absolute and real. A Sitefile project
- * is refused: building on change happens in the foreground (`serve --watch`).
- */
+/** `serve -d --watch [dir]`: the directory (default .) as a source, absolute and real. */
 async function watchedDirectory(arg: string): Promise<{ label: string; source: ServerState['source'] }> {
   const dir = path.resolve(arg);
   const st = await fs.stat(dir).catch(() => undefined);
   if (!st?.isDirectory()) throw new SitefileError('E_NOT_FOUND', `'${arg}' is not a directory`);
-  if (await isFile(path.join(dir, 'Sitefile'))) usage(`-d --watch serves a plain directory, and ${arg} has a Sitefile: build it with serve --watch in the foreground`);
   return { label: dir, source: { kind: 'dir', path: await fs.realpath(dir) } };
 }
 
-/** serve flags that only mean something with --watch. */
+/**
+ * `serve -d --watch`: what the record keeps besides `watch`, `pollMs`, `sync` and `reload`: the page-script
+ * flags, and for a build context (a Sitefile, or -f, --target, --build-arg*, as in the foreground) the
+ * build inputs (johnhenry/sitefile#306). Build args are checked here, so a bad one is a usage error now;
+ * a bare `--build-arg NAME` is recorded with the value it has now.
+ */
+async function detachedWatchOf(v: ParsedValues, source: ServerState['source']): Promise<Partial<DetachedServe>> {
+  const dir = source.kind === 'dir' ? source.path : '.';
+  const file = str(v.file);
+  const target = str(v.target);
+  const argFiles = strs(v['build-arg-file']).map((f) => path.resolve(f));
+  const argFlags = strs(v['build-arg']);
+  const buildFlags = file !== undefined || target !== undefined || argFiles.length > 0 || argFlags.length > 0;
+  const page = {
+    ...(v['no-css-inject'] ? { noCssInject: true } : {}),
+    ...(v.console ? { console: true } : {}),
+    ...(v['no-overlay'] ? { noOverlay: true } : {}),
+    ...(v['navigate-to-changed'] ? { navigateToChanged: true } : {}),
+    ...(v['keep-service-workers'] ? { keepServiceWorkers: true } : {}),
+  };
+  if (!buildFlags && !(await isFile(path.join(dir, 'Sitefile')))) return page;
+  if (v['no-rewrite-base'] && v['rewrite-base'] !== undefined) usage('--rewrite-base and --no-rewrite-base cannot be combined');
+  await collectBuildArgs(argFiles, argFlags);
+  const build: WatchBuild = {
+    ...(file !== undefined ? { sitefile: path.resolve(file) } : {}),
+    ...(target !== undefined ? { target } : {}),
+    ...(argFlags.length > 0 ? { buildArgs: argFlags.map((kv) => (kv.includes('=') ? kv : `${kv}=${process.env[kv] ?? ''}`)) } : {}),
+    ...(argFiles.length > 0 ? { buildArgFiles: argFiles } : {}),
+    ...(v['no-cache'] ? { noCache: true } : {}),
+    ...(v['no-lockfile'] ? { noLockfile: true } : {}),
+    ...(v['no-rewrite-base'] ? { noRewriteBase: true } : {}),
+  };
+  return { build, ...page };
+}
+
+/** serve flags that only mean something with --watch (foreground or -d). */
 const WATCH_ONLY = ['file', 'target', 'build-arg', 'build-arg-file', 'no-cache', 'no-lockfile', 'keep-service-workers', 'poll', 'poll-interval', 'no-css-inject', 'console', 'no-overlay', 'navigate-to-changed', 'no-rewrite-base', 'sync'] as const;
 
 /**

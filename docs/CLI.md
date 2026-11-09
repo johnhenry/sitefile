@@ -554,8 +554,8 @@ sitefile serve --watch [-p [host:]port] [--spa] [-f Sitefile] [--target stage] [
                        [--poll] [--poll-interval ms] [--no-css-inject] [--console]
                        [--no-overlay] [--navigate-to-changed]
                        [--reload full|morph] [--sync[=scroll]] [context | ./plain-directory]
-sitefile serve -d --watch [--name n] [-p [host:]port] [--poll] [--poll-interval ms] [--sync[=scroll]]
-                       [--reload [full|morph]] [serve options] [./plain-directory]
+sitefile serve -d --watch [--name n] [-p [host:]port] [the serve --watch options above]
+                       [serve options] [context | ./plain-directory]
 sitefile serve [-d] --reload [full|morph] [serve options] <ref|id|./dir|file>
 ```
 
@@ -572,18 +572,29 @@ with a `Sitefile`, or any of those flags, is a build context. The messages are `
 `Read failed; serving the last good copy`. Archive files are not watched (`serve site.zip` reads the file at start;
 `server restart` picks up a new copy).
 
-**Detached** (`serve -d --watch ./dir`): a plain directory only. The detached server re-reads the directory when
-something in it changes and live-reloads open pages (stylesheet swaps included), with the same ignore rules and
-debounce; `--poll`/`--poll-interval` work as below (in the Rust CLI the interval replaces its 100 ms scan). Its log
-gets `Change detected, re-reading`, `Read N files (sha256:...)`, and on failure the `error[CODE]: ...` line and
-`Read failed; serving the last good copy` (each with its time stamp); open pages show the error until a good read.
-The record keeps `"watch": true`, `pollMs` and `sync`, so `server restart` (and anything that restarts from the record)
-watches again. Every other `serve -d` option applies (`--name`, `--spa`, `--base`, `--auth`, `--stop-after`, ...).
-`--reload full|morph` is kept in the record as `reload`. Refused: a directory with a `Sitefile` (`error: -d --watch
-serves a plain directory, and <dir> has a Sitefile: build it with serve --watch in the foreground`), and the build
-and page-script flags (`-f`, `--target`, `--build-arg*`, `--no-cache`, `--no-lockfile`, `--keep-service-workers`,
-`--no-css-inject`, `--console`, `--no-overlay`, `--navigate-to-changed`: `error: --<flag> is for serve --watch in
-the foreground, not -d`). The default directory is `.`. Building a Sitefile project in a detached server is not supported yet.
+**Detached** (`serve -d --watch [context | ./dir]`): the detached server does what `serve --watch` does, with the
+same rule for what is a build context. A **build context** is built in memory in the worker and rebuilt on change
+(johnhenry/sitefile#306); open pages reload after each good rebuild, a failed build shows the error overlay and
+the last good build stays. The worker listens first (serving an empty site, so `serve -d` returns at once) and
+builds next; a failed first build is served as an empty site with the error until a build succeeds. A **plain
+directory** is re-read on change. Both use the same ignore rules and debounce; `--poll`/`--poll-interval` work as
+below (in the Rust CLI the interval replaces its 100 ms scan). The log gets the same lines as the foreground, each
+with its time stamp: `Built N files (sha256:...)`, `Change detected, rebuilding`, the `error[CODE]: ...` line and
+`Build failed; keeping the last good output` (or `Read N files (sha256:...)`, `Change detected, re-reading`,
+`Read failed; serving the last good copy` for a plain directory), then `serving <context> (N files) at <url>` and
+`Watching <context> for changes`. Without `--base`/`--rewrite-base`, a build context's EXPORT BASE URL path and
+production URL are used as in the foreground (`--no-rewrite-base` turns the latter off).
+
+The record keeps everything `server restart` (and anything that restarts from the record) needs: `"watch": true`,
+`pollMs`, `sync`, `reload` (`--reload full|morph`), the page-script flags (`noCssInject`, `console`, `noOverlay`,
+`navigateToChanged`, `keepServiceWorkers`), and for a build context a `build` object with the build inputs:
+`sitefile` (`-f`, absolute), `target`, `buildArgs` (`NAME=value`; a bare `--build-arg NAME` is recorded with the
+value it has when the server is created), `buildArgFiles` (absolute; re-read on every build), `noCache`,
+`noLockfile`, `noRewriteBase`. **The record (`$SITEFILE_HOME/servers/<id>.json`, mode 0600) and `servers --json` show
+`--build-arg` values as given**: pass secrets through a `--build-arg-file` instead. Build args are checked when the
+server is created (a malformed `--build-arg` or a missing `--build-arg-file` is an error then), so a usage error in a
+later build only fails that build. Every other `serve -d` option applies (`--name`, `--spa`, `--base`, `--auth`,
+`--stop-after`, ...). The default directory is `.`.
 
 - **What is watched**: every file under the build context, the Sitefile (also when `-f` points outside the context)
   and each `--build-arg-file` (re-read on every build, so editing one changes the ARGs).
@@ -620,8 +631,8 @@ the foreground, not -d`). The default directory is `.`. Building a Sitefile proj
   site until a build succeeds. A usage error in the first build (for example a malformed `--build-arg`) exits with
   code 2. A context that is not a directory is `E_NOT_FOUND`.
 - **Restrictions**: `--watch` is for `build` only among the build commands (`validate`/`inspect --watch` are usage
-  errors) and cannot be combined with `-t` (one image per save would fill the store). `serve --watch` on a build
-  context runs in the foreground (`-d` takes a plain directory only, see above; `--name` needs `-d`), and `-f`, `--target`, `--build-arg`, `--build-arg-file`, `--no-cache` and
+  errors) and cannot be combined with `-t` (one image per save would fill the store). `--name` needs `-d`, and
+  `-f`, `--target`, `--build-arg`, `--build-arg-file`, `--no-cache` and
   `--no-lockfile` (and the live-reload flags such as `--keep-service-workers`) need `--watch`. For other build flags, run `build --watch` and serve its output elsewhere.
 
 ### Live reload
@@ -1619,5 +1630,5 @@ servers:
   created`. For a server that was never started, SITE is the `source` as written. Servers the file started
   but no longer lists come after the others, with `(not in the file)` added to their status. `--json` gives
   `[{"name", "site", "url", "status", "id", "listed"}]`.
-- Not yet: watch-mode servers (`serve -d --watch` watches a plain directory, but a servers file cannot ask for it), and parked folders
+- Not yet: watch-mode servers (`serve -d --watch` watches a directory or builds a context, but a servers file cannot ask for it), and parked folders
   (`<name>.localhost` for every subfolder, which needs host-name routing). See johnhenry/sitefile#223.

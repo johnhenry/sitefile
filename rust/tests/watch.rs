@@ -290,22 +290,34 @@ fn watch_usage_errors() {
         err.starts_with("error: --build-arg expects NAME=value, got '=x'\n"),
         "{err}"
     );
-    let (code, _, err) = run(&home, &["serve", "--watch", "-d", s(&site)]);
-    assert_eq!(code, 2);
-    assert!(
-        err.starts_with("error: -d --watch serves a plain directory, and ")
-            && err.ends_with(" has a Sitefile: build it with serve --watch in the foreground\nRun 'sitefile --help' for usage.\n"),
-        "{err}"
-    );
-    let public = site.join("public");
+    // -d --watch on a build context checks the build args up front (#306)
     let (code, _, err) = run(
         &home,
-        &["serve", "-d", "--watch", "--no-css-inject", s(&public)],
+        &["serve", "--watch", "-d", s(&site), "--build-arg", "=x"],
     );
     assert_eq!(code, 2);
-    assert_eq!(
-        err,
-        "error: --no-css-inject is for serve --watch in the foreground, not -d\nRun 'sitefile --help' for usage.\n"
+    assert!(
+        err.starts_with("error: --build-arg expects NAME=value, got '=x'\n"),
+        "{err}"
+    );
+    let (code, _, err) = run(
+        &home,
+        &[
+            "serve",
+            "-d",
+            "--watch",
+            "--target",
+            "x",
+            "--no-rewrite-base",
+            "--rewrite-base",
+            "https://example.com/",
+            s(&site),
+        ],
+    );
+    assert_eq!(code, 2);
+    assert!(
+        err.starts_with("error: --rewrite-base and --no-rewrite-base cannot be combined\n"),
+        "{err}"
     );
     let nope = site.join("nope");
     let (code, _, err) = run(&home, &["serve", "-d", "--watch", s(&nope)]);
@@ -909,4 +921,154 @@ fn serve_detached_watch_takes_reload() {
         ps.contains("\"watch\": true") && ps.contains("\"reload\": \"full\""),
         "{ps}"
     );
+}
+
+/// johnhenry/sitefile#306: `serve -d --watch <context>` builds in the detached worker, keeps the
+/// build inputs in the record, rebuilds, serves the last good build on failure, and keeps all of
+/// it over a restart (test/watch.test.ts has the same test).
+#[test]
+fn serve_detached_watch_builds_a_context() {
+    let t = Tmp::new();
+    let home = t.0.join("home");
+    let site = make_site(
+        &t,
+        &[("tmpl/t.html", "<p>${TITLE}</p>")],
+        "ARG TITLE = \"none\"\nCOPY ./public/ /\nRENDER ./tmpl/t.html TO /t.html\nEXPORT /\n",
+    );
+    let env_file = t.0.join("a.env");
+    write(&env_file, "OTHER=1\n");
+    let port = std::net::TcpListener::bind(("127.0.0.1", 0))
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port();
+    let bind = format!("127.0.0.1:{port}");
+    let (code, out, err) = run(
+        &home,
+        &[
+            "serve",
+            "-d",
+            "--watch",
+            "--name",
+            "bw",
+            "-p",
+            &bind,
+            "--poll-interval",
+            "50",
+            "--build-arg",
+            "TITLE=one",
+            "--build-arg-file",
+            s(&env_file),
+            "--no-lockfile",
+            "--no-cache",
+            "--target",
+            "build",
+            "--no-overlay",
+            "--console",
+            s(&site),
+        ],
+    );
+    // --target names a missing stage: the server starts and shows the error until the Sitefile has it
+    assert_eq!(code, 0, "{err}");
+    let good = "ARG TITLE = \"none\"\nFROM scratch AS build\nCOPY ./public/ /\nRENDER ./tmpl/t.html TO /t.html\nEXPORT /\n";
+    let check = || {
+        let id = out.split('(').nth(1).unwrap().split(')').next().unwrap();
+        let state: serde_json::Value = serde_json::from_str(
+            &fs::read_to_string(home.join("servers").join(format!("{id}.json"))).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(state["watch"], true);
+        assert_eq!(
+            state["build"],
+            serde_json::json!({
+                "target": "build",
+                "buildArgs": ["TITLE=one"],
+                "buildArgFiles": [s(&env_file)],
+                "noCache": true,
+                "noLockfile": true
+            })
+        );
+        assert_eq!(state["noOverlay"], true);
+        assert_eq!(state["console"], true);
+        let mut ev = Events::open(port);
+        assert_eq!(ev.next(), "retry: 1000");
+        let instance = ev.next()[4..].to_string();
+        let mut e = ev.next();
+        if e == "data: {\"type\":\"building\"}" {
+            e = ev.next();
+        }
+        assert!(
+            e.starts_with("data: {\"type\":\"error\",\"code\":\"E_"),
+            "{e}"
+        );
+        assert_eq!(get(port, "/").0, 404, "nothing built yet");
+        write(site.join("Sitefile"), good);
+        assert_eq!(ev.next(), "data: {\"type\":\"building\"}");
+        assert_eq!(ev.next(), "data: {\"type\":\"reload\"}");
+        assert_eq!(get_with(port, "/t.html", "").2, "<p>one</p>");
+        assert!(get(port, "/__sitefile/reload.js")
+            .2
+            .contains("\"console\":true,\"overlay\":false"));
+        write(site.join("public/about/index.html"), "<h1>About 2</h1>");
+        assert_eq!(ev.next(), "data: {\"type\":\"building\"}");
+        assert_eq!(ev.next(), "data: {\"type\":\"reload\",\"morph\":true}");
+        write(
+            site.join("Sitefile"),
+            "FROM scratch AS build\nCOPY ./missing/ /\nEXPORT /\n",
+        );
+        assert_eq!(ev.next(), "data: {\"type\":\"building\"}");
+        let e = ev.next();
+        assert!(
+            e.starts_with("data: {\"type\":\"error\",\"code\":\"E_NOT_FOUND\""),
+            "{e}"
+        );
+        assert_eq!(
+            get(port, "/about/").2,
+            format!("<h1>About 2</h1>{RELOAD_SCRIPT}"),
+            "the last good build is served"
+        );
+        drop(ev);
+        let (_, log, _) = run(&home, &["server", "logs", "bw"]);
+        assert!(log.contains("Z Change detected, rebuilding\n"), "{log}");
+        assert!(
+            log.contains("Z Build failed; keeping the last good output\n"),
+            "{log}"
+        );
+        assert!(
+            log.contains("Z error: --target 'build' does not name a stage"),
+            "{log}"
+        );
+
+        write(site.join("Sitefile"), good);
+        let (code, _, err) = run(&home, &["server", "restart", "bw"]);
+        assert_eq!(code, 0, "{err}");
+        let (_, ps, _) = run(&home, &["servers", "--json"]);
+        assert!(
+            ps.contains("\"buildArgs\"") && ps.contains("\"noOverlay\": true"),
+            "restart keeps the build inputs: {ps}"
+        );
+        let mut again = Events::open_after(port, Some(&instance));
+        assert_eq!(again.next(), "retry: 1000");
+        again.next(); // id
+        let mut next = again.next();
+        while next == "data: {\"type\":\"building\"}" || next == "data: {\"type\":\"ok\"}" {
+            next = again.next();
+        }
+        assert_eq!(
+            next, "data: {\"type\":\"reload\"}",
+            "pages left open across the restart reload"
+        );
+        for _ in 0..50 {
+            if get_with(port, "/t.html", "").0 == 200 {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        assert_eq!(get_with(port, "/t.html", "").2, "<p>one</p>");
+    };
+    let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(check));
+    run(&home, &["server", "rm", "-f", "bw"]);
+    if let Err(e) = r {
+        std::panic::resume_unwind(e);
+    }
 }

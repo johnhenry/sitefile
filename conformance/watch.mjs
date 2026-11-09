@@ -192,6 +192,42 @@ export const WATCH_CASES = [
     ],
   },
   {
+    // johnhenry/sitefile#306: -d --watch on a build context, with build and page-script flags kept in
+    // the record: rebuilds, a failed build (error event, last good build served), a fix, and the
+    // options and the build loop surviving a restart.
+    name: 'watch/detached-build',
+    detach: true,
+    args: ['--poll-interval', '50', '--no-lockfile', '--no-css-inject', '--build-arg', 'TITLE=one', '--navigate-to-changed'],
+    files: {
+      Sitefile: 'ARG TITLE = "none"\nCOPY ./public/ /\nRENDER ./tmpl/t.html TO /t.html\nEXPORT /\n',
+      'public/index.html': '<link rel="stylesheet" href="/s.css"><h1>b1</h1>',
+      'public/s.css': 'a{}',
+      'tmpl/t.html': '<p>${TITLE}</p>',
+    },
+    steps: [
+      { get: '/', headers: NAV },
+      { get: '/t.html', headers: FETCH },
+      { get: '/__sitefile/reload.js' },
+      { open: true },
+      { write: { 'public/s.css': 'a{color:red}' } },
+      { next: true },
+      { write: { 'public/index.html': '<h1>b2</h1>' } },
+      { next: true },
+      { write: { Sitefile: 'FROM scratch\nCOPY ./missing/ /\nEXPORT /\n' } },
+      { next: true },
+      { get: '/', headers: NAV },
+      { write: { Sitefile: 'ARG TITLE = "none"\nCOPY ./public/ /\nRENDER ./tmpl/t.html TO /t.html\nEXPORT /\n' } },
+      { next: true },
+      { restart: true },
+      { open: true, lastEventId: 'previous' },
+      { next: true },
+      { get: '/__sitefile/reload.js' },
+      { write: { 'public/index.html': '<h1>b3</h1>' } },
+      { next: true },
+      { get: '/', headers: NAV },
+    ],
+  },
+  {
     name: 'watch/detached-poll',
     detach: true,
     args: ['--poll-interval', '50'],

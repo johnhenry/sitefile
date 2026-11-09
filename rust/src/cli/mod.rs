@@ -612,6 +612,7 @@ fn run_main(argv: &[String]) -> i32 {
             poll,
             plain: false,
             rebuild: None,
+            say: None,
         };
         if o.str("profile") == Some("") {
             return usage_error("--profile expects a file path");
