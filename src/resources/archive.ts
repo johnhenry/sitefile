@@ -1,4 +1,5 @@
-import { crc32, gunzip as gunzipCb, inflateRaw as inflateRawCb, type ZlibOptions } from 'node:zlib';
+import { closeSync, fstatSync, openSync, readSync } from 'node:fs';
+import { crc32, gunzip as gunzipCb, inflateRaw as inflateRawCb, inflateRawSync, type ZlibOptions } from 'node:zlib';
 import { promisify } from 'node:util';
 import { SitefileError, type SourceSpan } from '../errors.js';
 import { normalizeVirtual } from '../paths.js';
@@ -31,6 +32,24 @@ export async function extractArchive(
   span?: SourceSpan,
 ): Promise<Tree> {
   if (isWebBundle(bytes)) return webBundleToTree(readWebBundle(bytes, origin, limits, span), origin, span);
+  const { add, files } = collector(origin, limits, span, true);
+  if (isGzip(bytes)) {
+    const tar = await gunzip(bytes, origin, limits, span);
+    if (!isTar(tar)) throw new SitefileError('E_TYPE', `${origin}: gzip content is not a tar archive`, span);
+    readTar(tar, origin, limits, span, add);
+  } else if (isZip(bytes)) {
+    await readZip(bytes, origin, limits, span, add);
+  } else if (isTar(bytes)) {
+    readTar(bytes, origin, limits, span, add);
+  } else {
+    const what = otherFormat(bytes);
+    throw new SitefileError('E_TYPE', `${origin}: not a recognized archive (${what ?? 'expected tar, tar.gz, zip or web bundle'})`, span);
+  }
+  return Tree.fromFiles(files);
+}
+
+/** Collects archive entries into files, enforcing paths, conflicts and the limits. `retain` false keeps only digests. */
+function collector(origin: string, limits: ArchiveLimits, span: SourceSpan | undefined, retain: boolean): { add: Add; files: Map<string, FileNode> } {
   const files = new Map<string, FileNode>();
   const dirs = new Set<string>();
   let total = 0;
@@ -51,23 +70,12 @@ export async function extractArchive(
     if (total > limits.maxTotalBytes) {
       throw new SitefileError('E_ARCHIVE_LIMIT', `${origin}: archive expands beyond ${limits.maxTotalBytes} bytes`, span);
     }
-    files.set(path, makeFile(data, `${origin}:${name}`, mode));
+    const node = makeFile(data, `${origin}:${name}`, mode);
+    files.set(path, retain ? node : { ...node, bytes: EMPTY });
   };
-
-  if (isGzip(bytes)) {
-    const tar = await gunzip(bytes, origin, limits, span);
-    if (!isTar(tar)) throw new SitefileError('E_TYPE', `${origin}: gzip content is not a tar archive`, span);
-    readTar(tar, origin, limits, span, add);
-  } else if (isZip(bytes)) {
-    await readZip(bytes, origin, limits, span, add);
-  } else if (isTar(bytes)) {
-    readTar(bytes, origin, limits, span, add);
-  } else {
-    const what = otherFormat(bytes);
-    throw new SitefileError('E_TYPE', `${origin}: not a recognized archive (${what ?? 'expected tar, tar.gz, zip or web bundle'})`, span);
-  }
-  return Tree.fromFiles(files);
+  return { add, files };
 }
+const EMPTY = new Uint8Array(0);
 
 /**
  * OS metadata that archivers and file managers add next to real files: macOS
@@ -320,23 +328,51 @@ function extraField(extra: Uint8Array, id: number): Uint8Array | undefined {
 /** A little-endian 64-bit integer as a number (values beyond 2^53 are rounded; they fail the limits anyway). */
 const u64 = (b: Uint8Array, at: number): number => Number(new DataView(b.buffer, b.byteOffset, b.byteLength).getBigUint64(at, true));
 
-async function readZip(b: Uint8Array, origin: string, limits: ArchiveLimits, span: SourceSpan | undefined, add: Add): Promise<void> {
+/** Random access to a zip's bytes: in memory, or a file read on demand ({@link openZipFile}). */
+interface ZipSource {
+  readonly length: number;
+  /** `len` bytes at `at`; the caller has checked that they are inside the source. */
+  read(at: number, len: number): Uint8Array;
+}
+
+const memorySource = (b: Uint8Array): ZipSource => ({ length: b.length, read: (at, len) => b.subarray(at, at + len) });
+
+/** Where one zip entry's data is, after {@link zipIndex} checked its headers. */
+interface ZipSpan {
+  readonly e: ZipEntry;
+  readonly start: number;
+}
+
+/**
+ * Read and check a zip's central directory and local headers (no entry data): sizes and
+ * counts against the limits, ZIP64 records, names, unsafe entry types, local headers that
+ * disagree with the central directory, overlapping entries. In central-directory order.
+ */
+function zipIndex(src: ZipSource, origin: string, limits: ArchiveLimits, span: SourceSpan | undefined): ZipSpan[] {
   const bad = (why: string): SitefileError => new SitefileError('E_ARCHIVE', `${origin}: ${why}`, span);
-  const v = new DataView(b.buffer, b.byteOffset, b.byteLength);
+  const r16 = (at: number): number => { const x = src.read(at, 2); return x[0]! | (x[1]! << 8); };
+  const r32 = (at: number): number => { const x = src.read(at, 4); return (x[0]! | (x[1]! << 8) | (x[2]! << 16) | (x[3]! << 24)) >>> 0; };
+  const r64 = (at: number): number => u64(src.read(at, 8), 0);
+  const length = src.length;
   let eocd = -1;
-  for (let i = b.length - 22; i >= Math.max(0, b.length - 22 - 0xffff); i--) {
-    if (v.getUint32(i, true) === 0x06054b50) { eocd = i; break; }
+  {
+    // The end record is in the last 22 + 65535 bytes (its comment is at most 65535 bytes).
+    const from = Math.max(0, length - 22 - 0xffff);
+    const tail = length >= 22 ? src.read(from, length - from) : new Uint8Array(0);
+    for (let i = tail.length - 22; i >= 0; i--) {
+      if (tail[i] === 0x50 && tail[i + 1] === 0x4b && tail[i + 2] === 5 && tail[i + 3] === 6) { eocd = from + i; break; }
+    }
   }
   if (eocd < 0) throw bad('zip end-of-central-directory record not found');
-  let count = v.getUint16(eocd + 10, true);
-  let p = v.getUint32(eocd + 16, true);
+  let count = r16(eocd + 10);
+  let p = r32(eocd + 16);
   // ZIP64 (APPNOTE 4.3.14-4.3.15): a locator right before the end record points at the zip64 end
   // record, whose counts and offsets replace the 16- and 32-bit ones. Streaming writers add it even to small archives.
-  if (eocd >= 20 && v.getUint32(eocd - 20, true) === 0x07064b50) {
-    const r = u64(b, eocd - 12);
-    if (r > b.length - 56 || v.getUint32(r, true) !== 0x06064b50) throw bad('corrupt zip64 end-of-central-directory record');
-    count = u64(b, r + 32);
-    p = u64(b, r + 48);
+  if (eocd >= 20 && r32(eocd - 20) === 0x07064b50) {
+    const r = r64(eocd - 12);
+    if (r > length - 56 || r32(r) !== 0x06064b50) throw bad('corrupt zip64 end-of-central-directory record');
+    count = r64(r + 32);
+    p = r64(r + 48);
   }
   if (count > limits.maxEntries) {
     throw new SitefileError('E_ARCHIVE_LIMIT', `${origin}: archive has more than ${limits.maxEntries} entries`, span);
@@ -345,31 +381,34 @@ async function readZip(b: Uint8Array, origin: string, limits: ArchiveLimits, spa
   const list: ZipEntry[] = [];
   let declared = 0;
   for (let i = 0; i < count; i++) {
-    if (p + 46 > b.length || v.getUint32(p, true) !== 0x02014b50) throw bad('corrupt zip central directory');
-    const nameLen = v.getUint16(p + 28, true);
-    const advance = 46 + nameLen + v.getUint16(p + 30, true) + v.getUint16(p + 32, true);
-    if (p + advance > b.length) throw bad('corrupt zip central directory');
-    const unix = v.getUint16(p + 4, true) >> 8 === 3;
-    const attr = v.getUint32(p + 38, true) >>> 16;
+    if (p + 46 > length || r32(p) !== 0x02014b50) throw bad('corrupt zip central directory');
+    const nameLen = r16(p + 28);
+    const extraLen = r16(p + 30);
+    const advance = 46 + nameLen + extraLen + r16(p + 32);
+    if (p + advance > length) throw bad('corrupt zip central directory');
+    const unix = r16(p + 4) >> 8 === 3;
+    const attr = r32(p + 38) >>> 16;
     const fileType = attr & 0o170000;
-    const extraLen = v.getUint16(p + 30, true);
-    const name = zipName(b.subarray(p + 46, p + 46 + nameLen), v.getUint16(p + 8, true), b.subarray(p + 46 + nameLen, p + 46 + nameLen + extraLen));
+    const flags = r16(p + 8);
+    const rawName = src.read(p + 46, nameLen);
+    const extra = src.read(p + 46 + nameLen, extraLen);
+    const name = zipName(rawName, flags, extra);
     const e: ZipEntry = {
       name,
-      rawName: b.subarray(p + 46, p + 46 + nameLen),
-      method: v.getUint16(p + 10, true),
-      crc: v.getUint32(p + 16, true),
-      csize: v.getUint32(p + 20, true),
-      usize: v.getUint32(p + 24, true),
-      local: v.getUint32(p + 42, true),
+      rawName,
+      method: r16(p + 10),
+      crc: r32(p + 16),
+      csize: r32(p + 20),
+      usize: r32(p + 24),
+      local: r32(p + 42),
       mode: unix ? attr & 0o7777 : 0o644,
       // Some tools mark directories only by mode, without a trailing slash.
       isDir: name.endsWith('/') || (unix && fileType === 0o040000),
     };
-    if (v.getUint16(p + 8, true) & 1) throw bad(`encrypted zip entry '${e.name}' is not supported`);
+    if (flags & 1) throw bad(`encrypted zip entry '${e.name}' is not supported`);
     // ZIP64 extra field (0x0001): the 64-bit values of the fields that are 0xffffffff, in this order.
     if (e.usize === 0xffffffff || e.csize === 0xffffffff || e.local === 0xffffffff) {
-      const z = extraField(b.subarray(p + 46 + nameLen, p + 46 + nameLen + extraLen), 0x0001);
+      const z = extraField(extra, 0x0001);
       let at = 0;
       const next = (): number => {
         if (!z || at + 8 > z.length) throw bad(`corrupt zip64 extra field for '${e.name}'`);
@@ -390,7 +429,7 @@ async function readZip(b: Uint8Array, origin: string, limits: ArchiveLimits, spa
   if (declared > limits.maxTotalBytes) {
     throw new SitefileError('E_ARCHIVE_LIMIT', `${origin}: archive expands beyond ${limits.maxTotalBytes} bytes`, span);
   }
-  if (declared > Math.max(b.length * limits.maxRatio, RATIO_FLOOR)) {
+  if (declared > Math.max(length * limits.maxRatio, RATIO_FLOOR)) {
     throw new SitefileError('E_ARCHIVE_LIMIT', `${origin}: compression ratio exceeds ${limits.maxRatio}:1`, span);
   }
 
@@ -401,19 +440,19 @@ async function readZip(b: Uint8Array, origin: string, limits: ArchiveLimits, spa
   const spans: Array<{ e: ZipEntry; from: number; start: number; end: number }> = [];
   for (const e of list) {
     const h = e.local;
-    if (h + 30 > b.length || v.getUint32(h, true) !== 0x04034b50) throw bad(`corrupt zip local header for '${e.name}'`);
-    const nameLen = v.getUint16(h + 26, true);
-    const start = h + 30 + nameLen + v.getUint16(h + 28, true);
-    if (start + e.csize > b.length) throw bad(`truncated zip entry '${e.name}'`);
-    if (Buffer.compare(b.subarray(h + 30, h + 30 + nameLen), e.rawName) !== 0) throw unsafe(e, 'its local header has a different name');
-    if (v.getUint16(h + 8, true) !== e.method) throw unsafe(e, 'its local header has a different compression method');
+    if (h + 30 > length || r32(h) !== 0x04034b50) throw bad(`corrupt zip local header for '${e.name}'`);
+    const nameLen = r16(h + 26);
+    const start = h + 30 + nameLen + r16(h + 28);
+    if (start + e.csize > length) throw bad(`truncated zip entry '${e.name}'`);
+    if (Buffer.compare(src.read(h + 30, nameLen), e.rawName) !== 0) throw unsafe(e, 'its local header has a different name');
+    if (r16(h + 8) !== e.method) throw unsafe(e, 'its local header has a different compression method');
     // With a data descriptor (bit 3) the local sizes may be zero; the descriptor follows the data.
-    if (!(v.getUint16(h + 6, true) & 8)) {
-      let csize: number = v.getUint32(h + 18, true);
-      let usize: number = v.getUint32(h + 22, true);
+    if (!(r16(h + 6) & 8)) {
+      let csize: number = r32(h + 18);
+      let usize: number = r32(h + 22);
       if (csize === 0xffffffff || usize === 0xffffffff) {
         // A local ZIP64 extra field holds both sizes (APPNOTE 4.5.3); Python's force_zip64 writes one.
-        const z = extraField(b.subarray(h + 30 + nameLen, start), 0x0001);
+        const z = extraField(src.read(h + 30 + nameLen, start - (h + 30 + nameLen)), 0x0001);
         if (z && z.length >= 16) [usize, csize] = [u64(z, 0), u64(z, 8)];
       }
       if (csize !== e.csize || usize !== e.usize) throw unsafe(e, 'its local header has different sizes');
@@ -426,26 +465,115 @@ async function readZip(b: Uint8Array, origin: string, limits: ArchiveLimits, spa
     const cur = byOffset[i]!;
     if (cur.from < prev.end) throw unsafe(cur.e, `its data overlaps entry '${prev.e.name}'`);
   }
+  return spans.map(({ e, start }) => ({ e, start }));
+}
 
-  for (const { e, start } of spans) {
-    if (e.isDir) { add(e.name, 'dir', new Uint8Array(0), 0o755); continue; }
-    const raw = b.subarray(start, start + e.csize);
-    let data: Uint8Array;
-    if (e.method === 0) {
-      data = raw;
-    } else if (e.method === 8) {
-      try {
-        // Headers can lie: never inflate more than the declared size.
-        data = await inflateRawAsync(raw, { maxOutputLength: Math.max(e.usize, 1) });
-      } catch (err) {
-        throw inflateError(err, origin, false, limits, span);
-      }
-    } else {
-      throw bad(`zip entry '${e.name}' uses unsupported compression method ${e.method}`);
+/** Check an inflated (or stored) entry against its header: size and CRC-32. */
+function checkZipData(data: Uint8Array, e: ZipEntry, bad: (why: string) => SitefileError): Uint8Array {
+  if (data.length !== e.usize) throw bad(`zip entry '${e.name}' size does not match its header`);
+  // Inflate cannot notice a corrupt stored entry; the CRC-32 can.
+  if (crc32(data) !== e.crc) throw bad(`zip entry '${e.name}' fails its CRC-32 check`);
+  return data;
+}
+
+/** An entry's bytes, inflated (never beyond its declared size) and checked. */
+async function zipData(src: ZipSource, { e, start }: ZipSpan, origin: string, limits: ArchiveLimits, span: SourceSpan | undefined): Promise<Uint8Array> {
+  const bad = (why: string): SitefileError => new SitefileError('E_ARCHIVE', `${origin}: ${why}`, span);
+  const raw = src.read(start, e.csize);
+  let data: Uint8Array;
+  if (e.method === 0) {
+    data = raw;
+  } else if (e.method === 8) {
+    try {
+      // Headers can lie: never inflate more than the declared size.
+      data = await inflateRawAsync(raw, { maxOutputLength: Math.max(e.usize, 1) });
+    } catch (err) {
+      throw inflateError(err, origin, false, limits, span);
     }
-    if (data.length !== e.usize) throw bad(`zip entry '${e.name}' size does not match its header`);
-    // Inflate cannot notice a corrupt stored entry; the CRC-32 can.
-    if (crc32(data) !== e.crc) throw bad(`zip entry '${e.name}' fails its CRC-32 check`);
-    add(e.name, 'file', data, e.mode);
+  } else {
+    throw bad(`zip entry '${e.name}' uses unsupported compression method ${e.method}`);
+  }
+  return checkZipData(data, e, bad);
+}
+
+async function readZip(b: Uint8Array, origin: string, limits: ArchiveLimits, span: SourceSpan | undefined, add: Add): Promise<void> {
+  const src = memorySource(b);
+  for (const s of zipIndex(src, origin, limits, span)) {
+    if (s.e.isDir) { add(s.e.name, 'dir', EMPTY, 0o755); continue; }
+    add(s.e.name, 'file', await zipData(src, s, origin, limits, span), s.e.mode);
+  }
+}
+
+/** A zip file served without holding its contents ({@link openZipFile}). */
+export interface ZipFile {
+  /** The archive's files; their `bytes` are empty (read them with `read`), digests and modes are real. */
+  readonly tree: Tree;
+  /** The bytes of a file of `tree`, read from the zip again and checked; undefined for other paths. */
+  read(path: string): Uint8Array | undefined;
+  /** A deflated file's raw deflate stream with its CRC-32 and size (for gzip responses); else undefined. */
+  deflated(path: string): { readonly deflate: Uint8Array; readonly crc: number; readonly size: number } | undefined;
+  close(): void;
+}
+
+/**
+ * Open a zip file for serving without extracting it into memory: the central directory and
+ * local headers are read and checked as {@link extractArchive} checks them, and every entry is
+ * inflated once (one at a time) for its CRC-32, digest and the limits. Afterwards only the
+ * entry index is held; `read` reads an entry from the file on demand. A file that changed on
+ * disk since is reported as `E_ARCHIVE` by `read`.
+ */
+export async function openZipFile(file: string, origin: string, limits: ArchiveLimits = DEFAULT_ARCHIVE_LIMITS): Promise<ZipFile> {
+  const fd = openSync(file, 'r');
+  try {
+    const length = fstatSync(fd).size;
+    const src: ZipSource = {
+      length,
+      read(at, len) {
+        const buf = Buffer.alloc(len);
+        let got = 0;
+        while (got < len) {
+          const n = readSync(fd, buf, got, len - got, at + got);
+          if (n === 0) throw new SitefileError('E_ARCHIVE', `${origin}: the file changed while it was read`);
+          got += n;
+        }
+        return buf;
+      },
+    };
+    const { add, files } = collector(origin, limits, undefined, false);
+    const byPath = new Map<string, ZipSpan>();
+    for (const s of zipIndex(src, origin, limits, undefined)) {
+      if (s.e.isDir) { add(s.e.name, 'dir', EMPTY, 0o755); continue; }
+      add(s.e.name, 'file', await zipData(src, s, origin, limits, undefined), s.e.mode);
+      byPath.set(archivePath(s.e.name), s);
+    }
+    const tree = Tree.fromFiles(files);
+    const bad = (why: string): SitefileError => new SitefileError('E_ARCHIVE', `${origin}: ${why}`);
+    return {
+      tree,
+      read(path) {
+        const s = byPath.get(path);
+        if (!s) return undefined;
+        const raw = src.read(s.start, s.e.csize);
+        let data: Uint8Array = raw;
+        if (s.e.method === 8) {
+          try {
+            data = inflateRawSync(raw, { maxOutputLength: Math.max(s.e.usize, 1) });
+          } catch {
+            throw bad(`zip entry '${s.e.name}' changed since the server started`);
+          }
+        }
+        if (data.length !== s.e.usize || crc32(data) !== s.e.crc) throw bad(`zip entry '${s.e.name}' changed since the server started`);
+        return data;
+      },
+      deflated(path) {
+        const s = byPath.get(path);
+        if (!s || s.e.method !== 8) return undefined;
+        return { deflate: src.read(s.start, s.e.csize), crc: s.e.crc, size: s.e.usize };
+      },
+      close: () => closeSync(fd),
+    };
+  } catch (e) {
+    closeSync(fd);
+    throw e;
   }
 }
