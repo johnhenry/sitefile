@@ -46,8 +46,8 @@ import { groupBy, paginate } from './pages.js';
 import { parseYaml } from './yaml.js';
 import { brokenLinks, reportBrokenLinks } from './checklinks.js';
 import { composeRenames, fingerprint, type Fingerprinted } from './fingerprint.js';
-import { atomXml, cacheHeaderRules, headersFile, pageUrl, parseFeedDate, redirectsFile, sitemapXml, type FeedEntry, type HeaderRule } from './site.js';
 import { precache } from './precache.js';
+import { atomXml, cacheHeaderRules, headersFile, pageUrl, parseFeedDate, redirectsFile, sitemapXml, type FeedEntry, type HeaderRule } from './site.js';
 
 export interface BuildOptions {
   /** Build context directory; local paths resolve from here. */
