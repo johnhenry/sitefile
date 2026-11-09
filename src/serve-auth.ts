@@ -4,7 +4,9 @@
 // A credential is kept only as a verifier, never as the password:
 //   pbkdf2-sha256$<iterations>$<salt base64>$<32-byte key base64>   (what --auth and SITEFILE_SERVE_AUTH become)
 //   {SHA}<base64 SHA-1 of the password>                              (an htpasswd -s entry, --auth-file)
+//   $2y$<cost>$<salt><hash> (also $2a$, $2b$)                         (an htpasswd -B bcrypt entry, --auth-file; #278)
 import { createHash, pbkdf2Sync, randomBytes, timingSafeEqual } from 'node:crypto';
+import { isBcryptPrefix, parseBcrypt, verifyBcrypt } from './bcrypt.js';
 import { SitefileError } from './errors.js';
 
 export interface AuthEntry {
@@ -40,6 +42,7 @@ function equal(a: Uint8Array, b: Uint8Array): boolean {
 
 /** Whether `password` matches `verifier` (false for a malformed verifier). Constant time in the key comparison. */
 export function verifyPassword(verifier: string, password: string): boolean {
+  if (isBcryptPrefix(verifier)) return verifyBcrypt(verifier, password);
   const pw = Buffer.from(password, 'utf8');
   if (verifier.startsWith('{SHA}')) {
     const want = b64(verifier.slice(5));
@@ -55,8 +58,9 @@ export function verifyPassword(verifier: string, password: string): boolean {
 }
 
 /**
- * An htpasswd file: `user:hash` lines (blank lines and `#` comments skipped). Only `{SHA}` entries are accepted;
- * bcrypt (`$2y$`, `$2a$`, `$2b$`), `$apr1$`, crypt and plain-text entries are `E_USAGE` errors naming the user.
+ * An htpasswd file: `user:hash` lines (blank lines and `#` comments skipped). `{SHA}` (htpasswd -s) and bcrypt
+ * (`$2y$`, `$2a$`, `$2b$`, cost 4 to 31; htpasswd -B) entries are accepted; a malformed bcrypt hash, `$apr1$`,
+ * crypt and plain-text entries are `E_USAGE` errors naming the user.
  */
 export function parseHtpasswd(text: string, origin: string): AuthEntry[] {
   const out: AuthEntry[] = [];
@@ -67,8 +71,11 @@ export function parseHtpasswd(text: string, origin: string): AuthEntry[] {
     if (i <= 0) throw new SitefileError('E_USAGE', `${origin}:${n + 1}: expected user:hash`);
     const user = line.slice(0, i);
     const hash = line.slice(i + 1);
-    if (/^\$2[aby]\$/.test(hash)) throw new SitefileError('E_USAGE', `${origin}:${n + 1}: user '${user}': bcrypt entries are not supported yet; use htpasswd -s ({SHA})`);
-    if (!/^\{SHA\}[A-Za-z0-9+/]{27}=$/.test(hash)) throw new SitefileError('E_USAGE', `${origin}:${n + 1}: user '${user}': unsupported password hash (only {SHA} entries, htpasswd -s)`);
+    if (isBcryptPrefix(hash)) {
+      if (!parseBcrypt(hash)) throw new SitefileError('E_USAGE', `${origin}:${n + 1}: user '${user}': malformed bcrypt hash (expected $2y$, $2a$ or $2b$, a cost of 04 to 31 and 53 characters of salt and hash)`);
+    } else if (!/^\{SHA\}[A-Za-z0-9+/]{27}=$/.test(hash)) {
+      throw new SitefileError('E_USAGE', `${origin}:${n + 1}: user '${user}': unsupported password hash (only {SHA} and bcrypt entries, htpasswd -s or -B)`);
+    }
     out.push({ user, verifier: hash });
   }
   return out;
