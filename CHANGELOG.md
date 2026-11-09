@@ -43,6 +43,13 @@
   matches, else as UTF-8 when valid, else as CP437 (they used to become
   U+FFFD, and two names could collide). Applies to `IMPORT … AS tree` and
   `serve x.zip`, in both implementations.
+- **Zip export writes the extended timestamp** (#187): every entry carries the
+  0x5455 "UT" extra field (mtime only) in its local and central header, so
+  `SOURCE_DATE_EPOCH` survives extraction in any time zone (unzippers read
+  the DOS time as local time). **This changes zip export bytes**: every
+  `-o x.zip` (and `EXPORT … AS zip`) output differs from 0.0.2's, still
+  deterministic and identical across the TypeScript and Rust writers (their
+  byte-for-byte fixtures are updated together). Image IDs are not affected.
 - **DOM-morphing reload with scroll restore** (johnhenry/sitefile#200): when a
   rebuild changed only existing HTML files, the reload event carries
   `"morph":true` and pages update in place (scroll, focus and form input
