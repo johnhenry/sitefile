@@ -354,8 +354,12 @@ fn run_serve(v: &Parsed) -> Result<i32> {
                 spa,
                 spa_exclude,
                 spa_fallback,
-                base: base.clone().map(|b| -> crate::server::BaseFn { Arc::new(move || Some(b.clone())) }),
-                rewrite_base: rewrite_base.clone().map(|b| -> crate::server::BaseFn { Arc::new(move || Some(b.clone())) }),
+                base: base
+                    .clone()
+                    .map(|b| -> crate::server::BaseFn { Arc::new(move || Some(b.clone())) }),
+                rewrite_base: rewrite_base
+                    .clone()
+                    .map(|b| -> crate::server::BaseFn { Arc::new(move || Some(b.clone())) }),
                 profile,
                 dev_not_found: !is_wildcard(&bind.host),
                 country: country.clone(),
@@ -639,7 +643,11 @@ fn serve_watch(v: &Parsed) -> Result<i32> {
         let n = current.read().map(|t| t.len()).unwrap_or(0);
         out(&format!(
             "Serving {context} ({n} files) at {}  (Ctrl-C to stop)\n",
-            site_url(&s.host, s.port, base.read().ok().and_then(|b| b.clone()).as_deref())
+            site_url(
+                &s.host,
+                s.port,
+                base.read().ok().and_then(|b| b.clone()).as_deref()
+            )
         ));
         server = Some(s);
         started.set(true);
@@ -697,8 +705,10 @@ pub fn serve_worker(id: &str) -> i32 {
             },
         )?;
         let tree = site.tree;
-        let routing =
-            crate::server::routing_for(state.host_profile.as_deref(), state.html_handling.as_deref());
+        let routing = crate::server::routing_for(
+            state.host_profile.as_deref(),
+            state.html_handling.as_deref(),
+        );
         if routing.is_none_or(|p| p.site_files) {
             check_site_files(
                 &tree,
@@ -716,9 +726,18 @@ pub fn serve_worker(id: &str) -> i32 {
                 spa: state.spa,
                 spa_exclude: state.spa_exclude.clone(),
                 spa_fallback: state.spa_fallback.clone(),
-                base: state.base.clone().map(|b| -> crate::server::BaseFn { Arc::new(move || Some(b.clone())) }),
-                rewrite_base: state.rewrite_base.clone().map(|b| -> crate::server::BaseFn { Arc::new(move || Some(b.clone())) }),
-                profile: crate::server::routing_for(state.host_profile.as_deref(), state.html_handling.as_deref()),
+                base: state
+                    .base
+                    .clone()
+                    .map(|b| -> crate::server::BaseFn { Arc::new(move || Some(b.clone())) }),
+                rewrite_base: state
+                    .rewrite_base
+                    .clone()
+                    .map(|b| -> crate::server::BaseFn { Arc::new(move || Some(b.clone())) }),
+                profile: crate::server::routing_for(
+                    state.host_profile.as_deref(),
+                    state.html_handling.as_deref(),
+                ),
                 country: state.country.clone(),
                 log: Some(log),
                 server_id: Some(id.to_string()),
