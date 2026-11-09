@@ -99,6 +99,15 @@ pub struct ServerState {
         skip_serializing_if = "std::ops::Not::not"
     )]
     pub keep_os_metadata: bool,
+    /// `--allowed-host` names (localhost names and IP addresses are always allowed).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub allowed_hosts: Vec<String>,
+    /// `--cors`.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub cors: bool,
+    /// `--isolate`: the Cross-Origin-Embedder-Policy sent with COOP and CORP.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub isolate: Option<String>,
     /// `--country`: what `_redirects` `Country=` conditions match (absent: none matches).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub country: Option<String>,
@@ -917,6 +926,12 @@ pub struct DetachedServe {
     pub base: Option<String>,
     /// `--keep-os-metadata`.
     pub keep_os_metadata: bool,
+    /// `--allowed-host` names, lowercased (see [`crate::server::parse_allowed_host`]).
+    pub allowed_hosts: Vec<String>,
+    /// `--cors`.
+    pub cors: bool,
+    /// `--isolate`: the Cross-Origin-Embedder-Policy (`require-corp` or `credentialless`).
+    pub isolate: Option<String>,
     /// `--country`.
     pub country: Option<String>,
     /// `--strict-site-files`.
@@ -940,6 +955,9 @@ impl DetachedServe {
             spa_fallback: None,
             base: None,
             keep_os_metadata: false,
+            allowed_hosts: Vec::new(),
+            cors: false,
+            isolate: None,
             country: None,
             strict_site_files: false,
             project: None,
@@ -994,6 +1012,9 @@ pub fn serve_detached_with(
         spa_fallback: serve.spa_fallback.clone(),
         base: serve.base.clone(),
         keep_os_metadata: serve.keep_os_metadata,
+        allowed_hosts: serve.allowed_hosts.clone(),
+        cors: serve.cors,
+        isolate: serve.isolate.clone(),
         country: serve.country.clone(),
         strict_site_files: serve.strict_site_files,
         host: serve.bind.host.clone(),
@@ -1208,6 +1229,9 @@ mod tests {
             spa_fallback: None,
             base: None,
             keep_os_metadata: false,
+            allowed_hosts: Vec::new(),
+            cors: false,
+            isolate: None,
             country: None,
             strict_site_files: false,
             bind: Bind {

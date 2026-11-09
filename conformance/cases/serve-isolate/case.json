@@ -1,0 +1,9 @@
+{
+  "command": "serve",
+  "args": ["--isolate"],
+  "requests": [
+    { "target": "/a.txt", "expect": { "status": 200, "headers": { "cross-origin-opener-policy": "same-origin", "cross-origin-embedder-policy": "require-corp", "cross-origin-resource-policy": "same-origin" } } },
+    { "target": "/missing", "expect": { "status": 404, "headers": { "cross-origin-embedder-policy": "require-corp" } } },
+    { "target": "/own.txt", "expect": { "status": 200, "headers": { "cross-origin-resource-policy": "cross-origin" } } }
+  ]
+}
