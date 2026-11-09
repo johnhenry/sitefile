@@ -1243,7 +1243,8 @@ pub fn near_misses(
         .map(|p| NearMiss {
             path: Some(p),
             line: None,
-            why: "the letter case differs (a case-insensitive disk finds it, a host does not)".into(),
+            why: "the letter case differs (a case-insensitive disk finds it, a host does not)"
+                .into(),
         })
         .collect();
     for r in redirects {
@@ -2671,7 +2672,11 @@ pub fn respond(
     if misses.is_empty() {
         page(404, NOT_FOUND_PAGE, custom.clone())
     } else {
-        page(404, &near_miss_page(&vpath, &misses, &mount), custom.clone())
+        page(
+            404,
+            &near_miss_page(&vpath, &misses, &mount),
+            custom.clone(),
+        )
     }
 }
 
@@ -3814,9 +3819,8 @@ mod tests {
             ..Default::default()
         };
         let get = |u: &str| handle_request(&t, &opts, "GET", u, &HashMap::new());
-        assert!(body(&get("/about")).contains(
-            "<li><a href=\"/About.html\">/About.html</a>: the letter case differs"
-        ));
+        assert!(body(&get("/about"))
+            .contains("<li><a href=\"/About.html\">/About.html</a>: the letter case differs"));
         assert!(body(&get("/promo"))
             .contains("<code>_redirects:1</code>: matches the path but not its conditions"));
         assert!(body(&get("/item")).contains("matches the path but not its query parameters"));
