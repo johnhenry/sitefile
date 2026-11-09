@@ -16,6 +16,8 @@
 //   text        used when the TRANSFORM has no file source
 
 export const apiVersion = 1;
+// The same request always gives the same bytes, so results may be cached.
+export const cache = true;
 
 const STYLES = ['typewriter', 'fade', 'slide', 'wave', 'glitch'];
 const KNOWN = ['style', 'duration', 'loop', 'width', 'height', 'background', 'color', 'accent', 'font', 'size', 'text'];

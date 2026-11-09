@@ -1,0 +1,17 @@
+Redirect permanent /docs/ /guide/
+Redirect seeother "/a b" /c
+RedirectMatch temp ^/x/(.*)$ /y/$1/$2
+<Directory /var>
+Redirect /in /out
+</Directory>
+Redirect /after /later
+Redirect 307 / https://example.com/
+Redirect 200 /x /y
+RedirectMatch ^/$ /home
+RedirectMatch ^/(.*)$ /all/$1
+ErrorDocument 404 "Not here"
+ErrorDocument
+Header append X-A 1
+Header "unbalanced
+DirectoryIndex home.html
+</IfModule>
