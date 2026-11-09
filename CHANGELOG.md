@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- **`serve --cors`** (johnhenry/sitefile#171): `Access-Control-Allow-Origin: *`
+  on every response (`_headers` still wins) and `OPTIONS` preflights answered
+  with `204`; kept in the server record. Both servers.
+- **`serve` Host allow-list against DNS rebinding** (johnhenry/sitefile#190):
+  both servers answer `403` unless `Host` is `localhost`, `*.localhost` or an
+  IP address; `--allowed-host <name>` (repeatable; `.example.test` for
+  subdomains, `*` for any) adds names and is kept in the server record.
 - **`serve` in a terminal** (johnhenry/sitefile#224): single keys in a
   foreground `serve` or `serve --watch`:
   - `o` opens the browser;
@@ -23,6 +30,13 @@
   `_redirects` path targets stay under it. `serve --watch` defaults it to the
   path of the EXPORT BASE URL. Kept in the server record and shown in URLs.
   Both implementations.
+- **`import-config` reads what serve now understands** (johnhenry/sitefile#204,
+  after #193): `:placeholders` in sources and targets (Netlify, Vercel `:name`
+  segments, Firebase `:name` and `:name*`), Netlify `query` and `conditions`
+  (`Language`, `Country`, `Cookie`), and statuses 410 and 451 are now
+  translated rather than listed as unsupported. A target `:name` that the
+  source does not capture is still refused.
+
 - **`serve --spa` falls back by navigation** (johnhenry/sitefile#194): the
   app shell answers only page navigations (`Sec-Fetch-Mode`/`Sec-Fetch-Dest`,
   else `Accept: text/html`), never subresources, so `/users/jane.doe` works

@@ -43,6 +43,10 @@ export interface ServerState {
   readonly base?: string;
   /** `--keep-os-metadata`: serve a directory's or archive's OS metadata files too (absent: false). */
   readonly keepOsMetadata?: boolean;
+  /** `--allowed-host` names (absent: none; localhost names and IP addresses are always allowed). */
+  readonly allowedHosts?: readonly string[];
+  /** `--cors` (absent: false). */
+  readonly cors?: boolean;
   /** `--country`: what `_redirects` `Country=` conditions match (absent: none matches). */
   readonly country?: string;
   /** `--strict-site-files`: an ignored `_redirects`/`_headers` line stops the server from starting (absent: false). */

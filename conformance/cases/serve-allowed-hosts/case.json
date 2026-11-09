@@ -1,0 +1,22 @@
+{
+  "command": "serve",
+  "args": ["--allowed-host", "Example.COM", "--allowed-host", ".dev.test"],
+  "requests": [
+    { "target": "/", "expect": { "status": 200, "body": "home\n" } },
+    { "target": "/", "headers": { "host": "evil.example" }, "expect": { "status": 403, "headers": { "content-type": "text/html; charset=utf-8" } } },
+    { "method": "HEAD", "target": "/", "headers": { "host": "evil.example:8080" }, "expect": { "status": 403, "body": "" } },
+    { "target": "/", "headers": { "host": "localhost:8080" }, "expect": { "status": 200 } },
+    { "target": "/", "headers": { "host": "app.localhost" }, "expect": { "status": 200 } },
+    { "target": "/", "headers": { "host": "LOCALHOST." }, "expect": { "status": 200 } },
+    { "target": "/", "headers": { "host": "192.168.1.20:3000" }, "expect": { "status": 200 } },
+    { "target": "/", "headers": { "host": "[fe80::1]:3000" }, "expect": { "status": 200 } },
+    { "target": "/", "headers": { "host": "example.com" }, "expect": { "status": 200 } },
+    { "target": "/", "headers": { "host": "www.example.com" }, "expect": { "status": 403 } },
+    { "target": "/", "headers": { "host": "dev.test" }, "expect": { "status": 200 } },
+    { "target": "/", "headers": { "host": "a.b.dev.test:1" }, "expect": { "status": 200 } },
+    { "target": "/", "headers": { "host": "notdev.test" }, "expect": { "status": 403 } },
+    { "target": "/", "headers": { "host": "localhost.evil.example" }, "expect": { "status": 403 } },
+    { "target": "/", "headers": { "host": "1.2.3.4.evil.example" }, "expect": { "status": 403 } },
+    { "method": "POST", "target": "/", "headers": { "host": "evil.example" }, "expect": { "status": 403 } }
+  ]
+}

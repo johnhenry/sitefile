@@ -45,7 +45,7 @@ export function formatOf(file: string): HostFormat | undefined {
   return undefined;
 }
 
-const PLACEHOLDERS = ':placeholders are not supported yet (johnhenry/sitefile#193)';
+const PLACEHOLDERS = ':placeholders are supported in redirects, not in header patterns';
 const MIDDLE_STAR = '* is supported only as a trailing /*';
 const PROXY = 'proxying to another host is not supported (johnhenry/sitefile#172)';
 const CONDITIONS = 'conditions are not supported';
@@ -66,14 +66,18 @@ class Out {
     this.unsupported.push({ entry, reason });
   }
 
-  /** Add `from to status[!]` when `serve` would apply it as written; otherwise list why not. */
-  redirect(entry: string, from: string, to: string, status: number, force = false, fallback = false): boolean {
-    const line = `${from} ${to} ${status}${force ? '!' : ''}`;
-    if (parseRedirectRules(line).length === 1 && !hasPlaceholder(to)) {
+  /**
+   * Add `from [query…] to status[!] [conditions…]` when `serve` would apply it as written (and every
+   * `:name` the target uses is captured by the source); otherwise list why not.
+   */
+  redirect(entry: string, from: string, to: string, status: number, force = false, fallback = false, query: readonly string[] = [], conditions: readonly string[] = []): boolean {
+    const line = [from, ...query, to, `${status}${force ? '!' : ''}`, ...conditions].join(' ');
+    const unknown = unknownName(from, query, to);
+    if (parseRedirectRules(line).length === 1 && unknown === undefined) {
       (fallback ? this.fallbacks : this.redirects).push(line);
       return true;
     }
-    this.skip(entry, redirectReason(from, to, status));
+    this.skip(entry, unknown !== undefined ? `:${unknown} in the target is not in the source` : redirectReason(from, to, status));
     return false;
   }
 
@@ -92,18 +96,29 @@ class Out {
   }
 }
 
-/** A `:name` placeholder other than `:splat` in a target. */
-function hasPlaceholder(to: string): boolean {
-  return /(^|\/):(?!splat(\/|$|[?#]))[A-Za-z_]/.test(to.replace(/^https?:\/\/[^/]*/i, ''));
+/** The `:name`s a target uses (at the start of a path segment, after its `https://host`). */
+function targetNames(to: string): string[] {
+  return [...to.replace(/^https?:\/\/[^/]*/i, '').matchAll(/(?:^|\/):([A-Za-z_][A-Za-z0-9_]*)/g)].map((m) => m[1] as string);
 }
 
+/** A name the target uses that the source (its `:name` segments, `/*` as `splat`, `name=:value` query fields) does not capture. */
+function unknownName(from: string, query: readonly string[], to: string): string | undefined {
+  const captured = new Set(from.split('/').filter((s) => s.startsWith(':')).map((s) => s.slice(1)));
+  if (from === '/*' || from.endsWith('/*')) captured.add('splat');
+  for (const q of query) {
+    const v = q.slice(q.indexOf('=') + 1);
+    if (v.startsWith(':')) captured.add(v.slice(1));
+  }
+  return targetNames(to).find((n) => !captured.has(n));
+}
+
+const REWRITES = [200, 404, 410, 451];
+
 function redirectReason(from: string, to: string, status: number): string {
-  if (status === 410) return 'status 410 is not supported yet (johnhenry/sitefile#193)';
-  if (![200, 301, 302, 303, 307, 308, 404].includes(status)) return `status ${status} is not supported`;
-  if (from.split('/').some((s) => s.startsWith(':')) || hasPlaceholder(to)) return PLACEHOLDERS;
+  if (![200, 301, 302, 303, 307, 308, ...REWRITES.slice(1)].includes(status)) return `status ${status} is not supported`;
   if (from.slice(0, from.endsWith('/*') ? -2 : undefined).includes('*')) return MIDDLE_STAR;
   if (!from.startsWith('/')) return `'${from}' is not a path`;
-  if ((status === 200 || status === 404) && /^https?:/i.test(to)) return PROXY;
+  if (REWRITES.includes(status) && /^https?:/i.test(to)) return PROXY;
   return `sitefile serve cannot express '${from} ${to} ${status}'`;
 }
 
@@ -132,11 +147,29 @@ function netlify(doc: Record<string, Json>, out: Out): void {
       redirects.forEach((r, i) => {
         const entry = `redirects[${i}]`;
         if (!isMapping(r) || !isStr(r['from']) || !isStr(r['to'])) return out.skip(entry, 'expected from and to');
-        for (const k of ['query', 'conditions', 'headers', 'signed']) if (r[k] !== undefined) return out.skip(entry, k === 'query' ? 'query matching is not supported' : CONDITIONS);
+        for (const k of ['headers', 'signed']) if (r[k] !== undefined) return out.skip(entry, 'proxy headers and signing are not supported');
+        const query: string[] = [];
+        if (r['query'] !== undefined) {
+          const q = r['query'];
+          if (!isMapping(q) || !Object.values(q).every(isStr)) return out.skip(entry, 'query must map names to strings');
+          for (const k of keysOf(q)) query.push(`${k}=${q[k] as string}`);
+        }
+        const conditions: string[] = [];
+        if (r['conditions'] !== undefined) {
+          const c = r['conditions'];
+          if (!isMapping(c)) return out.skip(entry, 'conditions must be a table');
+          for (const k of keysOf(c)) {
+            if (!['language', 'country', 'cookie'].includes(k.toLowerCase())) return out.skip(entry, `conditions on ${k} are not supported`);
+            const v = c[k];
+            const values = isStr(v) ? [v] : Array.isArray(v) && v.every(isStr) ? v : undefined;
+            if (!values || values.length === 0) return out.skip(entry, `conditions.${k} must be a string or a list of strings`);
+            conditions.push(`${k}=${values.join(',')}`);
+          }
+        }
         const status = r['status'] ?? 301;
         if (!isInt(status)) return out.skip(entry, 'status must be a number');
         if (r['force'] !== undefined && typeof r['force'] !== 'boolean') return out.skip(entry, 'force must be true or false');
-        out.redirect(entry, r['from'], r['to'], status, r['force'] === true);
+        out.redirect(entry, r['from'], r['to'], status, r['force'] === true, false, query, conditions);
       });
   }
   const headers = doc['headers'];
@@ -163,24 +196,32 @@ function netlify(doc: Record<string, Json>, out: Out): void {
 // ------------------------------------------------------------------ path-to-regexp style sources (Vercel)
 
 /**
- * A Vercel `source` as a `_redirects` path: exact, or a last segment `:name*` / `(.*)` (anything below),
- * which becomes `/*`. `params` are the names a destination may use for the splat.
+ * A Vercel `source` as a `_redirects` path: literal segments, `:name` segments (with `params`), and a last
+ * segment `:name*` or `(.*)` (anything below), which becomes `/*`. `splat` lists what a destination may use
+ * for that splat. Header patterns (`params` false) take literal segments and the splat only.
  */
-function vercelSource(source: string): { from: string; params: string[] } | undefined {
-  if (/^\/[^:*()?+[\]{}\\]*$/.test(source)) return { from: source, params: [] };
-  const m = /^(\/(?:[^:*()?+[\]{}\\/]+\/)*)(?::([A-Za-z_][A-Za-z0-9_]*)\*|\(\.\*\))$/.exec(source);
-  if (!m) return undefined;
-  return { from: `${m[1]}*`, params: m[2] !== undefined ? [`:${m[2]}*`, `:${m[2]}`] : ['$1'] };
+function vercelSource(source: string, params: boolean): { from: string; splat: string[] } | undefined {
+  if (!source.startsWith('/')) return undefined;
+  const segs = source.slice(1).split('/');
+  const last = segs[segs.length - 1] as string;
+  const star = /^:([A-Za-z_][A-Za-z0-9_]*)\*$/.exec(last);
+  const splat = star ? [`:${star[1]}*`, `:${star[1]}`] : last === '(.*)' ? ['$1'] : undefined;
+  const body = splat ? segs.slice(0, -1) : segs;
+  for (const [i, seg] of body.entries()) {
+    if (params && /^:[A-Za-z_][A-Za-z0-9_]*$/.test(seg)) continue;
+    if (/[:*()?+[\]{}\\]/.test(seg) || (seg === '' && (i < body.length - 1 || splat))) return undefined;
+  }
+  return { from: splat ? `/${[...body, '*'].join('/')}` : source, splat: splat ?? [] };
 }
 
-function vercelTarget(dest: string, params: readonly string[]): string {
+function vercelTarget(dest: string, splat: readonly string[]): string {
   let out = dest;
-  for (const p of params) out = out.split(p).join(':splat');
+  for (const p of splat) out = out.split(p).join(':splat');
   return out;
 }
 
-function vercelSourceReason(source: string): string {
-  return /[()]/.test(source) ? 'regular expressions are not supported' : source.includes(':') ? PLACEHOLDERS : MIDDLE_STAR;
+function vercelSourceReason(source: string, params: boolean): string {
+  return /[()]/.test(source) ? 'regular expressions are not supported' : source.includes(':') ? (params ? 'only :name and a trailing :name* are supported' : PLACEHOLDERS) : MIDDLE_STAR;
 }
 
 function vercel(doc: Record<string, Json>, out: Out): void {
@@ -197,23 +238,23 @@ function vercel(doc: Record<string, Json>, out: Out): void {
   };
   list('redirects', (r, entry) => {
     if (!isStr(r['source']) || !isStr(r['destination'])) return out.skip(entry, 'expected source and destination');
-    const src = vercelSource(r['source']);
-    if (!src) return out.skip(entry, vercelSourceReason(r['source']));
+    const src = vercelSource(r['source'], true);
+    if (!src) return out.skip(entry, vercelSourceReason(r['source'], true));
     const status = r['statusCode'] ?? (r['permanent'] === false ? 307 : 308);
     if (!isInt(status)) return out.skip(entry, 'statusCode must be a number');
-    out.redirect(entry, src.from, vercelTarget(r['destination'], src.params), status);
+    out.redirect(entry, src.from, vercelTarget(r['destination'], src.splat), status);
   });
   list('rewrites', (r, entry) => {
     if (!isStr(r['source']) || !isStr(r['destination'])) return out.skip(entry, 'expected source and destination');
     if (/^https?:/i.test(r['destination'])) return out.skip(entry, PROXY);
-    const src = vercelSource(r['source']);
-    if (!src) return out.skip(entry, vercelSourceReason(r['source']));
-    out.redirect(entry, src.from, vercelTarget(r['destination'], src.params), 200);
+    const src = vercelSource(r['source'], true);
+    if (!src) return out.skip(entry, vercelSourceReason(r['source'], true));
+    out.redirect(entry, src.from, vercelTarget(r['destination'], src.splat), 200);
   });
   list('headers', (r, entry) => {
     if (!isStr(r['source']) || !Array.isArray(r['headers'])) return out.skip(entry, 'expected source and headers');
-    const src = vercelSource(r['source']);
-    if (!src) return out.skip(entry, vercelSourceReason(r['source']));
+    const src = vercelSource(r['source'], false);
+    if (!src) return out.skip(entry, vercelSourceReason(r['source'], false));
     const hs: Array<[string, string]> = [];
     for (const h of r['headers']) {
       if (!isMapping(h) || !isStr(h['key']) || !isStr(h['value'])) return out.skip(entry, 'expected headers of key and value');
@@ -227,17 +268,30 @@ function vercel(doc: Record<string, Json>, out: Out): void {
 
 // ------------------------------------------------------------------ firebase.json
 
-/** A Firebase glob as a `_redirects` path: exact, or a trailing `/**` (anything below), which becomes `/*`. */
-function firebaseSource(glob: string): string | undefined {
-  if (/^\/[^*?{}[\]!:]*$/.test(glob)) return glob;
-  const m = /^((?:\/[^*?{}[\]!:/]+)*)\/\*\*$/.exec(glob);
-  return m ? `${m[1]}/*` : glob === '**' ? '/*' : undefined;
+/**
+ * A Firebase source as a `_redirects` path: literal segments, `:name` segments (`params`), and a last
+ * segment `**` or `:name*` (anything below), which becomes `/*`; `**` alone is `/*`. `splat` lists what a
+ * destination may use for that splat. Header sources (`params` false) take literal segments and `**` only.
+ */
+function firebaseSource(glob: string, params: boolean): { from: string; splat: string[] } | undefined {
+  if (glob === '**') return { from: '/*', splat: [] };
+  if (!glob.startsWith('/')) return undefined;
+  const segs = glob.slice(1).split('/');
+  const last = segs[segs.length - 1] as string;
+  const star = params ? /^:([A-Za-z_][A-Za-z0-9_]*)\*$/.exec(last) : null;
+  const splat = last === '**' ? [] : star ? [`:${star[1]}`] : undefined;
+  const body = splat ? segs.slice(0, -1) : segs;
+  for (const [i, seg] of body.entries()) {
+    if (params && /^:[A-Za-z_][A-Za-z0-9_]*$/.test(seg)) continue;
+    if (/[*?{}[\]!:]/.test(seg) || (seg === '' && (i < body.length - 1 || splat))) return undefined;
+  }
+  return { from: splat ? `/${[...body, '*'].join('/')}` : glob, splat: splat ?? [] };
 }
 
-function firebaseReason(r: Record<string, Json>): string {
+function firebaseReason(r: Record<string, Json>, params: boolean): string {
   if (r['regex'] !== undefined) return 'regular expressions are not supported';
   const s = String(r['source'] ?? r['glob'] ?? '');
-  return s.includes(':') ? PLACEHOLDERS : 'only exact paths and a trailing /** are supported';
+  return s.includes(':') && !params ? PLACEHOLDERS : params ? 'only exact paths, :name segments and a trailing /** or :name* are supported' : 'only exact paths and a trailing /** are supported';
 }
 
 function firebase(doc: Record<string, Json>, out: Out): void {
@@ -263,29 +317,29 @@ function firebase(doc: Record<string, Json>, out: Out): void {
       fn(r, entry);
     });
   };
-  const sourceOf = (r: Record<string, Json>): string | undefined => {
+  const sourceOf = (r: Record<string, Json>, params: boolean): { from: string; splat: string[] } | undefined => {
     const s = r['source'] ?? r['glob'];
-    return r['regex'] === undefined && isStr(s) ? firebaseSource(s) : undefined;
+    return r['regex'] === undefined && isStr(s) ? firebaseSource(s, params) : undefined;
   };
   list('redirects', (r, entry) => {
-    const from = sourceOf(r);
-    if (from === undefined) return out.skip(entry, firebaseReason(r));
+    const src = sourceOf(r, true);
+    if (src === undefined) return out.skip(entry, firebaseReason(r, true));
     if (!isStr(r['destination'])) return out.skip(entry, 'expected a destination');
     const status = r['type'] ?? 301;
     if (!isInt(status)) return out.skip(entry, 'type must be 301 or 302');
-    out.redirect(entry, from, r['destination'], status);
+    out.redirect(entry, src.from, vercelTarget(r['destination'], src.splat), status);
   });
   list('rewrites', (r, entry) => {
     for (const k of ['function', 'run', 'dynamicLinks']) if (r[k] !== undefined) return out.skip(entry, `${k} rewrites are not supported`);
-    const from = sourceOf(r);
-    if (from === undefined) return out.skip(entry, firebaseReason(r));
+    const src = sourceOf(r, true);
+    if (src === undefined) return out.skip(entry, firebaseReason(r, true));
     if (!isStr(r['destination'])) return out.skip(entry, 'expected a destination');
     if (/^https?:/i.test(r['destination'])) return out.skip(entry, PROXY);
-    out.redirect(entry, from, r['destination'], 200);
+    out.redirect(entry, src.from, vercelTarget(r['destination'], src.splat), 200);
   });
   list('headers', (r, entry) => {
-    const from = sourceOf(r);
-    if (from === undefined) return out.skip(entry, firebaseReason(r));
+    const from = sourceOf(r, false)?.from;
+    if (from === undefined) return out.skip(entry, firebaseReason(r, false));
     if (!Array.isArray(r['headers'])) return out.skip(entry, 'expected headers');
     const hs: Array<[string, string]> = [];
     for (const x of r['headers']) {
@@ -439,7 +493,7 @@ function htaccess(text: string, out: Out): void {
       let status = d === 'redirectpermanent' ? 301 : 302;
       const first = (args[0] ?? '').toLowerCase();
       if (d === 'redirect' && (first in APACHE_STATUS || first === 'gone' || /^[0-9]{3}$/.test(first))) {
-        if (first === 'gone' || first === '410') return out.skip(entry, 'status 410 is not supported yet (johnhenry/sitefile#193)');
+        if (first === 'gone' || first === '410') return out.skip(entry, 'Redirect gone names no page to serve; a 410 rule in _redirects needs one (/path /gone.html 410)');
         status = APACHE_STATUS[first] ?? (/^3[0-9]{2}$/.test(first) ? Number(first) : 0);
         if (status === 0) return out.skip(entry, `status ${first} is not supported`);
         args = args.slice(1);
@@ -455,7 +509,7 @@ function htaccess(text: string, out: Out): void {
       let status = 302;
       const first = (args[0] ?? '').toLowerCase();
       if (first in APACHE_STATUS || first === 'gone' || /^[0-9]{3}$/.test(first)) {
-        if (first === 'gone' || first === '410') return out.skip(entry, 'status 410 is not supported yet (johnhenry/sitefile#193)');
+        if (first === 'gone' || first === '410') return out.skip(entry, 'Redirect gone names no page to serve; a 410 rule in _redirects needs one (/path /gone.html 410)');
         status = APACHE_STATUS[first] ?? (/^3[0-9]{2}$/.test(first) ? Number(first) : 0);
         if (status === 0) return out.skip(entry, `status ${first} is not supported`);
         args = args.slice(1);

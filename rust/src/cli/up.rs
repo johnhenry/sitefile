@@ -132,6 +132,8 @@ fn run_up(v: &Parsed) -> Result<i32> {
             spa_fallback: None,
             base: None,
             keep_os_metadata: false,
+            allowed_hosts: Vec::new(),
+            cors: false,
             country: None,
             strict_site_files: false,
             project: Some(project.clone()),

@@ -150,6 +150,21 @@ fn parse_country(v: Option<&str>) -> Result<Option<String>> {
 
 // ------------------------------------------------------------ serve
 
+/// `--allowed-host` values, validated and lowercased (the server always adds localhost names and
+/// IP addresses).
+fn allowed_hosts_of(v: &Parsed) -> Result<Vec<String>> {
+    let mut out: Vec<String> = Vec::new();
+    for raw in v.strs("allowed-host") {
+        let Some(h) = crate::server::parse_allowed_host(&raw) else {
+            return usage(format!("--allowed-host: invalid host name '{raw}'"));
+        };
+        if !out.contains(&h) {
+            out.push(h);
+        }
+    }
+    Ok(out)
+}
+
 const SERVE_OPTS: &[OptSpec] = &[
     string("name"),
     string_s("publish", 'p'),
@@ -161,6 +176,8 @@ const SERVE_OPTS: &[OptSpec] = &[
     string("country"),
     flag("strict-site-files"),
     flag("keep-os-metadata"),
+    strings("allowed-host"),
+    flag("cors"),
     string("open"),
     flag("qr"),
     flag("watch"),
@@ -205,6 +222,9 @@ pub const SERVE: Command = Command {
         "--name <n>        name for the server (-d only; default site-<6 hex>)",
         "-p, --publish <[host:]port>  address to bind (default 127.0.0.1, a free port)",
         "-d, --detach      run in the background and print the server ID",
+        "--spa             serve /index.html for unknown paths without a file extension",
+        "--cors            Access-Control-Allow-Origin: * on every response and OPTIONS preflights (204)",
+        "--allowed-host <name>        also answer requests for this Host (repeatable; .example.com: and subdomains; *: any)",
         "--spa             answer page navigations to missing paths with the nearest 200.html or index.html",
         "--spa-exclude <glob>         paths that never fall back to the app shell (* matches anything; repeatable)",
         "--spa-fallback <path>        the file every --spa fallback serves, e.g. /app.html (implies --spa)",
@@ -250,6 +270,7 @@ fn run_serve(v: &Parsed) -> Result<i32> {
         "an image reference, ./directory or archive file",
     )?;
     let bind = parse_publish(v.str("publish"))?;
+    let allowed_hosts = allowed_hosts_of(v)?;
     let (spa, spa_exclude, spa_fallback) = spa_options(v)?;
     let base = parse_base(v.str("base"))?;
     let country = parse_country(v.str("country"))?;
@@ -301,6 +322,8 @@ fn run_serve(v: &Parsed) -> Result<i32> {
                 live_reload: None,
                 last_modified: Some(Arc::new(move || modified)),
                 warn: None,
+                allowed_hosts: Some(allowed_hosts.clone()),
+                cors: v.flag("cors"),
                 content: site.content,
                 ..Default::default()
             },
@@ -386,6 +409,8 @@ fn run_serve(v: &Parsed) -> Result<i32> {
             spa_fallback,
             base,
             keep_os_metadata,
+            allowed_hosts,
+            cors: v.flag("cors"),
             country,
             strict_site_files,
             project: None,
@@ -412,6 +437,7 @@ fn serve_watch(v: &Parsed) -> Result<i32> {
         return usage("--name needs -d (only detached servers are tracked)");
     }
     let bind = parse_publish(v.str("publish"))?;
+    let allowed_hosts = allowed_hosts_of(v)?;
     let context = v.positionals.first().cloned().unwrap_or_else(|| ".".into());
     let file = v.str("file").filter(|s| !s.is_empty()).map(str::to_string);
     let arg_files = v.strs("build-arg-file");
@@ -598,6 +624,8 @@ fn serve_watch(v: &Parsed) -> Result<i32> {
                 move || built_at.read().ok().and_then(|t| *t)
             })),
             warn: Some(Arc::new(|m: &str| err(&format!("warning: {m}\n")))),
+            allowed_hosts: Some(allowed_hosts.clone()),
+            cors: v.flag("cors"),
             content: None,
         };
         let s = listen_shared(current.clone(), opts, &bind.host, bind.port)?;
@@ -709,6 +737,8 @@ pub fn serve_worker(id: &str) -> i32 {
                 live_reload: None,
                 last_modified: Some(Arc::new(move || modified)),
                 warn: None,
+                allowed_hosts: Some(state.allowed_hosts.clone()),
+                cors: state.cors,
                 content: site.content,
                 ..Default::default()
             },
