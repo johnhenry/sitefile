@@ -292,7 +292,28 @@ fn watch_usage_errors() {
     );
     let (code, _, err) = run(&home, &["serve", "--watch", "-d", s(&site)]);
     assert_eq!(code, 2);
-    assert!(err.contains("--watch cannot be combined with -d"), "{err}");
+    assert!(
+        err.starts_with("error: -d --watch serves a plain directory, and ")
+            && err.ends_with(" has a Sitefile: build it with serve --watch in the foreground\nRun 'sitefile --help' for usage.\n"),
+        "{err}"
+    );
+    let public = site.join("public");
+    let (code, _, err) = run(
+        &home,
+        &["serve", "-d", "--watch", "--no-css-inject", s(&public)],
+    );
+    assert_eq!(code, 2);
+    assert_eq!(
+        err,
+        "error: --no-css-inject is for serve --watch in the foreground, not -d\nRun 'sitefile --help' for usage.\n"
+    );
+    let nope = site.join("nope");
+    let (code, _, err) = run(&home, &["serve", "-d", "--watch", s(&nope)]);
+    assert_eq!(code, 1);
+    assert!(
+        err.starts_with("error[E_NOT_FOUND]: '") && err.ends_with("nope' is not a directory\n"),
+        "{err}"
+    );
     let (code, _, err) = run(&home, &["serve", "--build-arg", "A=1", "./x/"]);
     assert_eq!(code, 2);
     assert!(err.contains("--build-arg needs --watch"), "{err}");
@@ -332,10 +353,17 @@ fn get_with(port: u16, path: &str, extra: &str) -> (u16, String, String) {
 struct Events(TcpStream, String);
 impl Events {
     fn open(port: u16) -> Events {
+        Events::open_after(port, None)
+    }
+    /// Open the stream with `Last-Event-ID: <last>` (a page reconnecting).
+    fn open_after(port: u16, last: Option<&str>) -> Events {
         let mut c = TcpStream::connect(("127.0.0.1", port)).unwrap();
+        let extra = last
+            .map(|l| format!("last-event-id: {l}\r\n"))
+            .unwrap_or_default();
         write!(
             c,
-            "GET /__sitefile/reload HTTP/1.1\r\nhost: 127.0.0.1\r\n\r\n"
+            "GET /__sitefile/reload HTTP/1.1\r\nhost: 127.0.0.1\r\n{extra}\r\n"
         )
         .unwrap();
         c.set_read_timeout(Some(Duration::from_secs(20))).unwrap();
@@ -421,6 +449,7 @@ fn serve_watch_live_reloads_and_keeps_serving_on_failure() {
 
     let mut ev = Events::open(port);
     assert_eq!(ev.next(), "retry: 1000");
+    assert!(ev.next().starts_with("id: "), "the server instance");
     write(site.join("public/index.html"), "<h1>v2</h1>");
     assert_eq!(ev.next(), "data: {\"type\":\"building\"}");
     assert_eq!(ev.next(), "data: {\"type\":\"reload\",\"morph\":true}");
@@ -484,6 +513,7 @@ fn serve_watch_plain_directory_is_reread_and_swaps_css() {
     assert_eq!(get(port, "/.env").0, 404);
     let mut ev = Events::open(port);
     assert_eq!(ev.next(), "retry: 1000");
+    assert!(ev.next().starts_with("id: "), "the server instance");
     write(dir.join("s.css"), "a{color:red}");
     assert_eq!(ev.next(), "data: {\"type\":\"building\"}");
     assert_eq!(ev.next(), "data: {\"type\":\"css\",\"paths\":[\"/s.css\"]}");
@@ -503,6 +533,93 @@ fn serve_watch_plain_directory_is_reread_and_swaps_css() {
 }
 
 #[test]
+fn serve_detached_watch_rereads_reloads_and_survives_a_restart() {
+    let t = Tmp::new();
+    let home = t.0.join("home");
+    let dir = t.0.join("plain");
+    fs::create_dir_all(&dir).unwrap();
+    write(
+        dir.join("index.html"),
+        "<link rel=\"stylesheet\" href=\"/s.css\"><h1>d1</h1>",
+    );
+    write(dir.join("s.css"), "a{}");
+    let port = std::net::TcpListener::bind(("127.0.0.1", 0))
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port();
+    let bind = format!("127.0.0.1:{port}");
+    let (code, out, err) = run(
+        &home,
+        &[
+            "serve",
+            "-d",
+            "--watch",
+            "--name",
+            "dw",
+            "-p",
+            &bind,
+            "--poll-interval",
+            "50",
+            s(&dir),
+        ],
+    );
+    assert_eq!(code, 0, "{err}");
+    let check = || {
+        let id = out.split('(').nth(1).unwrap().split(')').next().unwrap();
+        let state = fs::read_to_string(home.join("servers").join(format!("{id}.json"))).unwrap();
+        assert!(state.contains("\"watch\": true"), "{state}");
+        assert!(state.contains("\"pollMs\": 50"), "{state}");
+        assert_eq!(
+            get(port, "/").2,
+            format!("<link rel=\"stylesheet\" href=\"/s.css\"><h1>d1</h1>{RELOAD_SCRIPT}")
+        );
+        let mut ev = Events::open(port);
+        assert_eq!(ev.next(), "retry: 1000");
+        let instance = ev.next()[4..].to_string();
+        assert_eq!(instance.len(), 16);
+        write(dir.join("s.css"), "a{color:red}");
+        assert_eq!(ev.next(), "data: {\"type\":\"building\"}");
+        assert_eq!(ev.next(), "data: {\"type\":\"css\",\"paths\":[\"/s.css\"]}");
+        write(dir.join("index.html"), "<h1>d2</h1>");
+        assert_eq!(ev.next(), "data: {\"type\":\"building\"}");
+        assert_eq!(ev.next(), "data: {\"type\":\"reload\",\"morph\":true}");
+        assert_eq!(get(port, "/").2, format!("<h1>d2</h1>{RELOAD_SCRIPT}"));
+        let (_, log, _) = run(&home, &["server", "logs", "dw"]);
+        assert!(log.contains("Z Change detected, re-reading\n"), "{log}");
+        assert!(log.contains("Z Read 2 files (sha256:"), "{log}");
+
+        let (code, _, err) = run(&home, &["server", "restart", "dw"]);
+        assert_eq!(code, 0, "{err}");
+        let (_, ps, _) = run(&home, &["servers", "--json"]);
+        assert!(
+            ps.contains("\"watch\": true") && ps.contains("\"pollMs\": 50"),
+            "restart keeps the watch: {ps}"
+        );
+        let mut again = Events::open_after(port, Some(&instance));
+        assert_eq!(again.next(), "retry: 1000");
+        assert_ne!(again.next(), format!("id: {instance}"), "a new instance");
+        assert_eq!(
+            again.next(),
+            "data: {\"type\":\"reload\"}",
+            "pages left open across the restart reload"
+        );
+        write(dir.join("index.html"), "<h1>d3</h1>");
+        assert_eq!(again.next(), "data: {\"type\":\"building\"}");
+        assert_eq!(
+            again.next(),
+            "data: {\"type\":\"reload\",\"morph\":true}",
+            "the restarted server still watches"
+        );
+    };
+    let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(check));
+    run(&home, &["server", "rm", "-f", "dw"]);
+    if let Err(e) = r {
+        std::panic::resume_unwind(e);
+    }
+}
+
+#[test]
 fn serve_watch_no_css_inject_reloads() {
     let t = Tmp::new();
     let home = t.0.join("home");
@@ -515,6 +632,7 @@ fn serve_watch_no_css_inject_reloads() {
         .ends_with("\"cssInject\":false,\"console\":false,\"overlay\":true,\"navigateToChanged\":false,\"reload\":\"morph\"});\n"));
     let mut ev = Events::open(port);
     assert_eq!(ev.next(), "retry: 1000");
+    assert!(ev.next().starts_with("id: "), "the server instance");
     write(site.join("public/style.css"), "body{margin:3px}");
     assert_eq!(ev.next(), "data: {\"type\":\"building\"}");
     assert_eq!(ev.next(), "data: {\"type\":\"reload\"}");
@@ -546,6 +664,7 @@ fn serve_watch_navigate_to_changed_names_the_edited_post() {
         .ends_with("\"navigateToChanged\":true,\"reload\":\"morph\"});\n"));
     let mut ev = Events::open(port);
     assert_eq!(ev.next(), "retry: 1000");
+    assert!(ev.next().starts_with("id: "), "the server instance");
     write(
         site.join("posts/2026-01-02-second.md"),
         "# Second\n\nTwo, edited.\n",

@@ -9,7 +9,7 @@ use super::common::{err, js_to_number, out, pretty_json, require_args, table, us
 use crate::build_args::collect_build_args;
 use crate::error::{ErrorCode::*, Result, SitefileError};
 use crate::executor::{build, BuildOptions, Callback, LockfileSetting};
-use crate::server::{format_url, listen, listen_shared, LiveReload, SiteServerOptions};
+use crate::server::{format_url, listen_shared, LiveReload, SiteServerOptions};
 use crate::servers::{
     check_site_files, is_running, load_served_site, resolve_source, restart_detached,
     serve_detached_with, served_last_modified, DetachedServe, ServedTreeOptions, ServerRegistry,
@@ -709,8 +709,8 @@ const WATCH_ONLY: &[&str] = &[
 pub const SERVE: Command = Command {
     name: "serve",
     summary: "serve an image, directory or archive file over HTTP",
-    usage: "serve [--name n] [-p [host:]port] [-d] [--spa] <ref|id|./dir|file>  |  serve --watch [options] [context]",
-    description: "Serve an image from the local store, a directory (paths starting with ./, ../ or /), or an archive file over HTTP:\nzip, tar, tar.gz, wbn, or an OCI archive as build -o x.oci.tar and save write it (the format is read from the\nbytes). A directory or archive is a snapshot read at start. GET and HEAD only; no directory listings.\nBinds 127.0.0.1 on a free port unless -p is given;\n0.0.0.0 is bound only when you pass it explicitly. Foreground by default (Ctrl-C stops it); -d detaches and\nrecords the server for servers, server stop, rm, logs and restart.\n\nWith --watch the argument is a build context (default .): its Sitefile is built in memory and served, rebuilt\nwhen the context, the Sitefile or a --build-arg-file changes, and open pages reload after each good rebuild\n(page loads get a small script, /__sitefile/reload.js). A failed rebuild keeps serving the last\ngood build. Nothing is written to the context except Sitefile.lock. A directory with no Sitefile (and no -f,\n--target or --build-arg*) is served as it is and re-read on change. When only stylesheets changed, pages\nswap them in place.",
+    usage: "serve [--name n] [-p [host:]port] [-d] [--spa] <ref|id|./dir|file>  |  serve [-d] --watch [options] [context]",
+    description: "Serve an image from the local store, a directory (paths starting with ./, ../ or /), or an archive file over HTTP:\nzip, tar, tar.gz, wbn, or an OCI archive as build -o x.oci.tar and save write it (the format is read from the\nbytes). A directory or archive is a snapshot read at start. GET and HEAD only; no directory listings.\nBinds 127.0.0.1 on a free port unless -p is given;\n0.0.0.0 is bound only when you pass it explicitly. Foreground by default (Ctrl-C stops it); -d detaches and\nrecords the server for servers, server stop, rm, logs and restart.\n\nWith --watch the argument is a build context (default .): its Sitefile is built in memory and served, rebuilt\nwhen the context, the Sitefile or a --build-arg-file changes, and open pages reload after each good rebuild\n(page loads get a small script, /__sitefile/reload.js). A failed rebuild keeps serving the last\ngood build. Nothing is written to the context except Sitefile.lock. A directory with no Sitefile (and no -f,\n--target or --build-arg*) is served as it is and re-read on change. When only stylesheets changed, pages\nswap them in place. With -d, --watch takes such a directory only: the detached server re-reads it on change,\nopen pages reload, and pages left open across server restart reload once it is back.",
     flags: &[
         "--name <n>        name for the server (-d only; default site-<6 hex>)",
         "-p, --publish <[host:]port>  address to bind (default 127.0.0.1, a free port)",
@@ -759,7 +759,7 @@ pub const SERVE: Command = Command {
         "--keep-os-metadata  serve __MACOSX, ._*, Thumbs.db and desktop.ini of a directory or archive (default: skipped)",
         "--open[=<path>]   open the site (at <path>) in the browser once it is served ($BROWSER, else the system default)",
         "--qr              print a QR code of the network URL (with -p 0.0.0.0:...), else of the local URL",
-        "--watch           build the context, serve it, rebuild on change and live-reload pages (foreground only)",
+        "--watch           build the context, serve it, rebuild on change and live-reload pages (-d: a plain directory only)",
         "-f, --file <path>            Sitefile path (--watch; default <context>/Sitefile)",
         "--target <stage>             build up to this stage and serve its whole tree (--watch)",
         "--build-arg <NAME=value>     set an ARG (--watch; repeatable)",
@@ -767,8 +767,8 @@ pub const SERVE: Command = Command {
         "--no-cache        do not use the TRANSFORM result cache (--watch)",
         "--no-lockfile     do not read or write Sitefile.lock (--watch)",
         "--keep-service-workers       do not unregister service workers and clear caches before a reload (--watch)",
-        "--poll            poll for changes (every 1000 ms) instead of file system events (--watch)",
-        "--poll-interval <ms>         poll every <ms> milliseconds (--watch; implies --poll)",
+        "--poll            poll for changes (every 1000 ms) instead of file system events (--watch, -d --watch)",
+        "--poll-interval <ms>         poll every <ms> milliseconds (--watch, -d --watch; implies --poll)",
         "--no-css-inject   reload the page when only stylesheets changed, instead of swapping them (--watch)",
         "--console         also forward console.log/info from pages to the log, not only errors and warnings (--watch)",
         "--no-overlay      no Rebuilding badge or build-error overlay in pages (--watch)",
@@ -779,21 +779,64 @@ pub const SERVE: Command = Command {
     run: run_serve,
 };
 
+/// The --watch flags `serve -d --watch` takes (it watches a plain directory; the rest are for
+/// builds or the page script).
+const DETACHED_WATCH: &[&str] = &["poll", "poll-interval"];
+
+/// `serve -d --watch [dir]`: the directory (default .) as a source, absolute and real. A Sitefile
+/// project is refused: building on change happens in the foreground (`serve --watch`).
+fn watched_directory(arg: &str) -> Result<(String, crate::servers::ServerSource)> {
+    let dir = crate::export::exporter::resolve_path(std::path::Path::new(arg));
+    if !std::fs::metadata(&dir).map(|m| m.is_dir()).unwrap_or(false) {
+        return Err(SitefileError::plain(
+            E_NOT_FOUND,
+            format!("'{arg}' is not a directory"),
+        ));
+    }
+    if dir.join("Sitefile").is_file() {
+        return usage(format!("-d --watch serves a plain directory, and {arg} has a Sitefile: build it with serve --watch in the foreground"));
+    }
+    let real = std::fs::canonicalize(&dir).unwrap_or(dir.clone());
+    Ok((
+        dir.display().to_string(),
+        crate::servers::ServerSource::Dir {
+            path: real.display().to_string(),
+        },
+    ))
+}
+
 fn run_serve(v: &Parsed) -> Result<i32> {
-    if v.flag("watch") {
+    if v.flag("watch") && !v.flag("detach") {
         return serve_watch(v);
     }
+    // `-d --watch`: a plain directory, re-read on change by the detached worker (with live reload).
+    let watch_detached = v.flag("watch");
     for f in WATCH_ONLY {
-        if v.has(f) {
-            return usage(format!("--{f} needs --watch"));
+        if !v.has(f) || (watch_detached && DETACHED_WATCH.contains(f)) {
+            continue;
         }
+        return usage(if watch_detached {
+            format!("--{f} is for serve --watch in the foreground, not -d")
+        } else {
+            format!("--{f} needs --watch")
+        });
     }
-    require_args(
-        &v.positionals,
-        1,
-        1,
-        "an image reference, ./directory or archive file",
-    )?;
+    if watch_detached {
+        require_args(&v.positionals, 0, 1, "a directory")?;
+    } else {
+        require_args(
+            &v.positionals,
+            1,
+            1,
+            "an image reference, ./directory or archive file",
+        )?;
+    }
+    let poll_ms = if watch_detached {
+        crate::watch::poll_option(v.flag("poll"), v.str("poll-interval"))?
+            .map(|d| d.as_millis() as u64)
+    } else {
+        None
+    };
     let bind = parse_publish(v.str("publish"))?;
     let allowed_hosts = allowed_hosts_of(v)?;
     let isolate = isolate_of(v)?;
@@ -820,7 +863,11 @@ fn run_serve(v: &Parsed) -> Result<i32> {
         return usage("--name needs -d (only detached servers are tracked)");
     }
     let store = Store::open_default()?;
-    let (label, source) = resolve_source(&store, &v.positionals[0])?;
+    let (label, source) = if watch_detached {
+        watched_directory(v.positionals.first().map(String::as_str).unwrap_or("."))?
+    } else {
+        resolve_source(&store, &v.positionals[0])?
+    };
     if is_wildcard(&bind.host) {
         err(&format!(
             "warning: binding {}: the site will be reachable from other machines\n",
@@ -1035,6 +1082,8 @@ fn run_serve(v: &Parsed) -> Result<i32> {
             }),
             country,
             strict_site_files,
+            watch: watch_detached,
+            poll_ms,
             project: None,
         },
         None,
@@ -1054,9 +1103,6 @@ fn run_serve(v: &Parsed) -> Result<i32> {
 /// `serve --watch [context]`: build in memory, serve, rebuild on change, live reload.
 fn serve_watch(v: &Parsed) -> Result<i32> {
     require_args(&v.positionals, 0, 1, "a build context directory")?;
-    if v.flag("detach") {
-        return usage("--watch cannot be combined with -d");
-    }
     if v.has("name") {
         return usage("--name needs -d (only detached servers are tracked)");
     }
@@ -1399,6 +1445,119 @@ fn worker_auth(state: &ServerState) -> Result<Option<Arc<crate::serve_auth::Basi
         .then(|| Arc::new(crate::serve_auth::BasicAuth::new(all))))
 }
 
+/// What [`watch_directory`] works on.
+struct WatchedDirectory {
+    store: Store,
+    state: ServerState,
+    live: Arc<LiveReload>,
+    current: crate::server::SharedTree,
+    modified: Arc<RwLock<Option<i64>>>,
+    stop: Arc<std::sync::atomic::AtomicBool>,
+}
+
+/// `-d --watch`: scan the served directory (every [`crate::watch::POLL`], or the record's
+/// `pollMs`) until `stop`, and once changes settle read it again: a good read is served and open
+/// pages are told what changed; a failed one is logged, shown in open pages, and the last good
+/// copy stays (port of `watchDirectory` in src/cli/serve-worker.ts).
+fn watch_directory(w: WatchedDirectory, stamp: &dyn Fn(&str)) {
+    let crate::servers::ServerSource::Dir { path } = &w.state.source else {
+        return;
+    };
+    let root = std::path::PathBuf::from(path);
+    let watched = crate::watch::Watched {
+        dirs: vec![root],
+        files: Vec::new(),
+        ignored: vec![crate::watch::resolve_real(&w.store.home)],
+    };
+    let warn = |m: &str| stamp(&format!("warning: {m}"));
+    let site_files = crate::server::routing_for(
+        w.state.host_profile.as_deref(),
+        w.state.html_handling.as_deref(),
+    )
+    .is_none_or(|p| p.site_files);
+    let warnings_of = |t: &Tree| -> String {
+        if site_files {
+            crate::server::site_file_warnings(t, None).join("\n")
+        } else {
+            String::new()
+        }
+    };
+    // The site-file warnings last logged: a re-read repeats them only when they change.
+    let mut last_warnings = w
+        .current
+        .read()
+        .map(|t| warnings_of(&t))
+        .unwrap_or_default();
+    let interval = w
+        .state
+        .poll_ms
+        .map(Duration::from_millis)
+        .unwrap_or(crate::watch::POLL);
+    let mut last = watched.scan();
+    let mut dirty_since: Option<std::time::Instant> = None;
+    while !w.stop.load(Ordering::SeqCst) {
+        std::thread::sleep(interval);
+        let snap = watched.scan();
+        if snap != last {
+            last = snap;
+            dirty_since = Some(std::time::Instant::now()); // (re)start the debounce
+            continue;
+        }
+        if !dirty_since.is_some_and(|t| t.elapsed() >= crate::watch::DEBOUNCE) {
+            continue;
+        }
+        dirty_since = None;
+        stamp("Change detected, re-reading");
+        w.live.send(crate::server::BUILDING_EVENT);
+        let read = (|| -> Result<Tree> {
+            let next = crate::servers::load_served_tree_with(
+                &w.store,
+                &w.state.source,
+                &ServedTreeOptions {
+                    keep_os_metadata: w.state.keep_os_metadata,
+                    warn: Some(&warn),
+                },
+            )?;
+            let n = next.len();
+            stamp(&format!(
+                "Read {n} file{} ({})",
+                if n == 1 { "" } else { "s" },
+                next.digest()
+            ));
+            let warnings = warnings_of(&next);
+            if warnings != last_warnings && !warnings.is_empty() {
+                for m in warnings.split('\n') {
+                    warn(m);
+                }
+            }
+            last_warnings = warnings;
+            if site_files {
+                check_site_files(&next, w.state.strict_site_files, &|_| {}, None)?;
+            }
+            Ok(next)
+        })();
+        match read {
+            Ok(next) => {
+                let Ok(mut t) = w.current.write() else { return };
+                let event = crate::server::reload_event_for(&t, &next, true, false)
+                    .unwrap_or_else(|| crate::server::OK_EVENT.to_string());
+                *t = Arc::new(next);
+                drop(t);
+                if let Ok(mut m) = w.modified.write() {
+                    *m = served_last_modified(&w.store, &w.state.source);
+                }
+                w.live.send(&event);
+            }
+            Err(e) => {
+                stamp(&format!("error[{}]: {}", e.code, e.message()));
+                w.live.send(&crate::server::error_event(&e));
+                stamp("Read failed; serving the last good copy");
+            }
+        }
+        // a change during the read differs from `last` in the next scan: one follow-up read
+    }
+}
+
 /// `sitefile __serve-worker <id>`: the detached server process.
 pub fn serve_worker(id: &str) -> i32 {
     let reg = match ServerRegistry::open(None) {
@@ -1449,6 +1608,11 @@ pub fn serve_worker(id: &str) -> i32 {
     let deadline = left_ms
         .filter(|l| *l > 0)
         .map(|l| std::time::Instant::now() + Duration::from_millis(l as u64));
+    // `-d --watch`: the directory is re-read on change and open pages reload (or swap stylesheets).
+    let live = (state.watch && matches!(state.source, crate::servers::ServerSource::Dir { .. }))
+        .then(LiveReload::new);
+    let current: crate::server::SharedTree = Arc::new(RwLock::new(Arc::new(Tree::empty())));
+    let modified: Arc<RwLock<Option<i64>>> = Arc::new(RwLock::new(None));
     let started = (|| -> Result<crate::server::ListeningServer> {
         if left_ms.is_some_and(|l| l <= 0) {
             return Err(SitefileError::plain(
@@ -1481,11 +1645,16 @@ pub fn serve_worker(id: &str) -> i32 {
                 site.content.as_deref(),
             )?;
         }
-        let modified = served_last_modified(&reg.store, &state.source);
+        if let Ok(mut m) = modified.write() {
+            *m = served_last_modified(&reg.store, &state.source);
+        }
         let n = tree.len();
+        if let Ok(mut t) = current.write() {
+            *t = Arc::new(tree);
+        }
         let log: crate::server::LogFn = Arc::new(stamp);
-        let server = listen(
-            Arc::new(tree),
+        let server = listen_shared(
+            current.clone(),
             SiteServerOptions {
                 spa: state.spa,
                 spa_exclude: state.spa_exclude.clone(),
@@ -1505,8 +1674,11 @@ pub fn serve_worker(id: &str) -> i32 {
                 country: state.country.clone(),
                 log: Some(log),
                 server_id: Some(id.to_string()),
-                live_reload: None,
-                last_modified: Some(Arc::new(move || modified)),
+                live_reload: live.clone(),
+                last_modified: Some(Arc::new({
+                    let modified = modified.clone();
+                    move || modified.read().ok().and_then(|m| *m)
+                })),
                 warn: None,
                 allowed_hosts: Some(state.allowed_hosts.clone()),
                 cors: state.cors,
@@ -1581,11 +1753,30 @@ pub fn serve_worker(id: &str) -> i32 {
     })();
     match started {
         Ok(server) => {
+            let stop_watch = Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let watcher = live.as_ref().map(|live| {
+                let ctx = WatchedDirectory {
+                    store: reg.store.clone(),
+                    state: state.clone(),
+                    live: live.clone(),
+                    current: current.clone(),
+                    modified: modified.clone(),
+                    stop: stop_watch.clone(),
+                };
+                std::thread::spawn(move || watch_directory(ctx, &stamp))
+            });
             match wait_for_signal_until(deadline) {
                 Some(sig) if json => stamp(&crate::server::stopped_log_line(&now_iso(), sig)),
                 Some(sig) => stamp(&format!("received {sig}, shutting down")),
                 None if json => stamp(&crate::server::stopped_log_line(&now_iso(), "expired")),
                 None => stamp("--stop-after reached, shutting down"),
+            }
+            stop_watch.store(true, Ordering::SeqCst);
+            if let Some(w) = watcher {
+                let _ = w.join();
+            }
+            if let Some(live) = &live {
+                live.close();
             }
             let (tx, rx) = std::sync::mpsc::channel();
             std::thread::spawn(move || {

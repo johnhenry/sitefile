@@ -191,6 +191,13 @@ pub struct ServerState {
         skip_serializing_if = "std::ops::Not::not"
     )]
     pub strict_site_files: bool,
+    /// `-d --watch` (a directory only): re-read the directory on change and live-reload open pages.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub watch: bool,
+    /// `--poll`, `--poll-interval` with `-d --watch`: poll every this many milliseconds instead
+    /// of the default scan interval (absent: the default).
+    #[serde(default, rename = "pollMs", skip_serializing_if = "Option::is_none")]
+    pub poll_ms: Option<u64>,
     /// The requested bind address (port 0 = pick a free port).
     pub bind: Bind,
     pub host: String,
@@ -1121,6 +1128,10 @@ pub struct DetachedServe {
     pub country: Option<String>,
     /// `--strict-site-files`.
     pub strict_site_files: bool,
+    /// `-d --watch`: a directory source re-read on change, with live reload.
+    pub watch: bool,
+    /// `--poll`, `--poll-interval` with `-d --watch` (milliseconds).
+    pub poll_ms: Option<u64>,
     /// The servers file it belongs to (`sitefile up`), by real path.
     pub project: Option<String>,
 }
@@ -1164,6 +1175,8 @@ impl DetachedServe {
             mime: None,
             country: None,
             strict_site_files: false,
+            watch: false,
+            poll_ms: None,
             project: None,
         })
     }
@@ -1246,6 +1259,8 @@ pub fn serve_detached_with(
         mime: serve.mime.clone(),
         country: serve.country.clone(),
         strict_site_files: serve.strict_site_files,
+        watch: serve.watch && matches!(serve.source, ServerSource::Dir { .. }),
+        poll_ms: serve.poll_ms.filter(|_| serve.watch),
         host: serve.bind.host.clone(),
         port: serve.bind.port,
         bind: serve.bind.clone(),
@@ -1482,6 +1497,8 @@ mod tests {
             mime: None,
             country: None,
             strict_site_files: false,
+            watch: false,
+            poll_ms: None,
             bind: Bind {
                 host: "127.0.0.1".into(),
                 port: 0,

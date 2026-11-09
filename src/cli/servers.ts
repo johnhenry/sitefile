@@ -183,9 +183,9 @@ async function startDetached(reg: ServerRegistry, state: ServerState): Promise<S
 const run: Command = {
   name: 'serve',
   summary: 'serve an image, directory or archive file over HTTP',
-  usage: 'serve [--name n] [-p [host:]port] [-d] [--spa] <ref|id|./dir|file>  |  serve --watch [options] [context]',
+  usage: 'serve [--name n] [-p [host:]port] [-d] [--spa] <ref|id|./dir|file>  |  serve [-d] --watch [options] [context]',
   description:
-    'Serve an image from the local store, a directory (paths starting with ./, ../ or /), or an archive file over HTTP:\nzip, tar, tar.gz, wbn, or an OCI archive as build -o x.oci.tar and save write it (the format is read from the\nbytes). A directory or archive is a snapshot read at start. GET and HEAD only; no directory listings.\nBinds 127.0.0.1 on a free port unless -p is given;\n0.0.0.0 is bound only when you pass it explicitly. Foreground by default (Ctrl-C stops it); -d detaches and\nrecords the server for servers, server stop, rm, logs and restart.\n\nWith --watch the argument is a build context (default .): its Sitefile is built in memory and served, rebuilt\nwhen the context, the Sitefile or a --build-arg-file changes, and open pages reload after each good rebuild\n(page loads get a small script, /__sitefile/reload.js). A failed rebuild keeps serving the last\ngood build. Nothing is written to the context except Sitefile.lock. A directory with no Sitefile (and no -f,\n--target or --build-arg*) is served as it is and re-read on change. When only stylesheets changed, pages\nswap them in place.',
+    'Serve an image from the local store, a directory (paths starting with ./, ../ or /), or an archive file over HTTP:\nzip, tar, tar.gz, wbn, or an OCI archive as build -o x.oci.tar and save write it (the format is read from the\nbytes). A directory or archive is a snapshot read at start. GET and HEAD only; no directory listings.\nBinds 127.0.0.1 on a free port unless -p is given;\n0.0.0.0 is bound only when you pass it explicitly. Foreground by default (Ctrl-C stops it); -d detaches and\nrecords the server for servers, server stop, rm, logs and restart.\n\nWith --watch the argument is a build context (default .): its Sitefile is built in memory and served, rebuilt\nwhen the context, the Sitefile or a --build-arg-file changes, and open pages reload after each good rebuild\n(page loads get a small script, /__sitefile/reload.js). A failed rebuild keeps serving the last\ngood build. Nothing is written to the context except Sitefile.lock. A directory with no Sitefile (and no -f,\n--target or --build-arg*) is served as it is and re-read on change. When only stylesheets changed, pages\nswap them in place. With -d, --watch takes such a directory only: the detached server re-reads it on change,\nopen pages reload, and pages left open across server restart reload once it is back.',
   flags: [
     '--name <n>        name for the server (-d only; default site-<6 hex>)',
     '-p, --publish <[host:]port>  address to bind (default 127.0.0.1, a free port)',
@@ -234,7 +234,7 @@ const run: Command = {
     '--keep-os-metadata  serve __MACOSX, ._*, Thumbs.db and desktop.ini of a directory or archive (default: skipped)',
     '--open[=<path>]   open the site (at <path>) in the browser once it is served ($BROWSER, else the system default)',
     '--qr              print a QR code of the network URL (with -p 0.0.0.0:...), else of the local URL',
-    '--watch           build the context, serve it, rebuild on change and live-reload pages (foreground only)',
+    '--watch           build the context, serve it, rebuild on change and live-reload pages (-d: a plain directory only)',
     '-f, --file <path>            Sitefile path (--watch; default <context>/Sitefile)',
     '--target <stage>             build up to this stage and serve its whole tree (--watch)',
     '--build-arg <NAME=value>     set an ARG (--watch; repeatable)',
@@ -242,8 +242,8 @@ const run: Command = {
     '--no-cache        do not use the TRANSFORM result cache (--watch)',
     '--no-lockfile     do not read or write Sitefile.lock (--watch)',
     '--keep-service-workers       do not unregister service workers and clear caches before a reload (--watch)',
-    '--poll            poll for changes (every 1000 ms) instead of file system events (--watch)',
-    '--poll-interval <ms>         poll every <ms> milliseconds (--watch; implies --poll)',
+    '--poll            poll for changes (every 1000 ms) instead of file system events (--watch, -d --watch)',
+    '--poll-interval <ms>         poll every <ms> milliseconds (--watch, -d --watch; implies --poll)',
     '--no-css-inject   reload the page when only stylesheets changed, instead of swapping them (--watch)',
     '--console         also forward console.log/info from pages to the log, not only errors and warnings (--watch)',
     '--no-overlay      no Rebuilding badge or build-error overlay in pages (--watch)',
@@ -314,9 +314,16 @@ const run: Command = {
     reload: { type: 'string' },
   },
   async run(v, pos) {
-    if (v.watch) return serveWatch(v, pos);
-    for (const f of WATCH_ONLY) if (v[f] !== undefined) usage(`--${f} needs --watch`);
-    requireArgs(pos, 1, 1, 'an image reference, ./directory or archive file');
+    if (v.watch && !v.detach) return serveWatch(v, pos);
+    // `-d --watch`: a plain directory, re-read on change by the detached worker (with live reload).
+    const watchDetached = !!v.watch;
+    for (const f of WATCH_ONLY) {
+      if (v[f] === undefined || (watchDetached && (DETACHED_WATCH as readonly string[]).includes(f))) continue;
+      usage(watchDetached ? `--${f} is for serve --watch in the foreground, not -d` : `--${f} needs --watch`);
+    }
+    if (watchDetached) requireArgs(pos, 0, 1, 'a directory');
+    else requireArgs(pos, 1, 1, 'an image reference, ./directory or archive file');
+    const pollMs = watchDetached ? pollOption(!!v.poll, str(v['poll-interval'])) : undefined;
     const bind = parsePublish(str(v.publish));
     const allowedHosts = allowedHostsOf(v);
     const isolate = isolateOf(v);
@@ -338,7 +345,7 @@ const run: Command = {
     const name = str(v.name);
     if (name !== undefined && !v.detach) usage('--name needs -d (only detached servers are tracked)');
     const store = await Store.open();
-    const { label, source } = await resolveSource(store, pos[0] as string);
+    const { label, source } = watchDetached ? await watchedDirectory(pos[0] ?? '.') : await resolveSource(store, pos[0] as string);
     if (isWildcard(bind.host)) process.stderr.write(`warning: binding ${bind.host}: the site will be reachable from other machines\n`);
 
     const keepOsMetadata = !!v['keep-os-metadata'];
@@ -378,7 +385,7 @@ const run: Command = {
     if (v.open !== undefined || v.qr) usage('--open and --qr are for a server in the foreground, not -d');
     const reg = await ServerRegistry.open(store);
     for (const f of PROXY_FLAGS) if (v[f] !== undefined) usage(`--${f} is for a server in the foreground (or --watch), not -d`);
-    const up = await serveDetached(reg, { label, source, name, bind, keepOsMetadata, allowedHosts, cors: !!v.cors, ...(isolate ? { isolate } : {}), ...(cache ? { cache } : {}), ...logging, ...auth.record, ...perIp, ...sharing.record, ...tls.record, ...(v.compress ? { compress: true } : {}), ...(throttle ? { throttle: throttle.spec } : {}), ...(mime ? { mime: Object.fromEntries(mime) } : {}), country, strictSiteFiles, ...spa, base, rewriteBase, ...profiles }, warn);
+    const up = await serveDetached(reg, { label, source, name, bind, keepOsMetadata, allowedHosts, cors: !!v.cors, ...(isolate ? { isolate } : {}), ...(cache ? { cache } : {}), ...logging, ...auth.record, ...perIp, ...sharing.record, ...tls.record, ...(v.compress ? { compress: true } : {}), ...(throttle ? { throttle: throttle.spec } : {}), ...(mime ? { mime: Object.fromEntries(mime) } : {}), country, strictSiteFiles, ...spa, base, rewriteBase, ...profiles, ...(watchDetached ? { watch: true, pollMs } : {}) }, warn);
     process.stdout.write(`Started ${up.name} (${up.id}) serving ${label} at ${siteUrl(up.host, up.port, up.base, up.tlsCert ? 'https' : 'http')}\n${networkLines(up.host, up.port, up.base, up.tlsCert ? 'https' : 'http')}${throttleLine(up.throttle)}`);
     return 0;
   },
@@ -445,6 +452,10 @@ export interface DetachedServe {
   readonly country?: string | undefined;
   /** `--strict-site-files`. */
   readonly strictSiteFiles?: boolean | undefined;
+  /** `-d --watch`: a directory source re-read on change, with live reload. */
+  readonly watch?: boolean | undefined;
+  /** `--poll`, `--poll-interval` with `-d --watch`. */
+  readonly pollMs?: number | undefined;
   /** The servers file it belongs to (`sitefile up`). */
   readonly project?: string | undefined;
 }
@@ -495,6 +506,8 @@ export async function serveDetached(reg: ServerRegistry, d: DetachedServe, warn?
     ...(d.mime !== undefined ? { mime: d.mime } : {}),
     ...(d.country !== undefined ? { country: d.country } : {}),
     ...(d.strictSiteFiles ? { strictSiteFiles: true } : {}),
+    ...(d.watch ? { watch: true } : {}),
+    ...(d.watch && d.pollMs !== undefined ? { pollMs: d.pollMs } : {}),
     bind: d.bind,
     host: d.bind.host,
     port: d.bind.port,
@@ -560,6 +573,21 @@ async function terminal(
   });
   if (stop) process.stdout.write(KEYS_HINT);
   return { promise, stop: stop ?? (() => undefined) };
+}
+
+/** The --watch flags `serve -d --watch` takes (it watches a plain directory; the rest are for builds or the page script). */
+const DETACHED_WATCH = ['poll', 'poll-interval'] as const;
+
+/**
+ * `serve -d --watch [dir]`: the directory (default .) as a source, absolute and real. A Sitefile project
+ * is refused: building on change happens in the foreground (`serve --watch`).
+ */
+async function watchedDirectory(arg: string): Promise<{ label: string; source: ServerState['source'] }> {
+  const dir = path.resolve(arg);
+  const st = await fs.stat(dir).catch(() => undefined);
+  if (!st?.isDirectory()) throw new SitefileError('E_NOT_FOUND', `'${arg}' is not a directory`);
+  if (await isFile(path.join(dir, 'Sitefile'))) usage(`-d --watch serves a plain directory, and ${arg} has a Sitefile: build it with serve --watch in the foreground`);
+  return { label: dir, source: { kind: 'dir', path: await fs.realpath(dir) } };
 }
 
 /** serve flags that only mean something with --watch. */
@@ -788,7 +816,6 @@ function logWriter(logging: { logFormat?: 'json' }): (line: string) => void {
 
 async function serveWatch(v: ParsedValues, pos: string[]): Promise<number> {
   requireArgs(pos, 0, 1, 'a build context directory');
-  if (v.detach) usage('--watch cannot be combined with -d');
   if (v.name !== undefined) usage('--name needs -d (only detached servers are tracked)');
   const bind = parsePublish(str(v.publish));
   const allowedHosts = allowedHostsOf(v);

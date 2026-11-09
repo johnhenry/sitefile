@@ -90,7 +90,8 @@ pub fn resolve_real(p: &Path) -> PathBuf {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct Stamp {
+/// What a scan compares per path: type, size, mtime, ctime and inode.
+pub struct Stamp {
     kind: u32,
     len: u64,
     mtime: (i64, i64),
@@ -108,7 +109,7 @@ fn stamp(m: &std::fs::Metadata) -> Stamp {
     }
 }
 
-type Snapshot = BTreeMap<PathBuf, Option<Stamp>>;
+pub type Snapshot = BTreeMap<PathBuf, Option<Stamp>>;
 
 /// What the watcher looks at, and what it skips.
 pub struct Watched {
@@ -144,7 +145,8 @@ impl Watched {
         }
     }
 
-    fn scan(&self) -> Snapshot {
+    /// A stat snapshot of every watched path; two snapshots differ when something changed.
+    pub fn scan(&self) -> Snapshot {
         let mut snap = Snapshot::new();
         for d in &self.dirs {
             self.walk(d, &mut snap);

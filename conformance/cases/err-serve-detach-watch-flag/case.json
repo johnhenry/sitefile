@@ -1,0 +1,3 @@
+{
+  "steps": [["serve", "-d", "--watch", "--poll-interval", "50", "--no-css-inject", "${CTX}/site"]]
+}

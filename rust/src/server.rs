@@ -634,6 +634,10 @@ pub struct LiveReload {
     failure: Mutex<Option<String>>,
     /// Console rate limit: the current window's start and how many messages it has seen.
     console_window: Mutex<Option<(Instant, u32)>>,
+    /// This server process's instance ID (16 hex digits, random): every stream starts with it as
+    /// the event ID, so a page that reconnects after a restart sends the old one in
+    /// `Last-Event-ID` and is told to reload.
+    instance: String,
 }
 
 impl LiveReload {
@@ -645,8 +649,14 @@ impl LiveReload {
         Arc::new(LiveReload {
             script: client_script(options),
             console: options.console,
+            instance: crate::export::exporter::random_hex(8),
             ..LiveReload::default()
         })
+    }
+
+    /// This server process's instance ID (the stream's event ID).
+    pub fn instance(&self) -> &str {
+        &self.instance
     }
 
     /// The client script for this session.
@@ -789,7 +799,9 @@ impl LiveReload {
     /// Hold `out` open as a text/event-stream until the client goes away or [`LiveReload::close`].
     /// The headers keep proxies and tunnels from buffering or compressing it, and a comment every
     /// 15 s keeps idle connections from being cut (and finds clients that went away).
-    fn stream(&self, out: &mut Conn, options: &SiteServerOptions) {
+    /// A page that was connected to an earlier instance of this server (`last_event_id` differs
+    /// from [`LiveReload::instance`]) is told to reload at once.
+    fn stream(&self, out: &mut Conn, options: &SiteServerOptions, last_event_id: Option<&str>) {
         let mut head = String::from("HTTP/1.1 200 OK\r\nx-content-type-options: nosniff\r\n");
         if let Some(id) = options.server_id.as_deref().filter(|s| !s.is_empty()) {
             head.push_str(&format!("x-sitefile-server: {id}\r\n"));
@@ -804,6 +816,10 @@ impl LiveReload {
             head.push_str(&format!("{k}: {v}\r\n"));
         }
         head.push_str("connection: close\r\n\r\nretry: 1000\n\n");
+        head.push_str(&format!("id: {}\n\n", self.instance));
+        if last_event_id.is_some_and(|l| !l.is_empty() && l != self.instance) {
+            head.push_str(&format!("data: {RELOAD_EVENT}\n\n"));
+        }
         // A page opened while the last build is broken shows the error at once.
         if let Some(f) = self.failure.lock().ok().and_then(|f| f.clone()) {
             head.push_str(&format!("data: {f}\n\n"));
@@ -4028,7 +4044,11 @@ fn serve_connection(
         if let Some(live) = options.live_reload.as_ref().filter(|_| {
             host_ok && req.method == "GET" && raw_path_of(&origin_form(&req.url)) == RELOAD_PATH
         }) {
-            live.stream(&mut out, options); // not access-logged: one long request per open page
+            live.stream(
+                &mut out,
+                options,
+                req.headers.get("last-event-id").map(String::as_str),
+            ); // not access-logged: one long request per open page
             break;
         }
         let current = match tree.read() {
@@ -6654,6 +6674,61 @@ mod tests {
             )
             .body,
             format!("<h1>v2</h1>{RELOAD_SCRIPT}")
+        );
+        live.close();
+        srv.close();
+    }
+
+    #[test]
+    fn live_reload_stream_names_the_instance_and_reloads_pages_of_an_earlier_one() {
+        let live = LiveReload::new();
+        let other = LiveReload::new();
+        assert_eq!(live.instance().len(), 16);
+        assert!(live.instance().bytes().all(|b| b.is_ascii_hexdigit()));
+        assert_ne!(
+            live.instance(),
+            other.instance(),
+            "random per server process"
+        );
+        let tree = Arc::new(Tree::empty());
+        let opts = SiteServerOptions {
+            live_reload: Some(live.clone()),
+            ..Default::default()
+        };
+        let srv = listen(tree, opts, "127.0.0.1", 0).unwrap();
+        // the first frames of a stream opened with `Last-Event-ID` (None: without the header)
+        let open = |last: Option<&str>| -> String {
+            let mut c = TcpStream::connect(("127.0.0.1", srv.port)).unwrap();
+            c.set_read_timeout(Some(Duration::from_millis(500)))
+                .unwrap();
+            let extra = last
+                .map(|l| format!("last-event-id: {l}\r\n"))
+                .unwrap_or_default();
+            c.write_all(format!("GET {RELOAD_PATH} HTTP/1.1\r\nhost: x\r\n{extra}\r\n").as_bytes())
+                .unwrap();
+            let mut got = String::new();
+            let mut b = [0u8; 512];
+            while let Ok(n) = c.read(&mut b) {
+                if n == 0 {
+                    break;
+                }
+                got.push_str(&String::from_utf8_lossy(&b[..n]));
+            }
+            got.split_once("\r\n\r\n")
+                .map(|x| x.1.to_string())
+                .unwrap_or(got)
+        };
+        let fresh = format!("retry: 1000\n\nid: {}\n\n", live.instance());
+        assert_eq!(open(None), fresh);
+        assert_eq!(
+            open(Some(live.instance())),
+            fresh,
+            "same instance: no reload"
+        );
+        assert_eq!(
+            open(Some(other.instance())),
+            format!("{fresh}data: {RELOAD_EVENT}\n\n"),
+            "a page of an earlier instance reloads"
         );
         live.close();
         srv.close();

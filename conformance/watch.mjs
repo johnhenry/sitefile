@@ -15,11 +15,19 @@
 //   { write: { 'rel/path': 'content' } }        edit files in the context, then wait until a rebuild has finished
 //                                               and the server has been quiet for a moment
 //   { wait: ms }                                sleep
+//   { next: true, ms: 1000 }                    the same, waiting at most ms for an event ('(timeout)' when none came)
+//   { open: true, lastEventId: 'x' }            open it with `Last-Event-ID: x` ('previous': the instance ID the
+//                                               last stream started with; a different one makes the server send reload)
+//   { restart: true }                           `server restart` (detached cases), then wait until it answers
+// A case with `detach: true` runs `serve -d --watch` (named, on a free port, so a restart keeps the
+// URL) and reads the server's log instead of the output; it is removed at the end.
+// Every stream starts with `id: <instance>` (random): it is not recorded.
 // Each implementation gets its own copy of the context and its own SITEFILE_HOME.
 
 import { spawn } from 'node:child_process';
-import { promises as fs } from 'node:fs';
+import { promises as fs, readFileSync } from 'node:fs';
 import http from 'node:http';
+import net from 'node:net';
 import path from 'node:path';
 
 const SHOWN = ['content-type', 'content-length', 'cache-control', 'etag', 'location', 'content-security-policy', 'x-accel-buffering', 'clear-site-data', 'vary'];
@@ -156,6 +164,34 @@ export const WATCH_CASES = [
     ],
   },
   {
+    name: 'watch/detached-dir',
+    detach: true,
+    files: { 'index.html': '<link rel="stylesheet" href="/s.css"><h1>d1</h1>', 's.css': 'a{}' },
+    steps: [
+      { get: '/', headers: NAV },
+      { get: '/__sitefile/reload.js' },
+      { open: true },
+      { write: { 's.css': 'a{color:red}' } },
+      { next: true },
+      { write: { 'index.html': '<h1>d2</h1>' } },
+      { next: true },
+      { get: '/', headers: NAV },
+      { open: true, lastEventId: 'previous' },
+      { next: true, ms: 1000 },
+      { restart: true },
+      { open: true, lastEventId: 'previous' },
+      { next: true },
+      { get: '/', headers: NAV },
+    ],
+  },
+  {
+    name: 'watch/detached-poll',
+    detach: true,
+    args: ['--poll-interval', '50'],
+    files: { 'index.html': '<h1>p1</h1>' },
+    steps: [{ open: true }, { write: { 'index.html': '<h1>p2</h1>' } }, { next: true }, { get: '/', headers: NAV }],
+  },
+  {
     name: 'watch/reload-full',
     files: { Sitefile: SITEFILE, 'public/index.html': '<h1>i</h1>' },
     args: ['--reload', 'full'],
@@ -164,6 +200,18 @@ export const WATCH_CASES = [
 ];
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+/** A port that was free a moment ago (a detached case binds it, so `server restart` keeps the URL). */
+function freePort() {
+  return new Promise((resolve, reject) => {
+    const s = net.createServer();
+    s.once('error', reject);
+    s.listen(0, '127.0.0.1', () => {
+      const { port } = s.address();
+      s.close(() => resolve(port));
+    });
+  });
+}
 
 function request(port, { method = 'GET', path: p, headers = {}, body }) {
   return new Promise((resolve) => {
@@ -181,12 +229,14 @@ function request(port, { method = 'GET', path: p, headers = {}, body }) {
   });
 }
 
-function openEvents(port) {
+function openEvents(port, lastEventId) {
   return new Promise((resolve) => {
-    const req = http.get({ host: '127.0.0.1', port, path: '/__sitefile/reload', agent: false }, (res) => {
+    const headers = lastEventId === undefined ? {} : { 'last-event-id': lastEventId };
+    const req = http.get({ host: '127.0.0.1', port, path: '/__sitefile/reload', headers, agent: false }, (res) => {
       let buf = '';
       const queue = [];
       const waiters = [];
+      const stream = { id: undefined };
       res.setEncoding('utf8');
       res.on('data', (c) => {
         buf += c;
@@ -195,6 +245,10 @@ function openEvents(port) {
           const ev = buf.slice(0, i);
           buf = buf.slice(i + 2);
           if (ev.startsWith(':')) continue; // heartbeat
+          if (/^id: [0-9a-f]{16}$/.test(ev)) {
+            stream.id = ev.slice(4); // the server instance: random, so kept out of the transcript
+            continue;
+          }
           const w = waiters.shift();
           if (w) w(ev);
           else queue.push(ev);
@@ -203,6 +257,7 @@ function openEvents(port) {
       const shown = {};
       for (const k of SHOWN) if (res.headers[k] !== undefined) shown[k] = res.headers[k];
       resolve({
+        stream,
         status: res.statusCode,
         headers: shown,
         next: (ms = 15000) =>
@@ -230,18 +285,30 @@ async function runOne(c, cmd, work, home) {
     await fs.mkdir(path.dirname(path.join(work, rel)), { recursive: true });
     await fs.writeFile(path.join(work, rel), content);
   }
-  const child = spawn(cmd[0], [...cmd.slice(1), 'serve', '--watch', '--no-lockfile', ...(c.args ?? []), work], {
-    env: { ...process.env, SITEFILE_HOME: home },
-    stdio: ['ignore', 'pipe', 'pipe'],
-  });
+  const env = { ...process.env, SITEFILE_HOME: home };
+  const fixedPort = c.detach ? await freePort() : 0;
+  const child = c.detach
+    ? spawn(cmd[0], [...cmd.slice(1), 'serve', '-d', '--watch', '--name', 'conf-watch', '-p', `127.0.0.1:${fixedPort}`, ...(c.args ?? []), work], { env, stdio: ['ignore', 'pipe', 'pipe'] })
+    : spawn(cmd[0], [...cmd.slice(1), 'serve', '--watch', '--no-lockfile', ...(c.args ?? []), work], { env, stdio: ['ignore', 'pipe', 'pipe'] });
   let stdout = '';
   let stderr = '';
   child.stdout.on('data', (d) => (stdout += d));
   child.stderr.on('data', (d) => (stderr += d));
   const transcript = [];
   let events;
+  let lastId;
+  /** A detached server's log (its lines start with a time stamp). */
+  let logFile;
+  const output = () => {
+    if (!logFile) return stdout + stderr;
+    try {
+      return readFileSync(logFile, 'utf8').replace(/^\S+ /gm, '');
+    } catch {
+      return '';
+    }
+  };
   // Builds and re-reads that have finished (their last line).
-  const finished = () => (stdout + stderr).match(/^(Built |Read |Build failed|Read failed)/gm)?.length ?? 0;
+  const finished = () => output().match(/^(Built |Read |Build failed|Read failed)/gm)?.length ?? 0;
   /** Wait until no build finishes for `ms`. */
   const quiet = async (ms = 500) => {
     let n = finished();
@@ -255,9 +322,16 @@ async function runOne(c, cmd, work, home) {
   };
   try {
     const deadline = Date.now() + 30000;
-    while (!/Watching /.test(stdout)) {
-      if (Date.now() > deadline || child.exitCode !== null) return { transcript: [`did not start: ${stderr.trim()}`], stderr };
-      await sleep(20);
+    if (c.detach) {
+      await new Promise((r) => (child.exitCode !== null ? r() : child.once('exit', r)));
+      const id = /^Started conf-watch \(([0-9a-f]{12})\)/m.exec(stdout)?.[1];
+      if (child.exitCode !== 0 || id === undefined) return { transcript: [`did not start: ${stderr.trim()}`], stderr };
+      logFile = path.join(home, 'servers', `${id}.log`);
+    } else {
+      while (!/Watching /.test(stdout)) {
+        if (Date.now() > deadline || child.exitCode !== null) return { transcript: [`did not start: ${stderr.trim()}`], stderr };
+        await sleep(20);
+      }
     }
     const port = Number(/at http:\/\/127\.0\.0\.1:(\d+)\//.exec(stdout)?.[1]);
     for (const s of c.steps) {
@@ -266,14 +340,22 @@ async function runOne(c, cmd, work, home) {
         // SELF in a header value is this server's origin.
         const headers = Object.fromEntries(Object.entries(s.headers ?? {}).map(([k, v]) => [k, v.replace('SELF', `http://127.0.0.1:${port}`)]));
         transcript.push({ step: `POST ${s.post}`, ...(await request(port, { method: 'POST', path: s.post, headers, body: s.body })) });
-      } else if (s.log) transcript.push({ step: 'log', lines: stdout.split('\n').filter((l) => l.startsWith('browser')) });
+      } else if (s.log) transcript.push({ step: 'log', lines: output().split('\n').filter((l) => l.startsWith('browser')) });
       else if (s.open) {
         await quiet();
-        events = await openEvents(port);
-        transcript.push({ step: 'open', status: events?.status, headers: events?.headers, event: await events?.next() });
+        events?.close();
+        events = await openEvents(port, s.lastEventId === 'previous' ? lastId : s.lastEventId);
+        const event = await events?.next();
+        lastId = events?.stream.id;
+        transcript.push({ step: 'open', ...(s.lastEventId !== undefined ? { lastEventId: s.lastEventId } : {}), status: events?.status, headers: events?.headers, event });
+      } else if (s.restart) {
+        events?.close();
+        events = undefined;
+        const code = await new Promise((r) => spawn(cmd[0], [...cmd.slice(1), 'server', 'restart', 'conf-watch'], { env, stdio: 'ignore' }).once('exit', r));
+        transcript.push({ step: 'restart', code });
       } else if (s.next) {
         let got = events?.drain() ?? [];
-        if (got.length === 0 && events) got = [await events.next()];
+        if (got.length === 0 && events) got = [await events.next(s.ms)];
         const OK = 'data: {"type":"ok"}';
         const shown = got.filter((e) => e !== 'data: {"type":"building"}');
         const rest = shown.filter((e) => e !== OK);
@@ -290,8 +372,9 @@ async function runOne(c, cmd, work, home) {
     events?.close();
     child.kill('SIGINT');
     await new Promise((r) => (child.exitCode !== null ? r() : child.once('exit', r)));
+    if (c.detach) await new Promise((r) => spawn(cmd[0], [...cmd.slice(1), 'server', 'rm', '-f', 'conf-watch'], { env, stdio: 'ignore' }).once('exit', r));
   }
-  const warnings = stderr.split('\n').filter((l) => l.startsWith('warning:')).map((l) => l.replaceAll(work, '<ctx>'));
+  const warnings = (c.detach ? output() : stderr).split('\n').filter((l) => l.startsWith('warning:')).map((l) => l.replaceAll(work, '<ctx>'));
   transcript.push({ step: 'warnings', warnings });
   return { transcript };
 }
