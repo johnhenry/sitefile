@@ -399,6 +399,8 @@ pub struct Plan {
     pub export_root: Option<String>,
     /// `COMPRESSION` clause of EXPORT ... AS oci or wbn (None: gzip for oci, none for wbn).
     pub export_compression: Option<OciCompression>,
+    /// `KEY <secret-id>` of EXPORT ... AS swbn: the --secret holding the signing key.
+    pub export_key: Option<String>,
     /// REDIRECT lines in source order (any stage); EXPORT writes them to `/_redirects`.
     pub redirects: Vec<RedirectSpec>,
     /// HEADER lines in source order (any stage); EXPORT writes them to `/_headers`.
@@ -494,6 +496,7 @@ pub fn plan_with(
     let mut export_base = None;
     let mut export_root = None;
     let mut export_compression = None;
+    let mut export_key = None;
 
     fn bind(
         vars: &mut Env,
@@ -1163,7 +1166,8 @@ pub fn plan_with(
                 base,
                 at,
                 compression,
-                ..
+                key,
+                span,
             } => {
                 export_path = Some(
                     normalize_virtual(
@@ -1207,6 +1211,23 @@ pub fn plan_with(
                 } else {
                     export_compression = None;
                 }
+                if let Some((_, kspan)) = key {
+                    if *format != ExportFormat::Swbn {
+                        return Err(SitefileError::at(
+                            E_VALIDATION,
+                            "EXPORT ... KEY applies only to AS swbn",
+                            kspan,
+                        ));
+                    }
+                }
+                if *format == ExportFormat::Swbn && key.is_none() {
+                    return Err(SitefileError::at(
+                        E_VALIDATION,
+                        "EXPORT ... AS swbn needs KEY <secret-id>: the --secret that holds the Ed25519 signing key",
+                        span,
+                    ));
+                }
+                export_key = key.as_ref().map(|(k, _)| k.clone());
             }
         }
     }
@@ -1297,6 +1318,7 @@ pub fn plan_with(
         export_base,
         export_root,
         export_compression,
+        export_key,
         redirects,
         headers,
         cache_headers,

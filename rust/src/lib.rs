@@ -11,6 +11,7 @@ pub mod cbor;
 pub mod deflate;
 pub mod dictionary;
 pub mod digest;
+pub mod ed25519;
 pub mod error;
 pub mod paths;
 pub mod portable;
