@@ -122,6 +122,14 @@ fn cache_of(v: &Parsed) -> Result<Option<crate::server::CachePreview>> {
     }))
 }
 
+/// `  Network: <url>` lines for a server bound to all interfaces (none otherwise).
+fn network_lines(host: &str, port: u16) -> String {
+    crate::server::network_urls(host, port)
+        .iter()
+        .map(|u| format!("  Network: {u}\n"))
+        .collect()
+}
+
 /// `--log-format`, `--log-ip`, `--quiet`: (json, log_ip, quiet).
 fn logging_of(v: &Parsed) -> Result<(bool, bool, bool)> {
     let format = v.str("log-format");
@@ -328,8 +336,9 @@ fn run_serve(v: &Parsed) -> Result<i32> {
             ));
         } else {
             out(&format!(
-                "Serving {label} ({n} files) at {}  (Ctrl-C to stop)\n",
-                format_url(&server.host, server.port)
+                "Serving {label} ({n} files) at {}  (Ctrl-C to stop)\n{}",
+                format_url(&server.host, server.port),
+                network_lines(&server.host, server.port)
             ));
         }
         wait_for_signal();
@@ -360,10 +369,11 @@ fn run_serve(v: &Parsed) -> Result<i32> {
         &warn,
     )?;
     out(&format!(
-        "Started {} ({}) serving {label} at {}\n",
+        "Started {} ({}) serving {label} at {}\n{}",
         up.name,
         up.id,
-        format_url(&up.host, up.port)
+        format_url(&up.host, up.port),
+        network_lines(&up.host, up.port)
     ));
     Ok(0)
 }
@@ -549,8 +559,9 @@ fn serve_watch(v: &Parsed) -> Result<i32> {
             ));
         } else {
             out(&format!(
-                "Serving {context} ({n} files) at {}  (Ctrl-C to stop)\n",
-                format_url(&s.host, s.port)
+                "Serving {context} ({n} files) at {}  (Ctrl-C to stop)\n{}",
+                format_url(&s.host, s.port),
+                network_lines(&s.host, s.port)
             ));
         }
         server = Some(s);
@@ -744,6 +755,18 @@ fn run_ps(v: &Parsed) -> Result<i32> {
                 }
                 m.insert("status".into(), Value::String(s.status.into()));
                 m.insert("url".into(), Value::String(s.url.clone()));
+                // A server bound to all interfaces also lists the URLs other machines use.
+                let net = if s.status == "running" {
+                    crate::server::network_urls(&s.state.host, s.state.port)
+                } else {
+                    Vec::new()
+                };
+                if !net.is_empty() {
+                    m.insert(
+                        "networkUrls".into(),
+                        Value::Array(net.into_iter().map(Value::String).collect()),
+                    );
+                }
                 m.insert("site".into(), Value::String(s.state.image.clone()));
                 Value::Object(m)
             })
@@ -958,11 +981,12 @@ fn run_restart(v: &Parsed) -> Result<i32> {
     let s = reg.find(&v.positionals[0])?;
     let up = restart_detached(&reg, &s, grace_of(v)?, None)?;
     out(&format!(
-        "Restarted {} ({}) serving {} at {}\n",
+        "Restarted {} ({}) serving {} at {}\n{}",
         up.name,
         up.id,
         up.image,
-        format_url(&up.host, up.port)
+        format_url(&up.host, up.port),
+        network_lines(&up.host, up.port)
     ));
     Ok(0)
 }

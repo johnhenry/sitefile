@@ -4,7 +4,7 @@ import http from 'node:http';
 import net from 'node:net';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
-import { accessLogLine, byteRange, cacheControlFor, logLineAsJson, closeServer, createSiteServer, hostAllowed, preflightHeaders, parseAllowedHost, earlyHints, httpDate, parseHttpDate, listen, LiveReload, originForm, RELOAD_SCRIPT, safeSegments } from '../src/server.js';
+import { accessLogLine, networkAddresses, networkUrls, byteRange, cacheControlFor, logLineAsJson, closeServer, createSiteServer, hostAllowed, preflightHeaders, parseAllowedHost, earlyHints, httpDate, parseHttpDate, listen, LiveReload, originForm, RELOAD_SCRIPT, safeSegments } from '../src/server.js';
 import { makeFile, Tree } from '../src/tree.js';
 import { makeSite, runCli, tmpDir } from './helpers/cli.js';
 
@@ -399,6 +399,19 @@ test('--log-format json, --log-ip, --quiet and server logs --json conversion (jo
   assert.equal(logLineAsJson('2026-01-01T00:00:00.000Z warning: x "y"'), '{"type":"warning","ts":"2026-01-01T00:00:00.000Z","message":"x \\"y\\""}');
   assert.equal(logLineAsJson('    at stack'), '{"type":"message","ts":"","message":"    at stack"}');
   assert.equal(logLineAsJson('{"type":"request"}'), '{"type":"request"}');
+});
+
+test('network URLs for a server bound to all interfaces (johnhenry/sitefile#169)', () => {
+  assert.deepEqual(networkAddresses('127.0.0.1'), []);
+  assert.deepEqual(networkAddresses('::1'), []);
+  const v4 = networkAddresses('0.0.0.0');
+  for (const a of v4) assert.match(a, /^[0-9.]+$/);
+  assert.ok(!v4.some((a) => a.startsWith('127.')), 'no loopback');
+  assert.deepEqual(v4, [...v4].sort());
+  const all = networkAddresses('::');
+  assert.deepEqual(all.slice(0, v4.length), v4, 'IPv4 first');
+  for (const a of all.slice(v4.length)) assert.ok(a.includes(':') && !/^fe[89ab]/.test(a) && a !== '::1', a);
+  assert.deepEqual(networkUrls('0.0.0.0', 8080), v4.map((a) => `http://${a}:8080/`));
 });
 
 test('an access log line is written per request: method path status bytes ms', async () => {

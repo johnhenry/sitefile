@@ -1123,6 +1123,11 @@ to `image` (`imageId`) and `dir` (`path`).
 - Binds `127.0.0.1` and a free port unless `-p` is given. `-p 8080`, `-p 127.0.0.1:8080`, `-p [::1]:8080`.
   **`0.0.0.0` (or `::`) is bound only when you write it in `-p`** (a warning is printed). A port in use is
   `error[E_SERVER]`.
+- **Network URLs.** Bound to `0.0.0.0` or `::`, `serve` (foreground, `-d`, `--watch`) and `server restart` print a
+  `  Network: http://<address>:<port>/` line after the URL for each address other machines can use: the up,
+  non-loopback interface addresses, IPv4 (each sorted as text) and, for `::`, then IPv6 (in brackets; link-local
+  `fe80::/10` left out, it needs a zone). `servers --json` adds `networkUrls` (the same list) to a running server
+  bound to all interfaces. The default bind stays `127.0.0.1`; sharing is always explicit.
 - **`--cors`** adds `Access-Control-Allow-Origin: *` to every response (files, `304`, `404`, redirects, errors;
   a `_headers` value for the path wins) and answers `OPTIONS` on any path with `204`,
   `Access-Control-Allow-Methods: GET, HEAD`, the request's `Access-Control-Request-Headers` echoed as

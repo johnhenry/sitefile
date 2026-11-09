@@ -336,7 +336,7 @@ const normalizeLog = (text) =>
     .replace(/[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:.]+Z/g, 'TS')
     .replace(/"ms":[0-9]+\.[0-9]/g, '"ms":0.0')
     .replace(/ [0-9]+\.[0-9]ms/g, ' 0.0ms')
-    .replace(/127\.0\.0\.1:[0-9]+/g, '127.0.0.1:PORT');
+    .replace(/(http:\/\/[^/\s"]+):[0-9]+\//g, '$1:PORT/');
 
 const show = (r) =>
   [

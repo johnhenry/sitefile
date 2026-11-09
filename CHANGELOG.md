@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- **`serve` prints network URLs on `0.0.0.0` / `::`** (johnhenry/sitefile#169):
+  a `Network:` line per non-loopback interface address (IPv4 first, IPv6 in
+  brackets), and `servers --json` gains `networkUrls`. Both implementations
+  (Rust reads the interfaces with `getifaddrs`, no new dependency).
 - **`serve --log-format json`, `--log-ip`, `--quiet`** (johnhenry/sitefile#173):
   one JSON object per log line (request, started, stopped, warning, error,
   message), a stable contract in docs/CLI.md, identical in both servers; kept in
