@@ -1,0 +1,39 @@
+[[redirects]]
+from = "/a"
+to = "/b"
+[[redirects]]
+from = "/x/*"
+to = "/y/:splat"
+status = 200
+force = true
+[[redirects]]
+from = "/p/:id"
+to = "/q/:id"
+[[redirects]]
+from = "/s"
+to = "/t/:id"
+[[redirects]]
+from = "/q"
+to = "/r"
+query = { a = ":a" }
+[[redirects]]
+from = "/a/*/b"
+to = "/c"
+[[redirects]]
+from = "/o"
+to = "/n"
+status = 418
+[[headers]]
+for = "/*"
+[headers.values]
+ETag = "x"
+[[headers]]
+for = "/a"
+[headers.values]
+X-A = "1"
+"2" = "two"
+"1" = "one"
+[[headers]]
+for = "/a"
+[headers.values]
+X-B = "2"

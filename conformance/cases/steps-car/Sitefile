@@ -1,0 +1,12 @@
+# EXPORT ... AS car: an IPFS CARv1 file (UnixFS, CIDv1, raw leaves), compared byte for byte.
+FROM scratch
+COPY <<HTML /index.html
+<!doctype html><title>car</title><p>content addressed</p>
+HTML
+COPY <<CSS /css/site.css
+body { color: #333; }
+CSS
+COPY <<TXT /.well-known/security.txt
+Contact: mailto:security@example.invalid
+TXT
+EXPORT / AS CAR
