@@ -7,18 +7,23 @@
   `<meta>` with META) that allows each page's inline scripts and styles by
   their SHA-256 instead of `'unsafe-inline'`. Both implementations, with
   conformance cases; example `examples/csp`.
-- **PRECACHE: a service-worker precache manifest** (johnhenry/sitefile#216):
-  `PRECACHE <pattern>… [TO <dest>] [INTO <service-worker>]` writes a
-  Workbox-style `[{url, revision}]` list (10 hex digits of the SHA-256;
-  `null` for fingerprinted files) to `/sw-manifest.json` and/or injects it at
-  `self.__WB_MANIFEST`. Both implementations, with conformance cases; example
-  `examples/precache`.
+- **Development 404s and what-answered log notes** (johnhenry/sitefile#201):
+  a foreground or `--watch` server lists near misses on its 404 page
+  (letter-case differences, `_redirects` rules that matched the path but not
+  their query or conditions), and access-log lines note a clean URL, the SPA
+  fallback or the 404.html that answered. Both implementations.
 - **`serve --host-profile` and `--html-handling`** (johnhenry/sitefile#192):
   route like Netlify, Cloudflare Pages, Vercel, GitHub Pages or Firebase
   (canonical page URLs and their redirect status, whether `_redirects` and
   `_headers` are read, which 404 answers, Cloudflare's SPA fallback), or pick
   Cloudflare's `auto`, `force-slash`, `drop-slash` or `none` directly. Kept in
   the server record. Both implementations, with a conformance case per mode.
+- **PRECACHE: a service-worker precache manifest** (johnhenry/sitefile#216):
+  `PRECACHE <pattern>… [TO <dest>] [INTO <service-worker>]` writes a
+  Workbox-style `[{url, revision}]` list (10 hex digits of the SHA-256;
+  `null` for fingerprinted files) to `/sw-manifest.json` and/or injects it at
+  `self.__WB_MANIFEST`. Both implementations, with conformance cases; example
+  `examples/precache`.
 - **`serve --rewrite-base <url>`** (johnhenry/sitefile#196): the production
   URL in served HTML, CSS and XML becomes the local origin (and `--base`), so
   a preview with absolute self-links stays local. On by default in
