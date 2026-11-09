@@ -1126,7 +1126,7 @@ Surge's `200.html` needs no import: `/* /200.html 200` in `_redirects` does the 
 ## Site servers
 
 ```
-sitefile serve [--name n] [-p [host:]port] [-d] [--spa] [--country cc] [--strict-site-files] <ref|id|./dir|file>
+sitefile serve [--name n] [-p [host:]port] [-d] [--spa] [--spa-exclude glob]... [--spa-fallback path] [--base /path/] [--country cc] [--strict-site-files] <ref|id|./dir|file>
 sitefile serve --watch [-p [host:]port] [--spa] [build options] [context]   # see Watch mode
 sitefile servers [-a] [--json]                   # also: sitefile server ls
 sitefile server stop [--time secs] <name|id>...
@@ -1210,11 +1210,10 @@ on disk after the server started answers `500` for the entries that changed (`se
   (`maxConnectionsPerIp`), so `servers --json` shows it.
 - **Sharing a server** (on a LAN with `-p 0.0.0.0:<port>`, or through a tunnel). Besides `--auth`,
   `--max-connections-per-ip` and the Host allow-list:
-  - `--random-route` serves the site only under a random secret prefix (`/<24 hex>/`, printed in the URL and kept
-    in the record as `basePath`, so `server restart` keeps the link); every other path is a plain `404` (never the
-    site's `404.html`), `/<prefix>` redirects to `/<prefix>/`, and redirects the server makes stay under the
-    prefix. The reserved `/__sitefile/` paths are not prefixed. Links in the site that start with `/` leave the
-    prefix, as on any host that serves a site from a sub-path.
+  - `--random-route` is a secret `--base`: the site is served only under `/<24 hex>/` (printed in the URL and kept
+    in the record as `base`, so `server restart` keeps the link). Unlike `--base`, `/` does not redirect to it:
+    every path outside it is a plain `404`, never the site's `404.html` (`hideBase` in the record). It cannot be
+    combined with `--base`.
   - `--allow-ip <cidr>` / `--deny-ip <cidr>` (repeatable; `192.168.0.0/16`, `fd00::/8` or one address) are checked
     before anything else: a client in a deny block, or outside every allow block when there are some, gets `403`.
     Loopback clients are always allowed (the `servers` probe is one). Kept in the record (`allowIp`, `denyIp`).
@@ -1312,8 +1311,28 @@ on disk after the server started answers `500` for the entries that changed (`se
   `x-content-type-options: nosniff`. An absolute-form request target (`GET http://host/path?q`, as proxies send
   it; RFC 9112 section 3.2.2) is answered by its path and query; the authority is ignored. Paths are
   percent-decoded per segment; `..`, an encoded `/`, NUL, control
-  characters and backslashes are `400`. `--spa` serves `/index.html` for unknown paths whose last segment has no
-  file extension (a missing `/app.js` stays `404`).
+  characters and backslashes are `400`. **`--spa`** (single-page apps) answers a missing path with
+  the app shell only for **page navigations**: `Sec-Fetch-Mode: navigate` when the browser sends it, else
+  `Sec-Fetch-Dest` `document`/`iframe`/`frame`, else an `Accept` naming `text/html` (as Cloudflare and Vite
+  decide). Subresources never fall back, whatever the path looks like, so `/users/jane.doe` is served the
+  app while a missing `/assets/app.js` stays `404` instead of HTML (the "Expected a JavaScript module
+  script" error). The shell is the `200.html` (Surge's name) or `index.html` of the request's directory or
+  the closest parent that has one, so `/admin/users/5` gets `/admin/index.html` (a nested app) before
+  `/index.html`. `--spa-exclude <glob>` (repeatable; `*` matches any characters, as in `_headers`, against
+  the request path) never falls back (Azure Static Web Apps' `navigationFallback.exclude`), e.g.
+  `--spa-exclude '/api/*'`. `--spa-fallback <path>` (implies `--spa`) names the one file every fallback
+  serves, e.g. `--spa-fallback /app.html`; a path the site lacks is warned about at start. A fallback comes
+  after files, clean URLs, directories and `_redirects` rules; the server record keeps `spaExclude` and
+  `spaFallback`.
+- **`--base /repo/`** serves the site under a path prefix, as a GitHub Pages project site lives at
+  `https://user.github.io/repo/`: `/repo/x` answers the site's `/x`, `/` redirects (`302`, query kept) to
+  `/repo/`, `/repo` gets its slash (`301`), and any other path is `404` (the built-in page). The
+  server's own redirects (directories, clean URLs) and `_redirects` targets that are paths are under the
+  prefix too (`/old /new` redirects `/repo/old` to `/repo/new`); `_redirects`/`_headers` patterns match the
+  path inside it. A URL is accepted and its path used (`--base https://user.github.io/repo/`). With
+  `--watch` and no `--base`, the path of the Sitefile's `EXPORT … BASE` URL is the default (re-read after
+  each good build), so a site exported for `https://user.github.io/repo/` previews at `/repo/`. The printed
+  URL, `servers` and the server record (`base`) include it.
 - **`_redirects` and `_headers`** at the site root (the Netlify / Cloudflare Pages files, which `REDIRECT` and
   `HEADER` write; see LANGUAGE.md "Site files") are read once at start and never served themselves.
   - `_redirects`: one `from [name=value...] to [status[!]] [Key=values...]` per line (`#` comments), as on
