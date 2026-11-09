@@ -1,0 +1,6 @@
+# CANONICAL: links before </head>, existing ones kept, pages below the EXPORT path only.
+FROM scratch
+COPY ./public/ /www/
+COPY ./public/outside.html /outside.html
+CANONICAL BASE https://example.com/site/
+EXPORT /www

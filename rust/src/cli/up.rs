@@ -132,6 +132,8 @@ fn run_up(v: &Parsed) -> Result<i32> {
             allowed_hosts: Vec::new(),
             cors: false,
             isolate: None,
+            country: None,
+            strict_site_files: false,
             project: Some(project.clone()),
         });
     }
