@@ -554,6 +554,7 @@ sitefile serve --watch [-p [host:]port] [--spa] [-f Sitefile] [--target stage] [
                        [--poll] [--poll-interval ms] [--no-css-inject] [--console]
                        [--no-overlay] [--navigate-to-changed]
                        [--reload full|morph] [context | ./plain-directory]
+sitefile serve -d --watch [--name n] [-p [host:]port] [--poll] [--poll-interval ms] [serve options] [./plain-directory]
 ```
 
 `build --watch` builds once, then rebuilds whenever something it reads changes, until Ctrl-C (exit 0).
@@ -567,7 +568,20 @@ re-reads it when something in it changes, with the same watcher, ignore rules, d
 with a `Sitefile`, or any of those flags, is a build context. The messages are `Read N files (sha256:...)`,
 `Change detected, re-reading` and, when the directory cannot be read (a symlink that escapes it, say),
 `Read failed; serving the last good copy`. Archive files are not watched (`serve site.zip` reads the file at start;
-`server restart` picks up a new copy), and `-d` cannot be combined with `--watch` in either mode.
+`server restart` picks up a new copy).
+
+**Detached** (`serve -d --watch ./dir`): a plain directory only. The detached server re-reads the directory when
+something in it changes and live-reloads open pages (stylesheet swaps included), with the same ignore rules and
+debounce; `--poll`/`--poll-interval` work as below (in the Rust CLI the interval replaces its 100 ms scan). Its log
+gets `Change detected, re-reading`, `Read N files (sha256:...)`, and on failure the `error[CODE]: ...` line and
+`Read failed; serving the last good copy` (each with its time stamp); open pages show the error until a good read.
+The record keeps `"watch": true` and `pollMs`, so `server restart` (and anything that restarts from the record)
+watches again. Every other `serve -d` option applies (`--name`, `--spa`, `--base`, `--auth`, `--stop-after`, ...).
+Refused: a directory with a `Sitefile` (`error: -d --watch serves a plain directory, and <dir> has a Sitefile:
+build it with serve --watch in the foreground`), and the build and page-script flags (`-f`, `--target`,
+`--build-arg*`, `--no-cache`, `--no-lockfile`, `--keep-service-workers`, `--no-css-inject`, `--console`,
+`--no-overlay`, `--navigate-to-changed`, `--reload`: `error: --<flag> is for serve --watch in the foreground, not
+-d`). The default directory is `.`. Building a Sitefile project in a detached server is not supported yet.
 
 - **What is watched**: every file under the build context, the Sitefile (also when `-f` points outside the context)
   and each `--build-arg-file` (re-read on every build, so editing one changes the ARGs).
@@ -580,7 +594,7 @@ with a `Sitefile`, or any of those flags, is a build context. The messages are `
   some Docker bind mounts and WSL paths under `/mnt`. `--poll` compares a stat snapshot of the watched paths (type,
   size, mtime, ctime and inode; symlinks not followed; ignored paths not walked) every 1000 ms instead;
   `--poll-interval <ms>` sets the interval (a whole number, 10 or more) and implies `--poll`. Both need `--watch`
-  (`error: --poll needs --watch`) and work for `build --watch` and `serve --watch`. A change shows up at the next
+  (`error: --poll needs --watch`) and work for `build --watch`, `serve --watch` and `serve -d --watch`. A change shows up at the next
   scan, so a rebuild can start up to one interval later. sitefile does not detect network file systems itself; pass
   `--poll` when saves do not trigger rebuilds.
 - **Incremental rebuilds**: the watch session keeps the results of the previous builds in memory and re-runs only
@@ -604,22 +618,28 @@ with a `Sitefile`, or any of those flags, is a build context. The messages are `
   site until a build succeeds. A usage error in the first build (for example a malformed `--build-arg`) exits with
   code 2. A context that is not a directory is `E_NOT_FOUND`.
 - **Restrictions**: `--watch` is for `build` only among the build commands (`validate`/`inspect --watch` are usage
-  errors) and cannot be combined with `-t` (one image per save would fill the store). `serve --watch` runs in the
-  foreground: `-d` and `--name` are refused, and `-f`, `--target`, `--build-arg`, `--build-arg-file`, `--no-cache` and
+  errors) and cannot be combined with `-t` (one image per save would fill the store). `serve --watch` on a build
+  context runs in the foreground (`-d` takes a plain directory only, see above; `--name` needs `-d`), and `-f`, `--target`, `--build-arg`, `--build-arg-file`, `--no-cache` and
   `--no-lockfile` (and the live-reload flags such as `--keep-service-workers`) need `--watch`. For other build flags, run `build --watch` and serve its output elsewhere.
 
 ### Live reload
 
-Only under `serve --watch`:
+Only under `serve --watch` (and `serve -d --watch`):
 
 - `GET /__sitefile/reload` is reserved (it takes precedence over a file at that path) and answers with a
-  `text/event-stream` that sends `retry: 1000`, then one event per good rebuild (or re-read) that changed the
+  `text/event-stream` that sends `retry: 1000` and `id: <instance>` (16 random hex digits, new for every server
+  process), then one event per good rebuild (or re-read) that changed the
   served files: `data: {"type":"css","paths":["/a.css",...]}` when every changed file is a stylesheet
   (`text/css`) that was already there (CSS injection, below), else `data: {"type":"reload"}`. A rebuild whose
   output is identical sends `data: {"type":"ok"}`. Each rebuild (or re-read) starts with `data: {"type":"building"}`,
   and a failed one sends `data: {"type":"error","code":"E_...","message":"...","file":"/ctx/Sitefile","line":2,"column":1}`
   (`file`, `line` and `column` only when the error has a Sitefile location). A stream that opens while the last
   build is broken gets that error event right after `retry: 1000`. The stream is not written to the access log.
+- **Reload after a restart**: the browser's `EventSource` sends the last `id` it saw as `Last-Event-ID` when it
+  reconnects. When that is not this server's instance (the server was restarted: `server restart`, a new
+  `serve --watch` on the same port, a detached server started again), the stream sends `data: {"type":"reload"}`
+  right after the `id`, so pages left open reload once the new server answers. This needs the same URL: give
+  `-p host:port` to a detached server that will be restarted (a server started on a free port gets a new one).
 - **Go to the changed page** (`--navigate-to-changed`, off by default): when a rebuild added or changed exactly one
   HTML file (other files may change too), its `reload` event names the page that serves it:
   `data: {"type":"reload","path":"/posts/hello/"}` (`/dir/index.html` becomes `/dir/`, other files keep their path;
@@ -1164,6 +1184,7 @@ Surge's `200.html` needs no import: `/* /200.html 200` in `_redirects` does the 
 ```
 sitefile serve [--name n] [-p [host:]port] [-d] [--spa] [--spa-exclude glob]... [--spa-fallback path] [--base /path/] [--rewrite-base url] [--host-profile host] [--html-handling mode] [--country cc] [--strict-site-files] [--open[=path]] [--qr] <ref|id|./dir|file>
 sitefile serve --watch [-p [host:]port] [--spa] [build options] [context]   # see Watch mode
+sitefile serve -d --watch [serve options] [./dir]  # a detached server that re-reads the directory; see Watch mode
 sitefile servers [-a] [--json]                   # also: sitefile server ls
 sitefile server stop [--time secs] <name|id>...
 sitefile server rm [-f] <name|id>...
@@ -1255,7 +1276,7 @@ on disk after the server started answers `500` for the entries that changed (`se
     Loopback clients are always allowed (the `servers` probe is one). Kept in the record (`allowIp`, `denyIp`).
   - `--stop-after <n>s|m|h|d` stops the server after that long (foreground: `Stopping: --stop-after 30m
     reached`; detached: the record's `expires` time, shown by `servers --json`; a server restarted after it
-    fails with `server expired at …`). Not with `--watch`.
+    fails with `server expired at …`). Not with `--watch` in the foreground (`-d --watch` takes it).
   - On a non-loopback bind every response carries `X-Robots-Tag: noindex`.
   - Access-log lines of non-loopback clients end with the client address and a device name from `User-Agent`
     (`iPhone`, `iPad`, `Android`, `Windows`, `Mac`, `Linux` or `other`); in JSON, `remote` and `device`.
@@ -1550,5 +1571,5 @@ servers:
   created`. For a server that was never started, SITE is the `source` as written. Servers the file started
   but no longer lists come after the others, with `(not in the file)` added to their status. `--json` gives
   `[{"name", "site", "url", "status", "id", "listed"}]`.
-- Not yet: watch-mode servers (`serve --watch` runs in the foreground only), and parked folders
+- Not yet: watch-mode servers (`serve -d --watch` watches a plain directory, but a servers file cannot ask for it), and parked folders
   (`<name>.localhost` for every subfolder, which needs host-name routing). See johnhenry/sitefile#223.

@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+- **`serve -d --watch ./dir`, and pages reload after a server restart** (johnhenry/sitefile#304):
+  a detached server can watch a plain directory (no Sitefile): it re-reads it on change and
+  live-reloads open pages, CSS swaps included; `--poll`/`--poll-interval` apply. The record keeps
+  `watch` and `pollMs`, so `server restart` watches again. Every live-reload stream now starts with
+  `id: <instance>`, and a page that reconnects with another instance's `Last-Event-ID` (the server
+  restarted) is told to reload. Both implementations, with conformance cases.
+
 ## 0.0.3 (2026-11-09)
 
 - **`serve` keys under `--tls-cert`, and `u`'s network URLs** (johnhenry/sitefile#300): `o` and `u`

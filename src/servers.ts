@@ -93,6 +93,10 @@ export interface ServerState {
   readonly country?: string;
   /** `--strict-site-files`: an ignored `_redirects`/`_headers` line stops the server from starting (absent: false). */
   readonly strictSiteFiles?: boolean;
+  /** `-d --watch` (a directory only): re-read the directory on change and live-reload open pages (absent: false). */
+  readonly watch?: boolean;
+  /** `--poll`, `--poll-interval` with `-d --watch`: poll every this many milliseconds instead of file system events (absent: events). */
+  readonly pollMs?: number;
   /** The requested bind address (port 0 = pick a free port). */
   readonly bind: { readonly host: string; readonly port: number };
   readonly host: string;

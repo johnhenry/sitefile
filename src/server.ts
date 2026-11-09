@@ -1,3 +1,4 @@
+import { randomBytes } from 'node:crypto';
 import http from 'node:http';
 import https from 'node:https';
 import os from 'node:os';
@@ -373,6 +374,13 @@ export class LiveReload {
   /** Time between heartbeat comments on an open stream (15 s; tests pass less). */
   private readonly heartbeatMs: number;
 
+  /**
+   * This server process's instance ID (16 hex digits, random). Every stream starts with it as the
+   * event ID, so a page that reconnects after a restart (`server restart`, a new `serve --watch`)
+   * sends the old one in `Last-Event-ID` and is told to reload.
+   */
+  readonly instance = randomBytes(8).toString('hex');
+
   constructor(options: LiveReloadOptions = {}, heartbeatMs = HEARTBEAT_MS) {
     this.script = clientScript(options);
     this.heartbeatMs = heartbeatMs;
@@ -384,9 +392,11 @@ export class LiveReload {
    * and tunnels from buffering or compressing it, and a comment every 15 s keeps idle
    * connections from being cut (and finds clients that went away).
    */
-  attach(res: http.ServerResponse, headers: Record<string, string>): void {
+  attach(res: http.ServerResponse, headers: Record<string, string>, lastEventId?: string): void {
     res.writeHead(200, { ...headers, ...STREAM_HEADERS });
-    res.write('retry: 1000\n\n');
+    res.write(`retry: 1000\n\nid: ${this.instance}\n\n`);
+    // A page that was connected to an earlier instance of this server (it restarted) reloads.
+    if (lastEventId !== undefined && lastEventId !== '' && lastEventId !== this.instance) res.write(`data: ${RELOAD_EVENT}\n\n`);
     // A page opened while the last build is broken shows the error at once.
     if (this.failure !== undefined) res.write(`data: ${this.failure}\n\n`);
     this.clients.add(res);
@@ -1229,7 +1239,7 @@ export function createSiteServer(site: Tree | (() => Tree), options: SiteServerO
     const rawPath = url.slice(0, end);
     if (options.liveReload && rawPath === RELOAD_PATH) {
       if (method === 'HEAD') return finish(200, { ...STREAM_HEADERS }, undefined);
-      return options.liveReload.attach(res, base); // not access-logged: one long request per open page
+      return options.liveReload.attach(res, base, header(req.headers['last-event-id'])); // not access-logged: one long request per open page
     }
     if (options.liveReload && rawPath === RELOAD_SCRIPT_PATH) {
       // not access-logged either: every page load fetches it

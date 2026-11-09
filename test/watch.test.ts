@@ -274,10 +274,11 @@ function get(port: number, p: string, headers: Record<string, string> = {}): Pro
 }
 
 /** Open the event stream; `next()` resolves with the next complete event. */
-function events(port: number, through?: { proxyPort: number }): Promise<{ next: () => Promise<string>; close: () => void; headers: http.IncomingHttpHeaders }> {
+function events(port: number, through?: { proxyPort?: number; lastEventId?: string }): Promise<{ next: () => Promise<string>; close: () => void; headers: http.IncomingHttpHeaders }> {
   return new Promise((resolve, reject) => {
-    const target = through ? { port: through.proxyPort } : { port };
-    const req = http.get({ host: '127.0.0.1', ...target, path: RELOAD_PATH, agent: false }, (res) => {
+    const target = through?.proxyPort !== undefined ? { port: through.proxyPort } : { port };
+    const headers = through?.lastEventId !== undefined ? { 'last-event-id': through.lastEventId } : {};
+    const req = http.get({ host: '127.0.0.1', ...target, path: RELOAD_PATH, headers, agent: false }, (res) => {
       let buf = '';
       const waiters: Array<(e: string) => void> = [];
       const queue: string[] = [];
@@ -344,6 +345,7 @@ test('live reload: HTML gets the script (own ETag), other files and non-watch se
     const ev = await events(port);
     assert.equal(ev.headers['content-type'], 'text/event-stream');
     assert.equal(await ev.next(), 'retry: 1000');
+    assert.match(await ev.next(), /^id: [0-9a-f]{16}$/, 'the server instance');
     tree = Tree.fromFiles([['/index.html', makeFile(enc('<h1>v2</h1>'), 't')]]);
     live.reload();
     assert.equal(await ev.next(), 'data: {"type":"reload"}');
@@ -354,6 +356,27 @@ test('live reload: HTML gets the script (own ETag), other files and non-watch se
   } finally {
     await closeServer(server);
     await closeServer(plain);
+  }
+});
+
+test('live reload: every stream starts with the server instance; a page of an earlier instance (Last-Event-ID) reloads', async () => {
+  const live = new LiveReload();
+  assert.match(live.instance, /^[0-9a-f]{16}$/);
+  assert.notEqual(live.instance, new LiveReload().instance, 'random per server process');
+  const server = createSiteServer(() => Tree.empty, { liveReload: live });
+  const { port } = await listen(server, '127.0.0.1', 0);
+  try {
+    for (const [lastEventId, reload] of [[undefined, false], [live.instance, false], ['0123456789abcdef', true]] as const) {
+      const ev = await events(port, lastEventId === undefined ? undefined : { lastEventId });
+      assert.equal(await ev.next(), 'retry: 1000');
+      assert.equal(await ev.next(), `id: ${live.instance}`);
+      if (reload) assert.equal(await ev.next(), `data: ${RELOAD_EVENT}`, 'a page of an earlier instance reloads');
+      live.send(OK_EVENT);
+      assert.equal(await ev.next(), `data: ${OK_EVENT}`, reload ? 'then events as usual' : 'no reload first');
+      ev.close();
+    }
+  } finally {
+    await closeServer(server);
   }
 });
 
@@ -399,6 +422,7 @@ test('live reload through a buffering reverse proxy: unbuffered, untransformed s
     assert.equal(ev.headers['x-accel-buffering'], 'no');
     assert.equal(ev.headers['cache-control'], 'no-cache, no-transform');
     assert.equal(await ev.next(), 'retry: 1000');
+    assert.match(await ev.next(), /^id: [0-9a-f]{16}$/, 'the server instance');
     assert.equal(await ev.next(), ': ping', 'a comment keeps the idle connection alive');
     live.reload();
     let e = await ev.next();
@@ -543,7 +567,13 @@ test('build --watch: usage errors', async () => {
   assert.match(r.stderr, /^error: --build-arg expects NAME=value, got '=x'\n/);
   r = await runCli(home, ['serve', '--watch', '-d', site]);
   assert.equal(r.code, 2);
-  assert.match(r.stderr, /--watch cannot be combined with -d/);
+  assert.match(r.stderr, /^error: -d --watch serves a plain directory, and .* has a Sitefile: build it with serve --watch in the foreground\n/);
+  r = await runCli(home, ['serve', '-d', '--watch', '--no-css-inject', path.join(site, 'public')]);
+  assert.equal(r.code, 2);
+  assert.match(r.stderr, /^error: --no-css-inject is for serve --watch in the foreground, not -d\n/);
+  r = await runCli(home, ['serve', '-d', '--watch', path.join(site, 'nope')]);
+  assert.equal(r.code, 1);
+  assert.match(r.stderr, /^error\[E_NOT_FOUND\]: '.*nope' is not a directory\n/);
   r = await runCli(home, ['serve', '--build-arg', 'A=1', './x/']);
   assert.equal(r.code, 2);
   assert.match(r.stderr, /--build-arg needs --watch/);
@@ -570,6 +600,7 @@ test('serve --watch: serves the build, live-reloads after a good rebuild, keeps 
 
     const ev = await events(port);
     assert.equal(await ev.next(), 'retry: 1000');
+    assert.match(await ev.next(), /^id: [0-9a-f]{16}$/, 'the server instance');
     await fs.writeFile(path.join(site, 'public', 'index.html'), '<h1>v2</h1>');
     assert.equal(await ev.next(), 'data: {"type":"building"}');
     assert.equal(await ev.next(), 'data: {"type":"reload","morph":true}', 'only HTML changed: pages may morph');
@@ -592,6 +623,7 @@ test('serve --watch: serves the build, live-reloads after a good rebuild, keeps 
     // a page opened while the build is broken gets the error at once
     const late = await events(port);
     assert.equal(await late.next(), 'retry: 1000');
+    assert.match(await late.next(), /^id: [0-9a-f]{16}$/, 'the server instance');
     assert.equal(await late.next(), failed);
     late.close();
     // fixed, with the same output as before: ok (the overlay clears, no reload)
@@ -600,6 +632,7 @@ test('serve --watch: serves the build, live-reloads after a good rebuild, keeps 
     assert.equal(await ev.next(), 'data: {"type":"ok"}');
     const fresh = await events(port);
     assert.equal(await fresh.next(), 'retry: 1000');
+    assert.match(await fresh.next(), /^id: [0-9a-f]{16}$/, 'the server instance');
     fresh.close();
     ev.close();
     assert.deepEqual(await fs.readdir(site).then((n) => n.filter((x) => x === 'dist')), [], 'serve --watch writes no export');
@@ -649,6 +682,7 @@ test('serve --watch on a directory without a Sitefile: served as it is, re-read 
     assert.equal((await get(port, '/.env')).status, 404, 'hidden files are not served');
     const ev = await events(port);
     assert.equal(await ev.next(), 'retry: 1000');
+    assert.match(await ev.next(), /^id: [0-9a-f]{16}$/, 'the server instance');
     await fs.writeFile(path.join(dir, 's.css'), 'a{color:red}');
     assert.equal(await ev.next(), 'data: {"type":"building"}');
     assert.equal(await ev.next(), 'data: {"type":"css","paths":["/s.css"]}');
@@ -665,6 +699,56 @@ test('serve --watch on a directory without a Sitefile: served as it is, re-read 
   }
 });
 
+test('serve -d --watch ./dir: the detached server re-reads the directory, live-reloads, keeps the watch over a restart, and reloads pages left open', async () => {
+  const home = await tmpDir('sitefile-home-');
+  const dir = await tmpDir('sitefile-plain-');
+  await fs.writeFile(path.join(dir, 'index.html'), '<link rel="stylesheet" href="/s.css"><h1>d1</h1>');
+  await fs.writeFile(path.join(dir, 's.css'), 'a{}');
+  const port = await new Promise<number>((resolve) => {
+    const s = http.createServer().listen(0, '127.0.0.1', () => {
+      const p = (s.address() as { port: number }).port;
+      s.close(() => resolve(p));
+    });
+  });
+  let r = await runCli(home, ['serve', '-d', '--watch', '--name', 'dw', '-p', `127.0.0.1:${port}`, '--poll-interval', '50', dir]);
+  assert.equal(r.code, 0, r.stderr);
+  try {
+    const state = JSON.parse(await fs.readFile(path.join(home, 'servers', `${/\((\w{12})\)/.exec(r.stdout)![1]}.json`), 'utf8'));
+    assert.equal(state.watch, true);
+    assert.equal(state.pollMs, 50);
+    assert.equal((await get(port, '/', NAV)).body, `<link rel="stylesheet" href="/s.css"><h1>d1</h1>${RELOAD_SCRIPT}`);
+    const ev = await events(port);
+    assert.equal(await ev.next(), 'retry: 1000');
+    const id = (await ev.next()).slice(4);
+    assert.match(id, /^[0-9a-f]{16}$/);
+    await fs.writeFile(path.join(dir, 's.css'), 'a{color:red}');
+    assert.equal(await ev.next(), 'data: {"type":"building"}');
+    assert.equal(await ev.next(), 'data: {"type":"css","paths":["/s.css"]}');
+    await fs.writeFile(path.join(dir, 'index.html'), '<h1>d2</h1>');
+    assert.equal(await ev.next(), 'data: {"type":"building"}');
+    assert.equal(await ev.next(), 'data: {"type":"reload","morph":true}');
+    assert.equal((await get(port, '/', NAV)).body, `<h1>d2</h1>${RELOAD_SCRIPT}`);
+    ev.close();
+    const log = await runCli(home, ['server', 'logs', 'dw']);
+    assert.match(log.stdout, /Z Change detected, re-reading\n.*Z Read 2 files \(sha256:[0-9a-f]{64}\)\n/);
+
+    r = await runCli(home, ['server', 'restart', 'dw']);
+    assert.equal(r.code, 0, r.stderr);
+    const ps = JSON.parse((await runCli(home, ['servers', '--json'])).stdout) as { name: string; watch?: boolean; pollMs?: number }[];
+    assert.deepEqual(ps.filter((s) => s.name === 'dw').map((s) => [s.watch, s.pollMs]), [[true, 50]], 'restart keeps the watch');
+    const again = await events(port, { lastEventId: id });
+    assert.equal(await again.next(), 'retry: 1000');
+    assert.notEqual(await again.next(), `id: ${id}`, 'a new instance');
+    assert.equal(await again.next(), 'data: {"type":"reload"}', 'pages left open across the restart reload');
+    await fs.writeFile(path.join(dir, 'index.html'), '<h1>d3</h1>');
+    assert.equal(await again.next(), 'data: {"type":"building"}');
+    assert.equal(await again.next(), 'data: {"type":"reload","morph":true}', 'the restarted server still watches');
+    again.close();
+  } finally {
+    await runCli(home, ['server', 'rm', '-f', 'dw']);
+  }
+});
+
 test('serve --watch --no-css-inject: a stylesheet-only rebuild reloads', async () => {
   const home = await tmpDir('sitefile-home-');
   const site = await makeSite({ 'public/index.html': '<h1>x</h1>' });
@@ -675,6 +759,7 @@ test('serve --watch --no-css-inject: a stylesheet-only rebuild reloads', async (
     assert.match((await get(port, '/__sitefile/reload.js')).body, /"cssInject":false,"console":false,"overlay":true,"navigateToChanged":false,"reload":"morph"\}\);\n$/);
     const ev = await events(port);
     assert.equal(await ev.next(), 'retry: 1000');
+    assert.match(await ev.next(), /^id: [0-9a-f]{16}$/, 'the server instance');
     await fs.writeFile(path.join(site, 'public', 'style.css'), 'body{margin:3px}');
     assert.equal(await ev.next(), 'data: {"type":"building"}');
     assert.equal(await ev.next(), 'data: {"type":"reload"}');
@@ -697,6 +782,7 @@ test('serve --watch --navigate-to-changed: editing a post\'s Markdown names that
     assert.match((await get(port, '/__sitefile/reload.js')).body, /"navigateToChanged":true,"reload":"morph"\}\);\n$/);
     const ev = await events(port);
     assert.equal(await ev.next(), 'retry: 1000');
+    assert.match(await ev.next(), /^id: [0-9a-f]{16}$/, 'the server instance');
     await fs.writeFile(path.join(site, 'posts', '2026-01-02-second.md'), '# Second\n\nTwo, edited.\n');
     assert.equal(await ev.next(), 'data: {"type":"building"}');
     assert.equal(await ev.next(), 'data: {"type":"reload","path":"/posts/second/","morph":true}');
