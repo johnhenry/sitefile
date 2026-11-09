@@ -3,10 +3,10 @@
 
 use crate::error::{ErrorCode::*, Result, SitefileError, SourceSpan};
 use crate::links::{resolve_reference, scan_file, Target};
+use crate::paths::fold_case;
 use crate::resources::https::fetch_remote;
 use crate::resources::types::FetchPolicy;
 use crate::tree::Tree;
-use crate::paths::fold_case;
 use std::collections::HashMap;
 
 pub struct CheckLinksOp<'a> {

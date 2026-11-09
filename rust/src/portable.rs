@@ -22,10 +22,9 @@ fn reserved(stem: &str) -> bool {
 /// Why a path cannot be written on Windows, or None (`windowsProblem` in the TypeScript module).
 pub fn windows_problem(path: &str) -> Option<String> {
     for seg in path.split('/').skip(1) {
-        if let Some(c) = seg
-            .chars()
-            .find(|c| matches!(c, '<' | '>' | ':' | '"' | '|' | '?' | '*' | '\\') || (*c as u32) < 0x20)
-        {
+        if let Some(c) = seg.chars().find(|c| {
+            matches!(c, '<' | '>' | ':' | '"' | '|' | '?' | '*' | '\\') || (*c as u32) < 0x20
+        }) {
             let shown = if (c as u32) < 0x20 {
                 format!("U+{:04X}", c as u32)
             } else {
@@ -34,7 +33,11 @@ pub fn windows_problem(path: &str) -> Option<String> {
             return Some(format!("{shown} is not allowed in a Windows file name"));
         }
         if seg.ends_with('.') || seg.ends_with(' ') {
-            let what = if seg.ends_with('.') { "a dot" } else { "a space" };
+            let what = if seg.ends_with('.') {
+                "a dot"
+            } else {
+                "a space"
+            };
             return Some(format!("'{seg}' ends with {what}, which Windows drops"));
         }
         let stem = seg.split('.').next().unwrap_or("").trim_end_matches(' ');
