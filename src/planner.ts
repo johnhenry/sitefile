@@ -102,6 +102,8 @@ export type Operation =
       readonly patterns: readonly string[];
       /** `MANIFEST <dest>`: the JSON map of old to new paths. */
       readonly manifest?: string;
+      /** `INTEGRITY`: add `integrity="sha384-…"` to the script and stylesheet tags that load a renamed file. */
+      readonly integrity?: true;
       /** The EXPORT path: absolute references (`/img/a.png`) in HTML and CSS name files below it. */
       readonly root: string;
       readonly overwrite: boolean;
@@ -234,6 +236,12 @@ export interface Plan {
   readonly redirects: readonly RedirectSpec[];
   /** HEADER lines in source order (any stage); EXPORT writes them to `/_headers`. */
   readonly headers: readonly HeaderSpec[];
+  /**
+   * Set when EXPORT adds `Cache-Control` lines for the fingerprinted files (and the pages) to `/_headers`:
+   * the Sitefile has a FINGERPRINT, none of them says `--no-cache-headers`, and no HEADER sets
+   * `Cache-Control` itself. `span` is the first FINGERPRINT's (the origin of the lines).
+   */
+  readonly cacheHeaders?: { readonly span: SourceSpan };
   readonly warnings: readonly string[];
   /**
    * `--target <stage>`: the build stops after this stage and exports its whole tree (see {@link targetPlan}).
@@ -258,6 +266,7 @@ export function plan(program: Program, buildArgs: Readonly<Record<string, string
   const tools: ToolSpec[] = [];
   const redirects: RedirectSpec[] = [];
   const headers: HeaderSpec[] = [];
+  const fingerprints: Array<{ span: SourceSpan; headers: boolean }> = [];
   const warnings: string[] = [];
   const declaredArgs = new Set<string>();
   const allStageNames = stageNames(program.instructions);
@@ -428,7 +437,16 @@ export function plan(program: Program, buildArgs: Readonly<Record<string, string
         const patterns = ins.patterns.map((o) => checkPattern(evaluateOperand(o, vars), o.span));
         const manifest = ins.manifest ? fileDest(ins.manifest, vars, '', 'FINGERPRINT MANIFEST') : undefined;
         // `root` is the EXPORT path, filled in below (EXPORT is the last instruction).
-        operations().push({ kind: 'FINGERPRINT', patterns, ...(manifest !== undefined ? { manifest } : {}), root: '/', overwrite: ins.overwrite, span: ins.span });
+        operations().push({
+          kind: 'FINGERPRINT',
+          patterns,
+          ...(manifest !== undefined ? { manifest } : {}),
+          ...(ins.integrity && { integrity: true as const }),
+          root: '/',
+          overwrite: ins.overwrite,
+          span: ins.span,
+        });
+        fingerprints.push({ span: ins.span, headers: !ins.noCacheHeaders });
         break;
       }
       case 'CHECKLINKS':
@@ -500,7 +518,30 @@ export function plan(program: Program, buildArgs: Readonly<Record<string, string
     // validate() guarantees both; this keeps the types honest.
     throw new SitefileError('E_VALIDATION', 'a Sitefile needs FROM and EXPORT');
   }
-  return { file: program.file, stages, vars, fragments, imports: [...imports.values()], plugins, tools, exportPath, exportFormat, exportBase, exportRoot, exportCompression, redirects, headers, warnings };
+  // FINGERPRINT's Cache-Control lines: unless turned off, or a HEADER already sets Cache-Control.
+  const firstFingerprint = fingerprints[0];
+  const cacheHeaders =
+    firstFingerprint && fingerprints.every((f) => f.headers) && !headers.some((h) => h.name.toLowerCase() === 'cache-control')
+      ? { span: firstFingerprint.span }
+      : undefined;
+  return {
+    file: program.file,
+    stages,
+    vars,
+    fragments,
+    imports: [...imports.values()],
+    plugins,
+    tools,
+    exportPath,
+    exportFormat,
+    exportBase,
+    exportRoot,
+    exportCompression,
+    redirects,
+    headers,
+    ...(cacheHeaders ? { cacheHeaders } : {}),
+    warnings,
+  };
 }
 
 /**
@@ -520,7 +561,8 @@ export function targetPlan(p: Plan, name: string): Plan {
         : `--target '${name}' does not name a stage (the Sitefile has no named stages; name one with FROM … AS <name>)`,
     );
   }
-  return { ...p, stages: p.stages.slice(0, index + 1), exportPath: '/', redirects: [], headers: [], target: name };
+  const { cacheHeaders: _, ...rest } = p;
+  return { ...rest, stages: p.stages.slice(0, index + 1), exportPath: '/', redirects: [], headers: [], target: name };
 }
 
 /** `IMPORT … SCHEMA <path>`: a local `.json`, `.yaml` or `.yml` file in the build context. */

@@ -3837,7 +3837,7 @@
               "include": "#continuation-comment"
             },
             {
-              "match": "(?<![^\\s])(--)(overwrite)(?=\\s|$)",
+              "match": "(?<![^\\s])(--)(overwrite|no-cache-headers)(?=\\s|$)",
               "captures": {
                 "1": {
                   "name": "punctuation.definition.flag.sitefile"
@@ -3852,7 +3852,7 @@
               "name": "invalid.illegal.unknown-flag.sitefile"
             },
             {
-              "match": "(?<![^\\s])((?i:MANIFEST))(?=\\s|$)",
+              "match": "(?<![^\\s])((?i:MANIFEST|INTEGRITY))(?=\\s|$)",
               "captures": {
                 "1": {
                   "name": "keyword.other.clause.sitefile"

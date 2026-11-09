@@ -24,9 +24,13 @@ pub struct SiteServerOptions {
     pub log: Option<LogFn>,
     /// Sent as `x-sitefile-server` so `servers` can tell its own servers from a reused port.
     pub server_id: Option<String>,
-    /// `serve --watch`: answer [`RELOAD_PATH`] with an event stream and add
-    /// [`RELOAD_SCRIPT`] to HTML responses. Never set otherwise, and never written to exports.
+    /// `serve --watch`: answer [`RELOAD_PATH`] with an event stream and [`RELOAD_SCRIPT_PATH`]
+    /// with the client script, and add [`RELOAD_SCRIPT`] to HTML navigations. Never set
+    /// otherwise, and never written to exports.
     pub live_reload: Option<Arc<LiveReload>>,
+    /// Problems a person should know about (without the `warning: ` prefix), e.g. a CSP that
+    /// blocks live reload.
+    pub warn: Option<LogFn>,
 }
 
 /// The tree a server answers from; `serve --watch` swaps in each good rebuild.
@@ -34,28 +38,479 @@ pub type SharedTree = Arc<RwLock<Arc<Tree>>>;
 
 /// Reserved for the live-reload event stream while `serve --watch` runs.
 pub const RELOAD_PATH: &str = "/__sitefile/reload";
-/// Added to served HTML (before the last `</body>`, else at the end) under `serve --watch`.
-pub const RELOAD_SCRIPT: &str = "<script>new EventSource(\"/__sitefile/reload\").onmessage=function(){location.reload()}</script>";
+/// Reserved for the live-reload client script ([`reload_client`]) while `serve --watch` runs.
+pub const RELOAD_SCRIPT_PATH: &str = "/__sitefile/reload.js";
+/// Added to navigated HTML (before the last `</body>`, else at the end) under `serve --watch`.
+pub const RELOAD_SCRIPT: &str = "<script src=\"/__sitefile/reload.js\"></script>";
 
-/// Open live-reload streams; [`LiveReload::reload`] tells every page to reload.
+/// The TypeScript module that holds the client script; it is the single source of both servers' bytes.
+const RELOAD_CLIENT_SOURCE: &str = include_str!("../../src/reload-client.ts");
+
+/// The live-reload client script (JavaScript): the text between the `String.raw` backticks of
+/// `src/reload-client.ts`.
+pub fn reload_client() -> &'static str {
+    static CLIENT: std::sync::OnceLock<&'static str> = std::sync::OnceLock::new();
+    CLIENT.get_or_init(|| {
+        let start = RELOAD_CLIENT_SOURCE
+            .find("String.raw`")
+            .map(|i| i + "String.raw`".len())
+            .expect("src/reload-client.ts has a String.raw literal");
+        let end = RELOAD_CLIENT_SOURCE
+            .rfind('`')
+            .filter(|e| *e >= start)
+            .expect("src/reload-client.ts closes its String.raw literal");
+        &RELOAD_CLIENT_SOURCE[start..end]
+    })
+}
+
+/// Whether a request is a page navigation, which gets the reload script: `Sec-Fetch-Mode:
+/// navigate` when the browser sends it, else `Sec-Fetch-Dest` document/iframe/frame, else an
+/// `Accept` naming `text/html`. A `fetch()` of an HTML fragment is none of these.
+pub fn is_navigation(headers: &HashMap<String, String>) -> bool {
+    if let Some(mode) = headers.get("sec-fetch-mode") {
+        return mode.trim().eq_ignore_ascii_case("navigate");
+    }
+    if let Some(dest) = headers.get("sec-fetch-dest") {
+        let d = dest.trim().to_ascii_lowercase();
+        return d == "document" || d == "iframe" || d == "frame";
+    }
+    headers
+        .get("accept")
+        .is_some_and(|a| a.to_ascii_lowercase().contains("text/html"))
+}
+
+/// The directive of a `Content-Security-Policy` value that blocks live reload: `script-src`
+/// when a same-origin script cannot run, `connect-src` when the event stream cannot connect.
+/// Same rules as `cspBlocksReload` in src/server.ts.
+pub fn csp_blocks_reload(value: &str) -> Option<&'static str> {
+    for policy in value.split(',') {
+        let mut directives: Vec<(String, Vec<String>)> = Vec::new();
+        for d in policy.split(';') {
+            let mut tokens = d
+                .split(['\t', '\n', '\x0c', '\r', ' '])
+                .filter(|t| !t.is_empty());
+            let Some(name) = tokens.next() else { continue };
+            let name = name.to_lowercase();
+            if !directives.iter().any(|(n, _)| *n == name) {
+                directives.push((name, tokens.map(|t| t.to_lowercase()).collect()));
+            }
+        }
+        let effective = |names: &[&str]| {
+            names
+                .iter()
+                .find_map(|n| directives.iter().find(|(d, _)| d == n).map(|(_, v)| v))
+        };
+        let allows = |sources: Option<&Vec<String>>, script: bool| match sources {
+            None => true,
+            Some(v) => {
+                !(script && v.iter().any(|t| t == "'strict-dynamic'"))
+                    && v.iter()
+                        .any(|t| t == "'self'" || t == "*" || t == "http:" || t == "https:")
+            }
+        };
+        if !allows(
+            effective(&["script-src-elem", "script-src", "default-src"]),
+            true,
+        ) {
+            return Some("script-src");
+        }
+        if !allows(effective(&["connect-src", "default-src"]), false) {
+            return Some("connect-src");
+        }
+    }
+    None
+}
+
+/// Headers of the event stream (also on HEAD): no proxy buffering (`X-Accel-Buffering`), no
+/// compression or other transforms.
+pub const STREAM_HEADERS: [(&str, &str); 3] = [
+    ("content-type", "text/event-stream"),
+    ("cache-control", "no-cache, no-transform"),
+    ("x-accel-buffering", "no"),
+];
+
+/// What the client script does besides reloading (`serve --watch` flags).
+#[derive(Debug, Clone)]
+pub struct LiveReloadOptions {
+    /// Unregister the page's service workers and empty its Cache Storage before each reload
+    /// (`--keep-service-workers` turns it off).
+    pub reset_service_workers: bool,
+    /// Swap changed stylesheets in place instead of reloading when only CSS changed
+    /// (`--no-css-inject` turns it off).
+    pub css_inject: bool,
+    /// Forward the page's `console.log`/`console.info` too, not only errors and warnings (`--console`).
+    pub console: bool,
+    /// Show a Rebuilding badge and a build-error overlay in the page (`--no-overlay` turns it off).
+    pub overlay: bool,
+    /// After a rebuild that changed exactly one page, go to that page (`--navigate-to-changed`).
+    pub navigate_to_changed: bool,
+    /// `--reload morph` (true, the default) updates a page in place when only HTML changed;
+    /// `--reload full` (false) always reloads.
+    pub morph: bool,
+}
+
+impl Default for LiveReloadOptions {
+    fn default() -> Self {
+        LiveReloadOptions {
+            reset_service_workers: true,
+            css_inject: true,
+            console: false,
+            overlay: true,
+            navigate_to_changed: false,
+            morph: true,
+        }
+    }
+}
+
+/// The script served at [`RELOAD_SCRIPT_PATH`]: [`reload_client`] called with `options` (keys in
+/// the same fixed order as `clientScript` in src/server.ts).
+pub fn client_script(options: &LiveReloadOptions) -> String {
+    format!(
+        "{}({{\"resetServiceWorkers\":{},\"cssInject\":{},\"console\":{},\"overlay\":{},\"navigateToChanged\":{},\"reload\":\"{}\"}});\n",
+        reload_client(),
+        options.reset_service_workers,
+        options.css_inject,
+        options.console,
+        options.overlay,
+        options.navigate_to_changed,
+        if options.morph { "morph" } else { "full" }
+    )
+}
+
+/// Reserved for browser console messages (POST) while `serve --watch` runs.
+pub const CONSOLE_PATH: &str = "/__sitefile/console";
+/// Largest console message body accepted (bytes).
+pub const MAX_CONSOLE_BODY: u64 = 16 * 1024;
+/// At most this many console messages are logged per [`CONSOLE_WINDOW`].
+pub const CONSOLE_LIMIT: u32 = 50;
+pub const CONSOLE_WINDOW: Duration = Duration::from_secs(10);
+
+/// `s` with each run of control characters made one space, trimmed, and cut to `max` chars (then `...`).
+fn clean_text(s: &str, max: usize) -> String {
+    let mut t = String::with_capacity(s.len());
+    let mut in_ctl = false;
+    for c in s.chars() {
+        if (c as u32) < 0x20 || c == '\u{7f}' {
+            if !in_ctl {
+                t.push(' ');
+            }
+            in_ctl = true;
+        } else {
+            t.push(c);
+            in_ctl = false;
+        }
+    }
+    let t = js_trim(&t);
+    if t.chars().count() > max {
+        let cut: String = t.chars().take(max).collect();
+        format!("{cut}...")
+    } else {
+        t.to_string()
+    }
+}
+
+/// The server-log lines for one console message body; same rules as `consoleLines` in src/server.ts.
+pub fn console_lines(body: &str, all: bool) -> Option<Vec<String>> {
+    let v: serde_json::Value = serde_json::from_str(body).ok()?;
+    let o = v.as_object()?;
+    let level = o.get("level").and_then(|l| l.as_str())?;
+    if !["error", "warn", "log", "info"].contains(&level) {
+        return None;
+    }
+    if (level == "log" || level == "info") && !all {
+        return Some(Vec::new());
+    }
+    let message = clean_text(
+        o.get("message").and_then(|m| m.as_str()).unwrap_or(""),
+        1000,
+    );
+    let num = |k: &str| -> Option<u64> {
+        let f = o.get(k)?.as_f64()?;
+        (f.fract() == 0.0 && f >= 0.0 && f <= 9007199254740991.0).then_some(f as u64)
+    };
+    let url = o
+        .get("url")
+        .and_then(|u| u.as_str())
+        .map(|u| clean_text(u, 300))
+        .unwrap_or_default();
+    let line = num("line");
+    let col = line.and(num("col"));
+    let at = if url.is_empty() {
+        String::new()
+    } else {
+        format!(
+            " ({url}{}{})",
+            line.map(|l| format!(":{l}")).unwrap_or_default(),
+            col.map(|c| format!(":{c}")).unwrap_or_default()
+        )
+    };
+    let mut out = vec![format!("browser {level}: {message}{at}")];
+    if let Some(stack) = o.get("stack").and_then(|s| s.as_str()) {
+        out.extend(
+            stack
+                .split('\n')
+                .map(|l| clean_text(l, 300))
+                .filter(|l| !l.is_empty() && *l != message)
+                .take(5)
+                .map(|l| format!("    {l}")),
+        );
+    }
+    Some(out)
+}
+
+/// A console POST comes from a page of this server; same rules as `isSameOriginPost` in src/server.ts.
+pub fn is_same_origin_post(headers: &HashMap<String, String>) -> bool {
+    let (Some(origin), Some(host)) = (headers.get("origin"), headers.get("host")) else {
+        return false;
+    };
+    if host.is_empty() {
+        return false;
+    }
+    if let Some(site) = headers.get("sec-fetch-site") {
+        if !site.trim().eq_ignore_ascii_case("same-origin") {
+            return false;
+        }
+    }
+    *origin == format!("http://{host}") || *origin == format!("https://{host}")
+}
+
+/// The event that tells every page to reload.
+pub const RELOAD_EVENT: &str = "{\"type\":\"reload\"}";
+/// Sent when a rebuild starts (pages show a Rebuilding badge).
+pub const BUILDING_EVENT: &str = "{\"type\":\"building\"}";
+/// Sent after a good rebuild that changed nothing (pages clear the badge and any error overlay).
+pub const OK_EVENT: &str = "{\"type\":\"ok\"}";
+
+/// The event for a failed rebuild; same shape as `errorEvent` in src/server.ts.
+pub fn error_event(e: &SitefileError) -> String {
+    let mut m = serde_json::Map::new();
+    m.insert("type".into(), "error".into());
+    m.insert("code".into(), e.code.to_string().into());
+    m.insert("message".into(), e.detail.clone().into());
+    if let Some(span) = &e.span {
+        m.insert("file".into(), span.file.clone().into());
+        m.insert("line".into(), span.line.into());
+        m.insert("column".into(), span.column.into());
+    }
+    serde_json::Value::Object(m).to_string()
+}
+
+/// The URL path that serves `file` (`/dir/` for `/dir/index.html`); same as `pageUrlFor` in src/server.ts.
+pub fn page_url_for(file: &str) -> String {
+    let mut segs: Vec<&str> = file.split('/').skip(1).collect();
+    if segs.last() == Some(&"index.html") {
+        let n = segs.len() - 1;
+        segs[n] = "";
+    }
+    let enc: Vec<String> = segs.iter().map(|s| encode_uri_component(s)).collect();
+    format!("/{}", enc.join("/"))
+}
+
+/// The live-reload event for a new tree (`None` when no file changed); same rules as
+/// `reloadEventFor` in src/server.ts.
+pub fn reload_event_for(
+    prev: &Tree,
+    next: &Tree,
+    css_inject: bool,
+    navigate: bool,
+) -> Option<String> {
+    let mut changed: Vec<String> = Vec::new();
+    let mut pages: Vec<&String> = Vec::new();
+    let mut css_only = css_inject;
+    let mut html_only = true;
+    for (p, f) in next.entries() {
+        let old = prev.get(p);
+        if old.is_some_and(|o| o.digest == f.digest && o.mode == f.mode) {
+            continue;
+        }
+        changed.push(p.clone());
+        let html = mime_type_for(p).starts_with("text/html");
+        if html {
+            pages.push(p);
+        }
+        if old.is_none() || !html {
+            html_only = false;
+        }
+        if old.is_none() || !mime_type_for(p).starts_with("text/css") {
+            css_only = false;
+        }
+    }
+    for (p, _) in prev.entries() {
+        if !next.is_file(p) {
+            changed.push(p.clone());
+            css_only = false;
+            html_only = false;
+        }
+    }
+    if changed.is_empty() {
+        return None;
+    }
+    if !css_only {
+        let path = (navigate && pages.len() == 1).then(|| page_url_for(pages[0]));
+        if path.is_none() && !html_only {
+            return Some(RELOAD_EVENT.to_string());
+        }
+        let mut m = serde_json::Map::new();
+        m.insert("type".into(), "reload".into());
+        if let Some(p) = path {
+            m.insert("path".into(), p.into());
+        }
+        if html_only {
+            m.insert("morph".into(), true.into());
+        }
+        return Some(serde_json::Value::Object(m).to_string());
+    }
+    changed.sort();
+    Some(serde_json::json!({ "type": "css", "paths": changed }).to_string())
+}
+
+/// Events sent so far: `next` is the id the next one gets; the last [`KEPT_EVENTS`] are kept for
+/// streams that have not written them yet.
+#[derive(Default)]
+struct Events {
+    next: u64,
+    recent: std::collections::VecDeque<(u64, String)>,
+}
+const KEPT_EVENTS: usize = 64;
+
+/// Open live-reload streams; [`LiveReload::send`] gives every page an event ([`LiveReload::reload`]: reload).
 #[derive(Default)]
 pub struct LiveReload {
-    generation: Mutex<u64>,
+    /// The client script for this session ([`client_script`]); empty means the default options.
+    script: String,
+    events: Mutex<Events>,
     changed: Condvar,
     closed: AtomicBool,
     clients: AtomicUsize,
+    /// CSP values already warned about (one warning per policy text).
+    warned_csp: Mutex<std::collections::HashSet<String>>,
+    /// `--console`: log and info messages are logged too.
+    console: bool,
+    /// The last error event, until a good build: sent to streams that open meanwhile.
+    failure: Mutex<Option<String>>,
+    /// Console rate limit: the current window's start and how many messages it has seen.
+    console_window: Mutex<Option<(Instant, u32)>>,
 }
 
 impl LiveReload {
     pub fn new() -> Arc<LiveReload> {
-        Arc::new(LiveReload::default())
+        LiveReload::with_options(&LiveReloadOptions::default())
+    }
+
+    pub fn with_options(options: &LiveReloadOptions) -> Arc<LiveReload> {
+        Arc::new(LiveReload {
+            script: client_script(options),
+            console: options.console,
+            ..LiveReload::default()
+        })
+    }
+
+    /// The client script for this session.
+    pub fn script(&self) -> &str {
+        &self.script
+    }
+
+    /// Whether one more console message may be logged now (at most [`CONSOLE_LIMIT`] per
+    /// [`CONSOLE_WINDOW`]), and the notice line the first refused one in a window prints.
+    pub fn admit_console(&self, now: Instant) -> (bool, Option<String>) {
+        let Ok(mut w) = self.console_window.lock() else {
+            return (false, None);
+        };
+        let (start, count) = match *w {
+            Some((start, count)) if now.duration_since(start) < CONSOLE_WINDOW => {
+                (start, count + 1)
+            }
+            _ => (now, 1),
+        };
+        *w = Some((start, count));
+        if count <= CONSOLE_LIMIT {
+            return (true, None);
+        }
+        let notice = (count == CONSOLE_LIMIT + 1).then(|| {
+            format!(
+                "browser: more than {CONSOLE_LIMIT} console messages in 10 s; dropping the rest"
+            )
+        });
+        (false, notice)
+    }
+
+    /// The answer to a request for [`CONSOLE_PATH`]: `body` is the POST body when it was read
+    /// (same origin, a length within [`MAX_CONSOLE_BODY`]).
+    fn console_response(
+        &self,
+        options: &SiteServerOptions,
+        method: &str,
+        headers: &HashMap<String, String>,
+        body: Option<&[u8]>,
+        body_len: u64,
+        chunked: bool,
+    ) -> Response {
+        let mut h: Vec<(String, String)> = vec![
+            ("x-content-type-options".into(), "nosniff".into()),
+            ("cache-control".into(), "no-cache".into()),
+        ];
+        if let Some(id) = options.server_id.as_deref().filter(|s| !s.is_empty()) {
+            h.push(("x-sitefile-server".into(), id.to_string()));
+        }
+        let res = |status: u16, mut h: Vec<(String, String)>, extra: &[(&str, &str)]| {
+            h.extend(extra.iter().map(|(k, v)| (k.to_string(), v.to_string())));
+            Response {
+                status,
+                headers: h,
+                body: Vec::new(),
+            }
+        };
+        if method != "POST" {
+            return res(405, h, &[("allow", "POST"), ("content-length", "0")]);
+        }
+        if !is_same_origin_post(headers) {
+            return res(403, h, &[("content-length", "0")]);
+        }
+        if chunked || body_len > MAX_CONSOLE_BODY {
+            return res(413, h, &[("content-length", "0")]);
+        }
+        let text = String::from_utf8_lossy(body.unwrap_or_default());
+        let Some(lines) = console_lines(&text, self.console) else {
+            return res(400, h, &[("content-length", "0")]);
+        };
+        if !lines.is_empty() {
+            let (ok, notice) = self.admit_console(Instant::now());
+            if let Some(log) = &options.log {
+                if let Some(n) = notice {
+                    log(&n);
+                }
+                if ok {
+                    for l in &lines {
+                        log(l);
+                    }
+                }
+            }
+        }
+        res(204, h, &[])
+    }
+
+    /// Send `event` (one line of JSON) to every open page.
+    pub fn send(&self, event: &str) {
+        if let Ok(mut f) = self.failure.lock() {
+            if event.starts_with("{\"type\":\"error\"") {
+                *f = Some(event.to_string());
+            } else if event != BUILDING_EVENT {
+                *f = None;
+            }
+        }
+        if let Ok(mut e) = self.events.lock() {
+            let id = e.next;
+            e.recent.push_back((id, event.to_string()));
+            e.next += 1;
+            while e.recent.len() > KEPT_EVENTS {
+                e.recent.pop_front();
+            }
+        }
+        self.changed.notify_all();
     }
 
     pub fn reload(&self) {
-        if let Ok(mut g) = self.generation.lock() {
-            *g += 1;
-        }
-        self.changed.notify_all();
+        self.send(RELOAD_EVENT);
     }
 
     /// End every open stream.
@@ -64,22 +519,50 @@ impl LiveReload {
         self.changed.notify_all();
     }
 
+    /// Warn (once per policy text) when a CSP sent with an injected page blocks live reload.
+    fn warn_csp(&self, warn: Option<&LogFn>, served: &str, policy: Option<&str>) {
+        let (Some(warn), Some(policy)) = (warn, policy) else {
+            return;
+        };
+        let Ok(mut seen) = self.warned_csp.lock() else {
+            return;
+        };
+        if seen.contains(policy) {
+            return;
+        }
+        let Some(blocked) = csp_blocks_reload(policy) else {
+            return;
+        };
+        seen.insert(policy.to_string());
+        let what = if blocked == "script-src" {
+            format!("scripts from 'self' ({RELOAD_SCRIPT_PATH})")
+        } else {
+            format!("connections to 'self' ({RELOAD_PATH})")
+        };
+        warn(&format!("live reload: the Content-Security-Policy that _headers sets for {served} does not allow {what}, so open pages will not reload: {policy}"));
+    }
+
     /// Open streams.
     pub fn clients(&self) -> usize {
         self.clients.load(Ordering::SeqCst)
     }
 
     /// Hold `out` open as a text/event-stream until the client goes away or [`LiveReload::close`].
+    /// The headers keep proxies and tunnels from buffering or compressing it, and a comment every
+    /// 15 s keeps idle connections from being cut (and finds clients that went away).
     fn stream(&self, out: &mut TcpStream, options: &SiteServerOptions) {
-        let mut head = String::from(
-            "HTTP/1.1 200 OK\r\nx-content-type-options: nosniff\r\ncache-control: no-cache\r\n",
-        );
+        let mut head = String::from("HTTP/1.1 200 OK\r\nx-content-type-options: nosniff\r\n");
         if let Some(id) = options.server_id.as_deref().filter(|s| !s.is_empty()) {
             head.push_str(&format!("x-sitefile-server: {id}\r\n"));
         }
-        head.push_str(
-            "content-type: text/event-stream\r\nconnection: close\r\n\r\nretry: 1000\n\n",
-        );
+        for (k, v) in STREAM_HEADERS {
+            head.push_str(&format!("{k}: {v}\r\n"));
+        }
+        head.push_str("connection: close\r\n\r\nretry: 1000\n\n");
+        // A page opened while the last build is broken shows the error at once.
+        if let Some(f) = self.failure.lock().ok().and_then(|f| f.clone()) {
+            head.push_str(&format!("data: {f}\n\n"));
+        }
         if out
             .write_all(head.as_bytes())
             .and_then(|_| out.flush())
@@ -88,30 +571,37 @@ impl LiveReload {
             return;
         }
         self.clients.fetch_add(1, Ordering::SeqCst);
-        let mut seen = self.generation.lock().map(|g| *g).unwrap_or(0);
+        let mut seen = self.events.lock().map(|e| e.next).unwrap_or(0);
         loop {
-            let Ok(g) = self.generation.lock() else { break };
-            let Ok((g, _)) = self
+            let Ok(e) = self.events.lock() else { break };
+            let Ok((e, _)) = self
                 .changed
-                .wait_timeout_while(g, Duration::from_secs(15), |g| {
-                    *g == seen && !self.closed.load(Ordering::SeqCst)
+                .wait_timeout_while(e, Duration::from_secs(15), |e| {
+                    e.next == seen && !self.closed.load(Ordering::SeqCst)
                 })
             else {
                 break;
             };
-            let now = *g;
-            drop(g);
+            let mut msg = String::new();
+            for (id, ev) in &e.recent {
+                if *id >= seen {
+                    msg.push_str(&format!("data: {ev}\n\n"));
+                }
+            }
+            seen = e.next;
+            drop(e);
             if self.closed.load(Ordering::SeqCst) {
                 break;
             }
             // a comment line every 15 s finds clients that went away
-            let msg: &[u8] = if now != seen {
-                b"data: reload\n\n"
-            } else {
-                b": ping\n\n"
-            };
-            seen = now;
-            if out.write_all(msg).and_then(|_| out.flush()).is_err() {
+            if msg.is_empty() {
+                msg.push_str(": ping\n\n");
+            }
+            if out
+                .write_all(msg.as_bytes())
+                .and_then(|_| out.flush())
+                .is_err()
+            {
                 break;
             }
         }
@@ -138,6 +628,27 @@ pub fn inject_reload_script(html: &[u8]) -> Vec<u8> {
         }
     }
     out
+}
+
+/// The origin form of a request target: an absolute-form target (`http://host/path?q`, RFC 9112
+/// section 3.2.2) loses its scheme and authority (`/path?q`, or `/` for an empty path); any other
+/// target is returned as it is. The authority is not checked.
+pub fn origin_form(target: &str) -> std::borrow::Cow<'_, str> {
+    let b = target.as_bytes();
+    let scheme = if b.len() >= 7 && b[..7].eq_ignore_ascii_case(b"http://") {
+        7
+    } else if b.len() >= 8 && b[..8].eq_ignore_ascii_case(b"https://") {
+        8
+    } else {
+        return std::borrow::Cow::Borrowed(target);
+    };
+    let after = &target[scheme..];
+    let rest = &after[after.find(['/', '?', '#']).unwrap_or(after.len())..];
+    if rest.starts_with('/') {
+        std::borrow::Cow::Borrowed(rest)
+    } else {
+        std::borrow::Cow::Owned(format!("/{rest}"))
+    }
 }
 
 /// The request path: `url` up to `?` or `#`.
@@ -578,6 +1089,8 @@ pub fn respond(
     if method != "GET" && method != "HEAD" {
         return page(405, METHOD_PAGE, owned(vec![("allow", "GET, HEAD".into())]));
     }
+    let url = origin_form(url);
+    let url = url.as_ref();
     let q = url.find('?');
     let hash = url.find('#');
     let end = q.unwrap_or(url.len()).min(hash.unwrap_or(url.len()));
@@ -591,8 +1104,28 @@ pub fn respond(
         // GET is streamed by the connection loop; HEAD only gets the headers.
         return finish(
             200,
-            owned(vec![("content-type", "text/event-stream".into())]),
+            owned(
+                STREAM_HEADERS
+                    .iter()
+                    .map(|(k, v)| (*k, v.to_string()))
+                    .collect(),
+            ),
             None,
+        );
+    }
+    if let Some(lr) = options
+        .live_reload
+        .as_ref()
+        .filter(|_| raw_path == RELOAD_SCRIPT_PATH)
+    {
+        let js = lr.script();
+        return finish(
+            200,
+            owned(vec![
+                ("content-type", "text/javascript; charset=utf-8".into()),
+                ("content-length", js.len().to_string()),
+            ]),
+            Some(js.as_bytes().to_vec()),
         );
     }
     let Some(segs) = safe_segments(raw_path) else {
@@ -617,7 +1150,16 @@ pub fn respond(
     let send_file = |status: u16, served: &str| -> Response {
         let file = tree.get(served).cloned().expect("resolved file");
         let mime = mime_type_for(served);
-        let live = options.live_reload.is_some() && mime.starts_with("text/html");
+        let live = options.live_reload.is_some()
+            && mime.starts_with("text/html")
+            && is_navigation(headers);
+        if let Some(lr) = options.live_reload.as_ref().filter(|_| live) {
+            let csp = custom
+                .iter()
+                .find(|(k, _)| k == "content-security-policy")
+                .map(|(_, v)| v.as_str());
+            lr.warn_csp(options.warn.as_ref(), served, csp);
+        }
         let body = if live {
             inject_reload_script(&file.bytes)
         } else {
@@ -717,6 +1259,17 @@ pub fn respond(
         if let Some(res) = redirect(false) {
             return res;
         }
+    }
+    // `/about/` when only `/about.html` answers: redirect to the clean URL `/about` (relative links in
+    // the page then resolve as they do at `/about`). `_redirects` rules for the path come first.
+    if served.is_none() && trailing && !segs.is_empty() && is_file(&format!("{vpath}.html")) {
+        let enc: Vec<String> = segs.iter().map(|s| encode_uri_component(s)).collect();
+        let location = format!("/{}{search}", enc.join("/"));
+        return finish(
+            301,
+            owned(vec![("location", location), ("content-length", "0".into())]),
+            None,
+        );
     }
     if served.is_none() && options.spa {
         let last = segs.last().map(String::as_str).unwrap_or("");
@@ -860,16 +1413,35 @@ fn serve_connection(
         };
         let started = Instant::now();
         let mut keep = req.keep_alive && !req.chunked && req.body_len <= MAX_DISCARD_BODY;
-        if req.body_len > 0
+        let console = options
+            .live_reload
+            .as_ref()
+            .filter(|_| raw_path_of(&req.url) == CONSOLE_PATH);
+        let mut body: Option<Vec<u8>> = None;
+        if console.is_some()
+            && req.method == "POST"
+            && is_same_origin_post(&req.headers)
+            && !req.chunked
+            && req.body_len <= MAX_CONSOLE_BODY
+        {
+            let mut buf = vec![0u8; req.body_len as usize];
+            if reader.read_exact(&mut buf).is_err() {
+                break;
+            }
+            body = Some(buf);
+        } else if req.body_len > 0
             && keep
             && io::copy(&mut reader.by_ref().take(req.body_len), &mut io::sink()).is_err()
         {
             keep = false;
         }
+        if console.is_some() && (req.chunked || req.body_len > MAX_CONSOLE_BODY) {
+            keep = false;
+        }
         if let Some(live) = options
             .live_reload
             .as_ref()
-            .filter(|_| req.method == "GET" && raw_path_of(&req.url) == RELOAD_PATH)
+            .filter(|_| req.method == "GET" && raw_path_of(&origin_form(&req.url)) == RELOAD_PATH)
         {
             live.stream(&mut out, options); // not access-logged: one long request per open page
             break;
@@ -879,14 +1451,24 @@ fn serve_connection(
             Err(_) => break,
         };
         let site_rules = rules_for(rules, &current);
-        let res = respond(
-            &current,
-            &site_rules,
-            options,
-            &req.method,
-            &req.url,
-            &req.headers,
-        );
+        let res = match console {
+            Some(live) => live.console_response(
+                options,
+                &req.method,
+                &req.headers,
+                body.as_deref(),
+                req.body_len,
+                req.chunked,
+            ),
+            None => respond(
+                &current,
+                &site_rules,
+                options,
+                &req.method,
+                &req.url,
+                &req.headers,
+            ),
+        };
         let mut head = format!("HTTP/1.1 {} {}\r\n", res.status, reason(res.status));
         for (k, v) in &res.headers {
             head.push_str(&format!("{k}: {v}\r\n"));
@@ -905,7 +1487,11 @@ fn serve_connection(
         // `servers` probes carry the server's own id; they would only clutter the access log.
         let probe = options.server_id.is_some()
             && req.headers.get("x-sitefile-probe") == options.server_id.as_ref();
-        if !probe {
+        // every page load fetches the reload script; it would only clutter the access log
+        // nor do console messages (they are logged as `browser ...` lines)
+        let quiet = options.live_reload.is_some()
+            && [RELOAD_SCRIPT_PATH, CONSOLE_PATH].contains(&raw_path_of(&req.url));
+        if !probe && !quiet {
             if let Some(log) = &options.log {
                 log(&format!(
                     "{} {} {} {} {ms:.1}ms",
@@ -1178,6 +1764,7 @@ mod tests {
             })),
             server_id: None,
             live_reload: None,
+            warn: None,
         };
         let s = listen(site(), opts, "127.0.0.1", 0).unwrap();
         f(s.port, &log);
@@ -1299,6 +1886,35 @@ mod tests {
     }
 
     #[test]
+    fn absolute_form_targets() {
+        with_server(false, |port, log| {
+            let home = get(port, "http://example.com/index.html");
+            assert_eq!(home.status, 200);
+            assert_eq!(home.body, "<h1>home</h1>");
+            assert_eq!(get(port, "http://example.com").body, "<h1>home</h1>");
+            assert_eq!(
+                get(port, "HTTPS://Example.COM:8443?x=1").body,
+                "<h1>home</h1>"
+            );
+            assert_eq!(
+                get(port, "http://example.com/about/").body,
+                "<h1>about</h1>"
+            );
+            let dir = get(port, "http://example.com/about?x=1");
+            assert_eq!(dir.status, 301);
+            assert_eq!(dir.headers["location"], "/about/?x=1");
+            assert_eq!(get(port, "http://example.com/..%2f").status, 400);
+            assert_eq!(get(port, "ftp://example.com/index.html").status, 400);
+            assert!(log.lock().unwrap()[0].starts_with("GET http://example.com/index.html 200 "));
+        });
+        assert_eq!(origin_form("http://h/a?b"), "/a?b");
+        assert_eq!(origin_form("http://h?b"), "/?b");
+        assert_eq!(origin_form("http://h"), "/");
+        assert_eq!(origin_form("/a"), "/a");
+        assert_eq!(origin_form("*"), "*");
+    }
+
+    #[test]
     fn traversal_and_encoded_separators_rejected() {
         with_server(false, |port, _| {
             for p in [
@@ -1375,6 +1991,7 @@ mod tests {
             })),
             server_id: Some("abcdef012345".into()),
             live_reload: None,
+            warn: None,
         };
         let s = listen(site(), opts, "127.0.0.1", 0).unwrap();
         let mut c = TcpStream::connect(("127.0.0.1", s.port)).unwrap();
@@ -1507,6 +2124,31 @@ mod tests {
         .unwrap();
         let r = at(&d, "/docs");
         assert_eq!((r.status, r.header("location")), (301, Some("/docs/")));
+        // johnhenry/sitefile#188: `/about/` with only `/about.html` redirects to the clean URL.
+        let c = Tree::from_files(
+            [
+                ("/about.html", "about page"),
+                ("/a b.html", "space"),
+                ("/x/index.html", "x"),
+                ("/x.html", "x file"),
+            ]
+            .map(|(p, c)| (p.to_string(), make_file(c.as_bytes().to_vec(), "t", 0o644))),
+        )
+        .unwrap();
+        let spa = SiteServerOptions {
+            spa: true,
+            ..Default::default()
+        };
+        let get = |u: &str| handle_request(&c, &spa, "GET", u, &HashMap::new());
+        let r = get("/about/?q=1");
+        assert_eq!((r.status, r.header("location")), (301, Some("/about?q=1")));
+        assert!(r.body.is_empty());
+        assert_eq!(get("/a%20b/").header("location"), Some("/a%20b"));
+        assert_eq!(body(&get("/about")), "about page");
+        assert_eq!(body(&get("/about.html")), "about page");
+        assert_eq!(body(&get("/x/")), "x");
+        assert_eq!(body(&get("/x")), "x file");
+        assert_eq!(get("/about.html/").status, 404);
     }
 
     #[test]
@@ -1627,7 +2269,544 @@ mod tests {
         );
         assert_eq!(inj("<h1>x</h1>"), format!("<h1>x</h1>{RELOAD_SCRIPT}"));
         assert_eq!(inj(""), RELOAD_SCRIPT);
-        assert!(RELOAD_SCRIPT.contains(RELOAD_PATH));
+        assert_eq!(
+            RELOAD_SCRIPT,
+            format!("<script src=\"{RELOAD_SCRIPT_PATH}\"></script>")
+        );
+    }
+
+    fn headers(pairs: &[(&str, &str)]) -> HashMap<String, String> {
+        pairs
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect()
+    }
+
+    /// What a browser sends for a page navigation (only those get the reload script).
+    fn nav() -> HashMap<String, String> {
+        headers(&[
+            ("sec-fetch-mode", "navigate"),
+            ("sec-fetch-dest", "document"),
+        ])
+    }
+
+    #[test]
+    fn reload_client_is_the_typescript_literal() {
+        let js = reload_client();
+        assert!(js.starts_with("(function (options) {"), "{js}");
+        assert!(js.ends_with("})"), "{js}");
+        assert!(!js.contains('`'));
+        assert_eq!(
+            client_script(&LiveReloadOptions::default()),
+            format!("{js}({{\"resetServiceWorkers\":true,\"cssInject\":true,\"console\":false,\"overlay\":true,\"navigateToChanged\":false,\"reload\":\"morph\"}});\n")
+        );
+        let keep = LiveReload::with_options(&LiveReloadOptions {
+            reset_service_workers: false,
+            css_inject: false,
+            console: true,
+            overlay: false,
+            navigate_to_changed: true,
+            morph: false,
+        });
+        assert_eq!(
+            keep.script(),
+            format!(
+                "{js}({{\"resetServiceWorkers\":false,\"cssInject\":false,\"console\":true,\"overlay\":false,\"navigateToChanged\":true,\"reload\":\"full\"}});\n"
+            )
+        );
+        assert!(js.contains("attachShadow"));
+        assert!(js.contains("getRegistrations()") && js.contains("caches.delete(k)"));
+    }
+
+    #[test]
+    fn reload_event_for_nothing_css_or_reload() {
+        let t = |files: &[(&str, &str)]| {
+            Tree::from_files(
+                files
+                    .iter()
+                    .map(|(p, c)| (p.to_string(), make_file(c.as_bytes().to_vec(), "t", 0o644))),
+            )
+            .unwrap()
+        };
+        let a = t(&[("/index.html", "i"), ("/a.css", "a"), ("/z/b.css", "b")]);
+        let e = |next: &Tree, css: bool| reload_event_for(&a, next, css, false);
+        assert_eq!(
+            e(
+                &t(&[("/index.html", "i"), ("/a.css", "a"), ("/z/b.css", "b")]),
+                true
+            ),
+            None
+        );
+        assert_eq!(
+            e(
+                &t(&[("/index.html", "i"), ("/a.css", "A"), ("/z/b.css", "B")]),
+                true
+            )
+            .as_deref(),
+            Some("{\"type\":\"css\",\"paths\":[\"/a.css\",\"/z/b.css\"]}")
+        );
+        let reload = Some(RELOAD_EVENT);
+        assert_eq!(
+            e(
+                &t(&[("/index.html", "i"), ("/a.css", "A"), ("/z/b.css", "b")]),
+                false
+            )
+            .as_deref(),
+            reload
+        );
+        assert_eq!(
+            e(
+                &t(&[("/index.html", "I"), ("/a.css", "A"), ("/z/b.css", "b")]),
+                true
+            )
+            .as_deref(),
+            reload
+        );
+        assert_eq!(
+            e(
+                &t(&[
+                    ("/index.html", "i"),
+                    ("/a.css", "a"),
+                    ("/z/b.css", "b"),
+                    ("/c.css", "c")
+                ]),
+                true
+            )
+            .as_deref(),
+            reload
+        );
+        assert_eq!(
+            e(&t(&[("/index.html", "i"), ("/a.css", "a")]), true).as_deref(),
+            reload
+        );
+        assert_eq!(RELOAD_EVENT, "{\"type\":\"reload\"}");
+    }
+
+    #[test]
+    fn console_lines_levels_cleaning_location_stack() {
+        let l = |b: &str, all: bool| console_lines(b, all);
+        assert_eq!(
+            l("{\"level\":\"error\",\"message\":\"Uncaught TypeError: x\\nis undefined\",\"url\":\"http://h/app.js\",\"line\":3,\"col\":5}", false),
+            Some(vec!["browser error: Uncaught TypeError: x is undefined (http://h/app.js:3:5)".to_string()])
+        );
+        assert_eq!(
+            l(
+                "{\"level\":\"warn\",\"message\":\"w\",\"url\":\"http://h/\",\"line\":2}",
+                false
+            ),
+            Some(vec!["browser warn: w (http://h/:2)".to_string()])
+        );
+        assert_eq!(
+            l(
+                "{\"level\":\"warn\",\"message\":\"w\",\"url\":\"http://h/\",\"col\":2}",
+                false
+            ),
+            Some(vec!["browser warn: w (http://h/)".to_string()])
+        );
+        assert_eq!(
+            l(
+                "{\"level\":\"error\",\"message\":\"m\",\"line\":1.5,\"url\":\"u\"}",
+                false
+            ),
+            Some(vec!["browser error: m (u)".to_string()])
+        );
+        assert_eq!(
+            l("{\"level\":\"log\",\"message\":\"hi\"}", false),
+            Some(vec![])
+        );
+        assert_eq!(
+            l("{\"level\":\"info\",\"message\":\"hi\"}", true),
+            Some(vec!["browser info: hi".to_string()])
+        );
+        assert_eq!(
+            l("{\"level\":\"error\",\"message\":\"E: m\",\"stack\":\"E: m\\n    at f (a.js:1:2)\\n\\n    at g (b.js:3:4)\"}", false),
+            Some(vec![
+                "browser error: E: m".to_string(),
+                "    at f (a.js:1:2)".to_string(),
+                "    at g (b.js:3:4)".to_string()
+            ])
+        );
+        let long =
+            serde_json::json!({"level": "error", "message": "\u{1F600}".repeat(1200)}).to_string();
+        assert_eq!(
+            l(&long, false).unwrap()[0],
+            format!("browser error: {}...", "\u{1F600}".repeat(1000))
+        );
+        let stack: Vec<String> = (0..9).map(|i| format!("at f{i}")).collect();
+        let frames =
+            serde_json::json!({"level": "error", "message": "m", "stack": stack.join("\n")})
+                .to_string();
+        assert_eq!(l(&frames, false).unwrap().len(), 6);
+        for bad in [
+            "",
+            "x",
+            "[]",
+            "null",
+            "{\"level\":\"debug\",\"message\":\"m\"}",
+            "{\"message\":\"m\"}",
+        ] {
+            assert_eq!(l(bad, true), None, "{bad}");
+        }
+    }
+
+    #[test]
+    fn is_same_origin_post_rules() {
+        let o = |p: &[(&str, &str)]| is_same_origin_post(&headers(p));
+        assert!(o(&[
+            ("host", "127.0.0.1:8080"),
+            ("origin", "http://127.0.0.1:8080")
+        ]));
+        assert!(o(&[
+            ("host", "x.example"),
+            ("origin", "https://x.example"),
+            ("sec-fetch-site", "same-origin")
+        ]));
+        assert!(!o(&[
+            ("host", "127.0.0.1:8080"),
+            ("origin", "http://evil.example")
+        ]));
+        assert!(!o(&[("host", "127.0.0.1:8080")]));
+        assert!(!o(&[
+            ("host", "127.0.0.1:8080"),
+            ("origin", "http://127.0.0.1:8080"),
+            ("sec-fetch-site", "cross-site")
+        ]));
+        assert!(!o(&[("host", "127.0.0.1:8080"), ("origin", "null")]));
+    }
+
+    #[test]
+    fn console_endpoint_over_a_socket() {
+        let log = Arc::new(Mutex::new(Vec::<String>::new()));
+        let l2 = log.clone();
+        let opts = SiteServerOptions {
+            live_reload: Some(LiveReload::new()),
+            log: Some(Arc::new(move |m: &str| {
+                l2.lock().unwrap().push(m.to_string())
+            })),
+            ..Default::default()
+        };
+        let srv = listen(site(), opts, "127.0.0.1", 0).unwrap();
+        let plain = listen(site(), SiteServerOptions::default(), "127.0.0.1", 0).unwrap();
+        let post = |port: u16, body: &str, origin: Option<&str>| -> u16 {
+            let mut c = TcpStream::connect(("127.0.0.1", port)).unwrap();
+            let host = format!("127.0.0.1:{port}");
+            let o = origin
+                .map(|o| {
+                    format!(
+                        "origin: {}\r\n",
+                        o.replace("SELF", &format!("http://{host}"))
+                    )
+                })
+                .unwrap_or_default();
+            write!(
+                c,
+                "POST /__sitefile/console HTTP/1.1\r\nhost: {host}\r\n{o}content-type: text/plain\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                body.len()
+            )
+            .unwrap();
+            let mut buf = String::new();
+            let _ = c.read_to_string(&mut buf);
+            buf.split(' ').nth(1).unwrap_or("0").parse().unwrap_or(0)
+        };
+        let me = Some("SELF");
+        assert_eq!(
+            post(srv.port, "{\"level\":\"error\",\"message\":\"Uncaught Error: boom\",\"url\":\"http://127.0.0.1/app.js\",\"line\":1,\"col\":7}", me),
+            204
+        );
+        assert_eq!(
+            *log.lock().unwrap(),
+            vec!["browser error: Uncaught Error: boom (http://127.0.0.1/app.js:1:7)".to_string()]
+        );
+        assert_eq!(
+            post(
+                srv.port,
+                "{\"level\":\"error\",\"message\":\"x\"}",
+                Some("http://evil.example")
+            ),
+            403
+        );
+        assert_eq!(
+            post(srv.port, "{\"level\":\"error\",\"message\":\"x\"}", None),
+            403
+        );
+        assert_eq!(post(srv.port, "not json", me), 400);
+        let big = serde_json::json!({"level": "error", "message": "x".repeat(20000)}).to_string();
+        assert_eq!(post(srv.port, &big, me), 413);
+        assert_eq!(get(srv.port, "/__sitefile/console").status, 405);
+        assert_eq!(
+            post(plain.port, "{\"level\":\"error\",\"message\":\"x\"}", me),
+            405
+        );
+        log.lock().unwrap().clear();
+        for i in 0..CONSOLE_LIMIT + 5 {
+            post(
+                srv.port,
+                &format!("{{\"level\":\"warn\",\"message\":\"w{i}\"}}"),
+                me,
+            );
+        }
+        let got = log.lock().unwrap().clone();
+        assert_eq!(got.len(), CONSOLE_LIMIT as usize);
+        assert_eq!(
+            got.last().unwrap(),
+            "browser: more than 50 console messages in 10 s; dropping the rest"
+        );
+        srv.close();
+        plain.close();
+    }
+
+    #[test]
+    fn error_event_shape() {
+        let e = SitefileError::new(
+            E_SYNTAX,
+            "unknown instruction \"X\"",
+            Some(crate::error::SourceSpan::new("/c/Sitefile", 3, 1)),
+        );
+        assert_eq!(
+            error_event(&e),
+            "{\"type\":\"error\",\"code\":\"E_SYNTAX\",\"message\":\"unknown instruction \\\"X\\\"\",\"file\":\"/c/Sitefile\",\"line\":3,\"column\":1}"
+        );
+        assert_eq!(
+            error_event(&SitefileError::plain(E_NOT_FOUND, "no such file")),
+            "{\"type\":\"error\",\"code\":\"E_NOT_FOUND\",\"message\":\"no such file\"}"
+        );
+        assert_eq!(BUILDING_EVENT, "{\"type\":\"building\"}");
+        assert_eq!(OK_EVENT, "{\"type\":\"ok\"}");
+    }
+
+    #[test]
+    fn navigate_to_changed_names_the_one_changed_page() {
+        let t = |files: &[(&str, &str)]| {
+            Tree::from_files(
+                files
+                    .iter()
+                    .map(|(p, c)| (p.to_string(), make_file(c.as_bytes().to_vec(), "t", 0o644))),
+            )
+            .unwrap()
+        };
+        let base: Vec<(&str, &str)> = vec![
+            ("/index.html", "i"),
+            ("/posts/a/index.html", "a"),
+            ("/posts/b/index.html", "b"),
+            ("/x.html", "x"),
+            ("/s.css", "s"),
+            ("/app.js", "1"),
+        ];
+        let a = t(&base);
+        let with = |edits: &[(&'static str, &'static str)]| {
+            let mut v = base.clone();
+            for (p, c) in edits {
+                match v.iter_mut().find(|(q, _)| q == p) {
+                    Some(e) => e.1 = c,
+                    None => v.push((p, c)),
+                }
+            }
+            t(&v)
+        };
+        let e = |next: &Tree, nav: bool| reload_event_for(&a, next, true, nav);
+        assert_eq!(
+            e(&with(&[("/posts/a/index.html", "A")]), true).as_deref(),
+            Some("{\"type\":\"reload\",\"path\":\"/posts/a/\",\"morph\":true}")
+        );
+        assert_eq!(
+            e(&with(&[("/posts/a/index.html", "A")]), false).as_deref(),
+            Some("{\"type\":\"reload\",\"morph\":true}")
+        );
+        assert_eq!(
+            e(&with(&[("/x.html", "X"), ("/app.js", "2")]), true).as_deref(),
+            Some("{\"type\":\"reload\",\"path\":\"/x.html\"}")
+        );
+        assert_eq!(
+            e(
+                &with(&[("/index.html", "I"), ("/posts/a/index.html", "A")]),
+                true
+            )
+            .as_deref(),
+            Some("{\"type\":\"reload\",\"morph\":true}")
+        );
+        assert_eq!(
+            e(&with(&[("/app.js", "2")]), true).as_deref(),
+            Some(RELOAD_EVENT)
+        );
+        assert_eq!(
+            e(&with(&[("/s.css", "S")]), true).as_deref(),
+            Some("{\"type\":\"css\",\"paths\":[\"/s.css\"]}")
+        );
+        assert_eq!(
+            e(&with(&[("/new/index.html", "n")]), true).as_deref(),
+            Some("{\"type\":\"reload\",\"path\":\"/new/\"}")
+        );
+        assert_eq!(page_url_for("/index.html"), "/");
+        assert_eq!(page_url_for("/a b/index.html"), "/a%20b/");
+        assert_eq!(page_url_for("/caf\u{e9}.html"), "/caf%C3%A9.html");
+    }
+
+    #[test]
+    fn morph_marks_reloads_where_only_existing_html_changed() {
+        let t = |files: &[(&str, &str)]| {
+            Tree::from_files(
+                files
+                    .iter()
+                    .map(|(p, c)| (p.to_string(), make_file(c.as_bytes().to_vec(), "t", 0o644))),
+            )
+            .unwrap()
+        };
+        let base = [
+            ("/index.html", "i"),
+            ("/b.html", "b"),
+            ("/app.js", "1"),
+            ("/s.css", "s"),
+        ];
+        let a = t(&base);
+        let m = |edits: &[(&'static str, &'static str)]| {
+            let mut v: Vec<(&str, &str)> = base.to_vec();
+            for (p, c) in edits {
+                match v.iter_mut().find(|(q, _)| q == p) {
+                    Some(e) => e.1 = c,
+                    None => v.push((p, c)),
+                }
+            }
+            reload_event_for(&a, &t(&v), true, false)
+        };
+        let morph = Some("{\"type\":\"reload\",\"morph\":true}");
+        assert_eq!(m(&[("/index.html", "I")]).as_deref(), morph);
+        assert_eq!(
+            m(&[("/index.html", "I"), ("/b.html", "B")]).as_deref(),
+            morph
+        );
+        assert_eq!(
+            m(&[("/index.html", "I"), ("/app.js", "2")]).as_deref(),
+            Some(RELOAD_EVENT)
+        );
+        assert_eq!(
+            m(&[("/index.html", "I"), ("/s.css", "S")]).as_deref(),
+            Some(RELOAD_EVENT)
+        );
+        assert_eq!(m(&[("/c.html", "c")]).as_deref(), Some(RELOAD_EVENT));
+        let removed = t(&[("/index.html", "I"), ("/app.js", "1"), ("/s.css", "s")]);
+        assert_eq!(
+            reload_event_for(&a, &removed, true, false).as_deref(),
+            Some(RELOAD_EVENT)
+        );
+        let js = reload_client();
+        for needle in [
+            "scriptsOf(doc) !== scriptsOf(document)",
+            "document.activeElement",
+            "sessionStorage.setItem(scrollKey",
+            "options.reload !== \"morph\"",
+        ] {
+            assert!(js.contains(needle), "{needle}");
+        }
+    }
+
+    #[test]
+    fn is_navigation_mode_then_dest_then_accept() {
+        let n = |p: &[(&str, &str)]| is_navigation(&headers(p));
+        assert!(n(&[("sec-fetch-mode", "navigate")]));
+        assert!(!n(&[
+            ("sec-fetch-mode", "cors"),
+            ("sec-fetch-dest", "document"),
+            ("accept", "text/html")
+        ]));
+        assert!(!n(&[
+            ("sec-fetch-mode", "same-origin"),
+            ("accept", "text/html")
+        ]));
+        assert!(n(&[("sec-fetch-dest", "document")]));
+        assert!(n(&[("sec-fetch-dest", "iframe")]));
+        assert!(!n(&[("sec-fetch-dest", "empty"), ("accept", "text/html")]));
+        assert!(n(&[("accept", "Text/HTML,application/xhtml+xml")]));
+        assert!(!n(&[("accept", "*/*")]));
+        assert!(!n(&[]));
+    }
+
+    #[test]
+    fn csp_blocks_reload_directives() {
+        let c = csp_blocks_reload;
+        assert_eq!(c("script-src 'self'"), None);
+        assert_eq!(c("default-src 'self'"), None);
+        assert_eq!(
+            c("default-src 'none'; script-src 'self'"),
+            Some("connect-src")
+        );
+        assert_eq!(
+            c("default-src 'none'; script-src 'self'; connect-src 'self'"),
+            None
+        );
+        assert_eq!(c("script-src 'nonce-abc'"), Some("script-src"));
+        assert_eq!(c("script-src 'self' 'strict-dynamic'"), Some("script-src"));
+        assert_eq!(
+            c("script-src-elem 'none'; script-src 'self'"),
+            Some("script-src")
+        );
+        assert_eq!(c("SCRIPT-SRC 'SELF'; script-src 'none'"), None);
+        assert_eq!(c("script-src https:; connect-src *"), None);
+        assert_eq!(c("img-src 'none'"), None);
+        assert_eq!(
+            c("script-src 'self', script-src 'none'"),
+            Some("script-src")
+        );
+    }
+
+    #[test]
+    fn live_reload_serves_the_script_and_warns_about_a_blocking_csp() {
+        let warnings = Arc::new(Mutex::new(Vec::<String>::new()));
+        let w2 = warnings.clone();
+        let opts = SiteServerOptions {
+            live_reload: Some(LiveReload::new()),
+            warn: Some(Arc::new(move |m: &str| {
+                w2.lock().unwrap().push(m.to_string())
+            })),
+            ..Default::default()
+        };
+        let tree = Tree::from_files(
+            [
+                ("/index.html", "home"),
+                ("/a.html", "a"),
+                (
+                    "/_headers",
+                    "/*\n  Content-Security-Policy: script-src 'nonce-x'\n",
+                ),
+            ]
+            .iter()
+            .map(|(p, c)| (p.to_string(), make_file(c.as_bytes().to_vec(), "t", 0o644))),
+        )
+        .unwrap();
+        let none = HashMap::new();
+        let js = handle_request(&tree, &opts, "GET", RELOAD_SCRIPT_PATH, &none);
+        assert_eq!(js.status, 200);
+        assert_eq!(
+            js.body,
+            client_script(&LiveReloadOptions::default()).as_bytes()
+        );
+        assert_eq!(
+            js.header("content-type"),
+            Some("text/javascript; charset=utf-8")
+        );
+        assert_eq!(js.header("cache-control"), Some("no-cache"));
+        assert_eq!(
+            handle_request(
+                &tree,
+                &SiteServerOptions::default(),
+                "GET",
+                RELOAD_SCRIPT_PATH,
+                &none
+            )
+            .status,
+            404
+        );
+        let cors = headers(&[("sec-fetch-mode", "cors")]);
+        let r = handle_request(&tree, &opts, "GET", "/", &cors);
+        assert_eq!(r.body, b"home", "a fetch() of HTML is untouched");
+        assert!(
+            warnings.lock().unwrap().is_empty(),
+            "only navigations are checked"
+        );
+        handle_request(&tree, &opts, "GET", "/", &nav());
+        handle_request(&tree, &opts, "GET", "/a", &nav());
+        assert_eq!(*warnings.lock().unwrap(), vec![
+            "live reload: the Content-Security-Policy that _headers sets for /index.html does not allow scripts from 'self' (/__sitefile/reload.js), so open pages will not reload: script-src 'nonce-x'".to_string()
+        ]);
     }
 
     #[test]
@@ -1637,7 +2816,7 @@ mod tests {
             live_reload: Some(live.clone()),
             ..Default::default()
         };
-        let h = HashMap::new();
+        let h = nav();
         let tree = site();
         let r = handle_request(&tree, &opts, "GET", "/", &h);
         assert_eq!(
@@ -1650,7 +2829,7 @@ mod tests {
         );
         let etag = r.header("etag").unwrap().to_string();
         assert!(etag.ends_with("-live\""));
-        let mut inm = HashMap::new();
+        let mut inm = nav();
         inm.insert("if-none-match".to_string(), etag);
         assert_eq!(handle_request(&tree, &opts, "GET", "/", &inm).status, 304);
         assert_eq!(
@@ -1660,6 +2839,14 @@ mod tests {
         assert_eq!(
             handle_request(&tree, &opts, "HEAD", RELOAD_PATH, &h).header("content-type"),
             Some("text/event-stream")
+        );
+        let head = handle_request(&tree, &opts, "HEAD", RELOAD_PATH, &h);
+        assert_eq!(
+            (
+                head.header("cache-control"),
+                head.header("x-accel-buffering")
+            ),
+            (Some("no-cache, no-transform"), Some("no"))
         );
         // without --watch: no script, and the path is an ordinary (missing) file
         let plain = SiteServerOptions::default();
@@ -1690,6 +2877,11 @@ mod tests {
         };
         read_until(&mut c, &mut got, "retry: 1000\n\n");
         assert!(got.contains("content-type: text/event-stream"));
+        assert!(
+            got.contains("cache-control: no-cache, no-transform\r\n"),
+            "{got}"
+        );
+        assert!(got.contains("x-accel-buffering: no\r\n"), "{got}");
         for _ in 0..200 {
             if live.clients() == 1 {
                 break;
@@ -1704,9 +2896,26 @@ mod tests {
             .unwrap(),
         );
         live.reload();
-        read_until(&mut c, &mut got, "data: reload\n\n");
+        read_until(&mut c, &mut got, "data: {\"type\":\"reload\"}\n\n");
+        // events sent back to back all arrive, in order
+        live.send("{\"type\":\"css\",\"paths\":[\"/a.css\"]}");
+        live.reload();
+        read_until(
+            &mut c,
+            &mut got,
+            "data: {\"type\":\"css\",\"paths\":[\"/a.css\"]}\n\ndata: {\"type\":\"reload\"}\n\n",
+        );
         assert_eq!(
-            get(srv.port, "/").body,
+            req(
+                srv.port,
+                "/",
+                "GET",
+                &[
+                    ("sec-fetch-mode", "navigate"),
+                    ("sec-fetch-dest", "document")
+                ]
+            )
+            .body,
             format!("<h1>v2</h1>{RELOAD_SCRIPT}")
         );
         live.close();
@@ -1728,7 +2937,7 @@ mod tests {
             live_reload: Some(LiveReload::new()),
             ..Default::default()
         };
-        let h = HashMap::new();
+        let h = nav();
         let cache: RulesCache = Arc::new(Mutex::new(None));
         let one = mk(&[
             ("/index.html", "home"),

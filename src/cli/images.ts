@@ -10,6 +10,7 @@ import { MEDIA, siteLayerIndex } from '../oci.js';
 import { looksLikeImageId, parseLocalRef, refKey } from '../ref.js';
 import { shortId, Store, type ImageSummary } from '../store.js';
 import { encodeCar } from '../car.js';
+import { encodeManifest, manifestOf } from '../integrity.js';
 import { humanSize, relativeTime, requireArgs, str, table, usage, type Command } from './common.js';
 
 function split(key: string): [string, string] {
@@ -177,16 +178,17 @@ const prune: Command = {
 const save: Command = {
   name: 'save',
   summary: 'export an image to a directory or archive',
-  usage: 'save <ref|id> -o <out> [--format fmt] [--base-url url] [--force]',
+  usage: 'save <ref|id> -o <out> [--format fmt] [--base-url url] [--manifest file] [--force]',
   description:
     'Write an image\'s files to a directory, or to a zip, tar, tar.gz (tgz) or wbn archive, an IPFS CAR, a single-file\npage (html, mhtml), a WARC, or the image itself as\nan OCI archive (-o x.oci.tar) or OCI layout directory (--format oci). The format is chosen like "build -o":\nfrom --format, else the extension (.zip .tar .tar.gz .tgz .wbn .wbn.gz .oci.tar .car .mhtml .warc .warc.gz), else a directory; a wbn\nwritten to *.wbn.gz is gzipped.\nArchives are deterministic (set SOURCE_DATE_EPOCH to stamp them). A non-empty destination needs --force.',
   flags: [
     '-o, --out <path>     destination (required)',
     `    --format <fmt>   ${EXPORT_FORMATS.join(' | ')} (alias tar.gz)`,
     '    --base-url <url> https URL ending in "/" (wbn only; required for wbn)',
+    '    --manifest <file> also write a manifest of the files (see sitefile verify)',
     '    --force          replace a non-empty destination or an existing file',
   ],
-  options: { out: { type: 'string', short: 'o' }, format: { type: 'string' }, 'base-url': { type: 'string' }, force: { type: 'boolean' } },
+  options: { out: { type: 'string', short: 'o' }, format: { type: 'string' }, 'base-url': { type: 'string' }, manifest: { type: 'string' }, force: { type: 'boolean' } },
   async run(v, pos) {
     requireArgs(pos, 1, 1, 'an image reference');
     const out = str(v.out);
@@ -197,6 +199,12 @@ const save: Command = {
       if (!format) usage(`--format expects one of ${EXPORT_FORMATS.join(', ')} (or tar.gz)`);
     }
     format ??= formatFromExtension(out) ?? 'directory';
+    const manifest = str(v.manifest);
+    if (manifest === '') usage('--manifest expects a file path');
+    if (manifest !== undefined && format === 'directory') {
+      const rel = path.relative(path.resolve(out), path.resolve(manifest));
+      if (rel !== '' && !rel.startsWith('..') && !path.isAbsolute(rel)) usage(`--manifest '${manifest}' is inside the exported directory '${out}': write it elsewhere`);
+    }
     const store = await Store.open();
     const id = await store.resolve(pos[0] as string);
     // An empty scratch directory as the "context": the destination is then always
@@ -204,6 +212,9 @@ const save: Command = {
     const scratch = await fs.mkdtemp(path.join(os.tmpdir(), 'sitefile-save-'));
     try {
       const opts = { contextDir: scratch, ...(v.force ? { force: true } : {}) };
+      const writeManifest = async (): Promise<void> => {
+        if (manifest !== undefined) await exportFile(encodeManifest(manifestOf(await store.loadTree(id))), manifest, opts);
+      };
       if (format === 'oci') {
         // The stored image as-is (same digests): an OCI archive for *.tar, else a layout directory.
         const input = pos[0] as string;
@@ -216,6 +227,7 @@ const save: Command = {
           const w = await exportDirectory(layout, out, opts);
           process.stdout.write(`Saved ${shortId(id)} to ${shown(w.outDir)} (oci layout)\n`);
         }
+        await writeManifest();
         return 0;
       }
       const tree = await store.loadTree(id);
@@ -228,6 +240,7 @@ const save: Command = {
         const w = await exportFile(data, out, opts);
         process.stdout.write(`Saved ${shortId(id)} (${tree.size} files) to ${shown(w.outFile)} (${format === 'tgz' ? 'tar.gz' : format}, ${w.bytes} bytes${car ? `, root ${car.root}` : ''})\n`);
       }
+      await writeManifest();
     } finally {
       await fs.rm(scratch, { recursive: true, force: true });
     }

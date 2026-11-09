@@ -333,17 +333,19 @@ const SAVE_OPTS: &[OptSpec] = &[
     string_s("out", 'o'),
     string("format"),
     string("base-url"),
+    string("manifest"),
     flag("force"),
 ];
 pub const SAVE: Command = Command {
     name: "save",
     summary: "export an image to a directory or archive",
-    usage: "save <ref|id> -o <out> [--format fmt] [--base-url url] [--force]",
+    usage: "save <ref|id> -o <out> [--format fmt] [--base-url url] [--manifest file] [--force]",
     description: "Write an image's files to a directory, or to a zip, tar, tar.gz (tgz) or wbn archive, an IPFS CAR, a single-file\npage (html, mhtml), a WARC, or the image itself as\nan OCI archive (-o x.oci.tar) or OCI layout directory (--format oci). The format is chosen like \"build -o\":\nfrom --format, else the extension (.zip .tar .tar.gz .tgz .wbn .wbn.gz .oci.tar .car .mhtml .warc .warc.gz), else a directory; a wbn\nwritten to *.wbn.gz is gzipped.\nArchives are deterministic (set SOURCE_DATE_EPOCH to stamp them). A non-empty destination needs --force.",
     flags: &[
         "-o, --out <path>     destination (required)",
         "    --format <fmt>   directory | zip | tar | tgz | wbn | oci (alias tar.gz)",
         "    --base-url <url> https URL ending in \"/\" (wbn only; required for wbn)",
+        "    --manifest <file> also write a manifest of the files (see sitefile verify)",
         "    --force          replace a non-empty destination or an existing file",
     ],
     options: SAVE_OPTS,
@@ -376,6 +378,17 @@ fn run_save(v: &Parsed) -> Result<i32> {
     let format = format
         .or_else(|| format_from_extension(out_path))
         .unwrap_or(ExportFormat::Directory);
+    let manifest = v.str("manifest");
+    if manifest == Some("") {
+        return usage("--manifest expects a file path");
+    }
+    if let Some(m) = manifest {
+        if format == ExportFormat::Directory && super::is_inside_dir(m, out_path) {
+            return usage(format!(
+                "--manifest '{m}' is inside the exported directory '{out_path}': write it elsewhere"
+            ));
+        }
+    }
     let store = Store::open_default()?;
     let input = &v.positionals[0];
     let id = store.resolve(input)?;
@@ -391,6 +404,15 @@ fn run_save(v: &Parsed) -> Result<i32> {
     let scratch = Scratch(crate::export::exporter::resolve_path(&dir));
     let opts = ExportOptions::new(&scratch.0).force(v.flag("force"));
     let out_p = Path::new(out_path);
+    let write_manifest = || -> Result<()> {
+        if let Some(m) = manifest {
+            let data = crate::integrity::encode_manifest(&crate::integrity::manifest_of(
+                &store.load_tree(&id)?,
+            ));
+            export_file(&data, Path::new(m), &opts)?;
+        }
+        Ok(())
+    };
     if format == ExportFormat::Oci {
         // The stored image as-is (same digests): an OCI archive for *.tar, else a layout directory.
         let ref_name = if looks_like_image_id(input) {
@@ -422,6 +444,7 @@ fn run_save(v: &Parsed) -> Result<i32> {
                 shown(&w.out_dir)
             ));
         }
+        write_manifest()?;
         return Ok(0);
     }
     let tree = store.load_tree(&id)?;
@@ -470,6 +493,7 @@ fn run_save(v: &Parsed) -> Result<i32> {
             car.map(|(_, r)| format!(", root {r}")).unwrap_or_default()
         ));
     }
+    write_manifest()?;
     drop(scratch);
     Ok(0)
 }

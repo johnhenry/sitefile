@@ -26,7 +26,7 @@ export const KEYWORDS = {
     FEED: ['overwrite'],
     REDIRECT: ['overwrite'],
     HEADER: ['overwrite'],
-    FINGERPRINT: ['overwrite'],
+    FINGERPRINT: ['overwrite', 'no-cache-headers'],
     CHECKLINKS: ['warn', 'external'],
   },
   heredocInstructions: ['COPY', 'RENDER', 'TRANSFORM'],

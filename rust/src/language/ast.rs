@@ -461,12 +461,15 @@ pub enum Instruction {
         value: Vec<Operand>,
         overwrite: bool,
     },
-    /// `FINGERPRINT [--overwrite] <pattern>… [MANIFEST <dest>]`: rename matching files to `name.<hash>.ext`
-    /// and rewrite the HTML and CSS that reference them.
+    /// `FINGERPRINT [--overwrite] [--no-cache-headers] <pattern>… [MANIFEST <dest>] [INTEGRITY]`: rename
+    /// matching files to `name.<hash>.ext` and rewrite the HTML and CSS that reference them. `integrity`
+    /// adds SRI attributes; `no_cache_headers` turns off EXPORT's `Cache-Control` lines.
     Fingerprint {
         span: SourceSpan,
         patterns: Vec<Operand>,
         manifest: Option<Operand>,
+        integrity: bool,
+        no_cache_headers: bool,
         overwrite: bool,
     },
     /// `CHECKLINKS [--warn] [--external]`: report references in the stage's HTML and CSS that point at nothing.

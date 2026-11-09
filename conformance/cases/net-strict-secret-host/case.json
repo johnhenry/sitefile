@@ -1,0 +1,15 @@
+{
+  "network": true,
+  "steps": [
+    {
+      "args": ["build", "${CTX}", "-o", "${OUT}/dist", "--allow-private-network", "--network", "strict", "--allow-hosts", "127.0.0.1", "--secret", "id=tok,env=API_TOKEN", "--allow-secret-host", "tok=127.0.0.1"],
+      "env": { "API_TOKEN": "conformance-secret-7c1e" }
+    },
+    {
+      "args": ["build", "${CTX}", "-o", "${OUT}/refused", "--allow-private-network", "--network", "strict", "--allow-hosts", "127.0.0.1", "--secret", "id=tok,env=API_TOKEN", "--allow-secret-host", "tok=example.com", "--json"],
+      "env": { "API_TOKEN": "conformance-secret-7c1e" }
+    }
+  ],
+  "outputs": [["dist", "tree"]],
+  "stdout": true
+}

@@ -12,7 +12,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 const BIN: &str = env!("CARGO_BIN_EXE_sitefile");
-const RELOAD_SCRIPT: &str = "<script>new EventSource(\"/__sitefile/reload\").onmessage=function(){location.reload()}</script>";
+const RELOAD_SCRIPT: &str = "<script src=\"/__sitefile/reload.js\"></script>";
 
 extern "C" {
     fn kill(pid: i32, sig: i32) -> i32;
@@ -296,14 +296,29 @@ fn watch_usage_errors() {
     let (code, _, err) = run(&home, &["serve", "--build-arg", "A=1", "./x/"]);
     assert_eq!(code, 2);
     assert!(err.contains("--build-arg needs --watch"), "{err}");
+    let (code, _, err) = run(&home, &["serve", "--keep-service-workers", "./x/"]);
+    assert_eq!(code, 2);
+    assert!(
+        err.contains("--keep-service-workers needs --watch"),
+        "{err}"
+    );
 }
 
-/// GET `path`; returns (status, headers lowercased, body).
+/// GET `path` as a page navigation; returns (status, headers lowercased, body).
 fn get(port: u16, path: &str) -> (u16, String, String) {
+    get_with(
+        port,
+        path,
+        "sec-fetch-mode: navigate\r\nsec-fetch-dest: document\r\n",
+    )
+}
+
+/// GET `path` with `extra` header lines (each ending in CRLF).
+fn get_with(port: u16, path: &str, extra: &str) -> (u16, String, String) {
     let mut c = TcpStream::connect(("127.0.0.1", port)).unwrap();
     write!(
         c,
-        "GET {path} HTTP/1.1\r\nhost: x\r\nconnection: close\r\n\r\n"
+        "GET {path} HTTP/1.1\r\nhost: x\r\n{extra}connection: close\r\n\r\n"
     )
     .unwrap();
     let mut buf = String::new();
@@ -387,12 +402,32 @@ fn serve_watch_live_reloads_and_keeps_serving_on_failure() {
     assert!(head.contains(&format!("content-length: {}", body.len())));
     assert!(head.contains("-live\""), "{head}");
     assert_eq!(get(port, "/style.css").2, "body{margin:0}");
+    assert_eq!(
+        get_with(port, "/", "sec-fetch-mode: cors\r\naccept: */*\r\n").2,
+        "<html><body><h1>v1</h1></body></html>",
+        "a fetch() of HTML is untouched"
+    );
+    let (status, head, js) = get_with(port, "/__sitefile/reload.js", "");
+    assert_eq!(status, 200);
+    assert!(
+        head.contains("content-type: text/javascript; charset=utf-8"),
+        "{head}"
+    );
+    assert!(js.contains("new EventSource("), "{js}");
 
     let mut ev = Events::open(port);
     assert_eq!(ev.next(), "retry: 1000");
     write(site.join("public/index.html"), "<h1>v2</h1>");
-    assert_eq!(ev.next(), "data: reload");
+    assert_eq!(ev.next(), "data: {\"type\":\"building\"}");
+    assert_eq!(ev.next(), "data: {\"type\":\"reload\",\"morph\":true}");
     assert_eq!(get(port, "/").2, format!("<h1>v2</h1>{RELOAD_SCRIPT}"));
+    // only a stylesheet of the build changed: pages swap it in place
+    write(site.join("public/style.css"), "body{margin:1px}");
+    assert_eq!(ev.next(), "data: {\"type\":\"building\"}");
+    assert_eq!(
+        ev.next(),
+        "data: {\"type\":\"css\",\"paths\":[\"/style.css\"]}"
+    );
 
     write(
         site.join("Sitefile"),
@@ -406,8 +441,115 @@ fn serve_watch_live_reloads_and_keeps_serving_on_failure() {
         "serve --watch writes no export"
     );
     assert!(
-        !w.stdout().contains("/__sitefile/reload"),
-        "the event stream is not access-logged"
+        !w.stdout().contains("/__sitefile/"),
+        "the event stream and the script are not access-logged"
+    );
+    drop(ev);
+    assert_eq!(w.stop(), 0);
+}
+
+/// The port from a `Serving ... at http://127.0.0.1:PORT/` line.
+fn port_of(stdout: &str) -> u16 {
+    let at =
+        stdout.find("at http://127.0.0.1:").expect("Serving line") + "at http://127.0.0.1:".len();
+    stdout[at..].split('/').next().unwrap().parse().unwrap()
+}
+
+#[test]
+fn serve_watch_plain_directory_is_reread_and_swaps_css() {
+    let t = Tmp::new();
+    let home = t.0.join("home");
+    let dir = t.0.join("plain");
+    fs::create_dir_all(&dir).unwrap();
+    write(
+        dir.join("index.html"),
+        "<link rel=\"stylesheet\" href=\"/s.css\"><h1>p1</h1>",
+    );
+    write(dir.join("s.css"), "a{}");
+    write(dir.join(".env"), "SECRET=1");
+    let w = Proc::start(&home, &["serve", "--watch", s(&dir)]);
+    w.wait_lines("Watching ", 1);
+    let stdout = w.stdout();
+    assert!(stdout.starts_with("Read 2 files (sha256:"), "{stdout}");
+    assert!(stdout.contains(" (2 files) at "), "{stdout}");
+    let port = port_of(&stdout);
+    assert_eq!(
+        get(port, "/").2,
+        format!("<link rel=\"stylesheet\" href=\"/s.css\"><h1>p1</h1>{RELOAD_SCRIPT}")
+    );
+    assert_eq!(get(port, "/.env").0, 404);
+    let mut ev = Events::open(port);
+    assert_eq!(ev.next(), "retry: 1000");
+    write(dir.join("s.css"), "a{color:red}");
+    assert_eq!(ev.next(), "data: {\"type\":\"building\"}");
+    assert_eq!(ev.next(), "data: {\"type\":\"css\",\"paths\":[\"/s.css\"]}");
+    write(dir.join("index.html"), "<h1>p2</h1>");
+    assert_eq!(ev.next(), "data: {\"type\":\"building\"}");
+    assert_eq!(ev.next(), "data: {\"type\":\"reload\",\"morph\":true}");
+    w.wait_lines("Change detected, re-reading", 2);
+    assert_eq!(get(port, "/").2, format!("<h1>p2</h1>{RELOAD_SCRIPT}"));
+    let mut names: Vec<String> = fs::read_dir(&dir)
+        .unwrap()
+        .map(|e| e.unwrap().file_name().into_string().unwrap())
+        .collect();
+    names.sort();
+    assert_eq!(names, [".env", "index.html", "s.css"]);
+    drop(ev);
+    assert_eq!(w.stop(), 0);
+}
+
+#[test]
+fn serve_watch_no_css_inject_reloads() {
+    let t = Tmp::new();
+    let home = t.0.join("home");
+    let site = make_site(&t, &[("public/index.html", "<h1>x</h1>")], DEFAULT_SITEFILE);
+    let w = Proc::start(&home, &["serve", "--watch", "--no-css-inject", s(&site)]);
+    w.wait_lines("Watching ", 1);
+    let port = port_of(&w.stdout());
+    assert!(get(port, "/__sitefile/reload.js")
+        .2
+        .ends_with("\"cssInject\":false,\"console\":false,\"overlay\":true,\"navigateToChanged\":false,\"reload\":\"morph\"});\n"));
+    let mut ev = Events::open(port);
+    assert_eq!(ev.next(), "retry: 1000");
+    write(site.join("public/style.css"), "body{margin:3px}");
+    assert_eq!(ev.next(), "data: {\"type\":\"building\"}");
+    assert_eq!(ev.next(), "data: {\"type\":\"reload\"}");
+    drop(ev);
+    assert_eq!(w.stop(), 0);
+}
+
+#[test]
+fn serve_watch_navigate_to_changed_names_the_edited_post() {
+    let t = Tmp::new();
+    let home = t.0.join("home");
+    let site = make_site(
+        &t,
+        &[
+            ("posts/2026-01-01-first.md", "# First\n\nOne.\n"),
+            ("posts/2026-01-02-second.md", "# Second\n\nTwo.\n"),
+            ("templates/post.html", "<main>${post.content}</main>"),
+        ],
+        "FROM scratch\nIMPORT posts FROM ./posts AS markdown\nRENDER --escape=html ./templates/post.html TO /posts/${post.slug}/index.html FOR post IN posts\nEXPORT /\n",
+    );
+    let w = Proc::start(
+        &home,
+        &["serve", "--watch", "--navigate-to-changed", s(&site)],
+    );
+    w.wait_lines("Watching ", 1);
+    let port = port_of(&w.stdout());
+    assert!(get(port, "/__sitefile/reload.js")
+        .2
+        .ends_with("\"navigateToChanged\":true,\"reload\":\"morph\"});\n"));
+    let mut ev = Events::open(port);
+    assert_eq!(ev.next(), "retry: 1000");
+    write(
+        site.join("posts/2026-01-02-second.md"),
+        "# Second\n\nTwo, edited.\n",
+    );
+    assert_eq!(ev.next(), "data: {\"type\":\"building\"}");
+    assert_eq!(
+        ev.next(),
+        "data: {\"type\":\"reload\",\"path\":\"/posts/second/\",\"morph\":true}"
     );
     drop(ev);
     assert_eq!(w.stop(), 0);
@@ -424,6 +566,42 @@ fn build_watch_a_failing_first_build_keeps_watching() {
     write(site.join("Sitefile"), DEFAULT_SITEFILE);
     w.wait_lines("Exported 3 files", 1);
     assert_eq!(w.stop(), 0);
+}
+
+#[test]
+fn build_watch_poll_interval_sees_changes_and_poll_needs_watch() {
+    let t = Tmp::new();
+    let home = t.0.join("home");
+    let site = make_site(&t, &[], DEFAULT_SITEFILE);
+    let w = Proc::start(
+        &home,
+        &["build", "--watch", "--poll-interval", "50", s(&site)],
+    );
+    w.wait_lines("Watching ", 1);
+    write(site.join("public/style.css"), "body{margin:2px}");
+    w.wait_lines("Exported ", 2);
+    assert_eq!(
+        fs::read_to_string(site.join("dist/style.css")).unwrap(),
+        "body{margin:2px}"
+    );
+    assert_eq!(w.stop(), 0);
+    let (code, _, err) = run(&home, &["build", "--poll", s(&site)]);
+    assert_eq!(code, 2);
+    assert!(err.contains("--poll needs --watch"), "{err}");
+    let (code, _, err) = run(
+        &home,
+        &["build", "--watch", "--poll-interval", "soon", s(&site)],
+    );
+    assert_eq!(code, 2);
+    assert!(
+        err.contains(
+            "--poll-interval expects a whole number of milliseconds (10 or more), got 'soon'"
+        ),
+        "{err}"
+    );
+    let (code, _, err) = run(&home, &["serve", "--poll", "./x/"]);
+    assert_eq!(code, 2);
+    assert!(err.contains("--poll needs --watch"), "{err}");
 }
 
 #[test]

@@ -68,6 +68,32 @@ export async function extractArchive(
   return Tree.fromFiles(files);
 }
 
+/**
+ * OS metadata that archivers and file managers add next to real files: macOS
+ * resource forks (`__MACOSX/`, AppleDouble `._name`), Finder's `.DS_Store` and
+ * custom folder `Icon\r`, and Windows' `Thumbs.db` and `desktop.ini`
+ * (case-insensitive, as Windows writes them).
+ */
+export function isOsMetadata(path: string): boolean {
+  const segs = path.split('/');
+  if (segs.includes('__MACOSX')) return true;
+  const base = segs[segs.length - 1] ?? '';
+  const lower = base.toLowerCase();
+  return base.startsWith('._') || base === '.DS_Store' || base === 'Icon\r' || lower === 'thumbs.db' || lower === 'desktop.ini';
+}
+
+/** `tree` without its OS metadata files ({@link isOsMetadata}), and how many were dropped. */
+export function withoutOsMetadata(tree: Tree): { tree: Tree; skipped: number } {
+  const kept = tree.entries().filter(([p]) => !isOsMetadata(p));
+  const skipped = tree.size - kept.length;
+  return { tree: skipped === 0 ? tree : Tree.fromFiles(kept), skipped };
+}
+
+/** The warning for {@link withoutOsMetadata} dropping `skipped` files of `what`. */
+export function osMetadataWarning(what: string, skipped: number): string {
+  return `${what}: skipped ${skipped} OS metadata ${skipped === 1 ? 'file' : 'files'} (__MACOSX, ._*, .DS_Store, Thumbs.db, desktop.ini, Icon\\r); --keep-os-metadata keeps them`;
+}
+
 const isGzip = (b: Uint8Array): boolean => b.length > 2 && b[0] === 0x1f && b[1] === 0x8b;
 const isZip = (b: Uint8Array): boolean =>
   b.length >= 4 && b[0] === 0x50 && b[1] === 0x4b && ((b[2] === 3 && b[3] === 4) || (b[2] === 5 && b[3] === 6));

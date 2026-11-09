@@ -60,6 +60,15 @@ pub fn report(e: &SitefileError) -> i32 {
     1
 }
 
+/// [`report`], and with `--json` (`json`) also the error as JSON on stdout
+/// (`{ "error": { code, message, span, needs } }`; not for usage errors).
+pub fn report_json(e: &SitefileError, json: bool) -> i32 {
+    if json && e.code != ErrorCode::E_USAGE {
+        out(&format!("{}\n", pretty_json(&e.to_json())));
+    }
+    report(e)
+}
+
 /// Parse `args` for `command` and run it, mapping SitefileError to the CLI exit codes.
 pub fn run_command(command: &Command, args: &[String]) -> i32 {
     let mut options: Vec<OptSpec> = command.options.to_vec();
@@ -74,7 +83,8 @@ pub fn run_command(command: &Command, args: &[String]) -> i32 {
     }
     match (command.run)(&parsed) {
         Ok(code) => code,
-        Err(e) => report(&e),
+        // With --json, the failure is also machine-readable on stdout (code, span, needs).
+        Err(e) => report_json(&e, parsed.flag("json")),
     }
 }
 

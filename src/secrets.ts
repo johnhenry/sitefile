@@ -1,5 +1,6 @@
 import { readFile } from 'node:fs/promises';
 import { SitefileError, isSitefileError } from './errors.js';
+import { checkSecretHosts, type NetworkSettings } from './resources/network.js';
 
 /**
  * Build secrets (issue #85), modelled on Docker's `--secret id=…,env=…|src=…`: values that remote
@@ -83,10 +84,15 @@ export function redactError(e: unknown, secrets: Secrets | undefined): unknown {
   return detail === e.detail ? e : new SitefileError(e.code, detail, e.span, e.needs ? { needs: e.needs } : undefined);
 }
 
-/** The request headers of an import's SECRET clauses; a secret that was not given is E_SECRET. */
+/**
+ * The request headers of an import's SECRET clauses; a secret that was not given is E_SECRET. With
+ * `target` (the origin they are about to be sent to, and the network settings), strict network mode
+ * also requires an `--allow-secret-host` rule for each secret (E_HOST_BLOCKED, see checkSecretHosts).
+ */
 export function secretHeaders(
   spec: { readonly name: string; readonly secrets?: readonly { readonly id: string; readonly header: string; readonly bearer: boolean }[]; readonly span: import('./errors.js').SourceSpan },
   secrets: Secrets | undefined,
+  target?: { readonly url: string; readonly network: NetworkSettings | undefined },
 ): Record<string, string> | undefined {
   if (!spec.secrets?.length) return undefined;
   const headers: Record<string, string> = {};
@@ -97,5 +103,6 @@ export function secretHeaders(
     }
     headers[s.header.toLowerCase()] = s.bearer ? `Bearer ${v}` : v;
   }
+  if (target) checkSecretHosts(spec.name, [...new Set(spec.secrets.map((s) => s.id))], target.url, target.network, spec.span);
   return headers;
 }

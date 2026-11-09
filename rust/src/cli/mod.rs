@@ -7,7 +7,9 @@ pub mod bake;
 pub mod cache;
 pub mod common;
 pub mod git_context;
+pub mod hosts;
 pub mod images;
+pub mod integrity;
 pub mod network;
 pub mod outdated;
 pub mod registry;
@@ -31,7 +33,8 @@ use crate::secrets::{load_secrets, process_env};
 use crate::store::short_id;
 use args::{flag, flag_s, parse, string, string_s, strings, strings_s, OptSpec};
 use common::{
-    err, is_safe_integer, js_to_number, out, pretty_json, report, run_command, usage_error, Command,
+    err, is_safe_integer, js_to_number, out, pretty_json, report, report_json, run_command,
+    usage_error, Command,
 };
 use serde_json::json;
 use std::sync::Arc;
@@ -51,6 +54,14 @@ Images (local store: $SITEFILE_HOME or ~/.sitefile):
   sitefile push <registry/name[:tag]>              push a (tagged) image to an OCI registry
   sitefile pull <[registry/]name[:tag][@digest]>   pull an image (a bare name means Docker Hub)
 
+Integrity:
+  sitefile build [context] --manifest m.json       also write a manifest: every file's size and SHA-256,
+                                                   and their Merkle root (save --manifest too)
+  sitefile verify <dir|archive|ref> --manifest m.json   check a deployed or extracted copy: missing,
+                                                   changed and extra files (exit 1 on any)
+  sitefile diff <a> <b> [--json]                   files added, removed and changed between two images,
+                                                   directories or archives, and _redirects/_headers rules
+
 Variants:
   sitefile bake [targets...] [-f file] [--print]   build several targets (matrix, groups) from
                                                    sitefile.bake.yaml; --print shows the plan
@@ -62,6 +73,10 @@ Offline builds:
 Pins:
   sitefile outdated [context] [--json]             compare remote imports and the BASE image with
                                                    their pins (never changes anything)
+
+Network:
+  sitefile hosts [context] [--json]                list the hosts a build would contact and whether
+                                                   --allow-hosts/--network strict allow them (no fetch)
 
 Build cache (TRANSFORM results: $SITEFILE_HOME/cache/transform):
   sitefile cache info [--json]                     location, entries, size
@@ -137,6 +152,10 @@ Options:
                                a build secret for IMPORT ... SECRET <id> AS HEADER <Name> | AS BEARER
                                (repeatable); sent only to that import's origin, never recorded
       --plugin-timeout <ms>    per-call time limit for TRANSFORM plugins and tools (default 60000)
+      --plugin-memory <MiB>    memory limit for each plugin: a JavaScript plugin's heap, a wasm
+                               plugin's linear memory (default 1024)
+      --node <path>            the Node binary JavaScript plugins run on (absolute path; default
+                               $SITEFILE_NODE, else node on PATH); must be >= 26
       --allow-exec <name[=path]> allow a TOOL (external program) to run, resolved on PATH or at
                                the absolute path (repeatable); programs run with your privileges
       --allow-plugin <name>    allow a JavaScript PLUGIN to run (repeatable; wasm plugins need no flag)
@@ -149,6 +168,8 @@ Options:
                                registry cache (build only, once); registry problems only warn
       --build-arg-file <path>  read ARGs from a .json, .yaml/.yml or .env file (repeatable;
                                later files win, --build-arg wins over files)
+      --manifest <file>        also write a manifest of the exported files (build only): path, size and
+                               SHA-256 of each, and their Merkle root; check copies with 'sitefile verify'
       --force                  replace a non-empty --out outside the context
       --frozen-lockfile        fail instead of changing Sitefile.lock
       --update-lock            re-record unpinned URLs whose content changed
@@ -161,13 +182,19 @@ Options:
       --allow-http             permit plain http:// imports
       --allow-private-network  permit loopback/private network addresses
       --allow-hardlinks        permit hard-linked files in the context (you assert they are safe)
+      --keep-os-metadata       keep __MACOSX, ._*, .DS_Store, Thumbs.db and desktop.ini in archives
+                               imported AS tree (default: skipped with a warning)
       --max-download-bytes <n> per-resource size limit (default {})
       --timeout <ms>           per-resource fetch timeout (default {})
 {network}
-      --json                   machine-readable output (validate, inspect, graph, why)
+      --json                   machine-readable output (validate, inspect, graph, why); with any
+                               command, a failure is also printed on stdout as JSON (code, span, needs)
       --dot                    Graphviz DOT output (graph only)
       --watch                  build, then rebuild when the context, the Sitefile or a
                                --build-arg-file changes (build only; Ctrl-C stops)
+      --poll                   --watch: poll for changes (every 1000 ms) instead of file system
+                               events (network shares, Docker bind mounts, WSL)
+      --poll-interval <ms>     --watch: poll every <ms> milliseconds (implies --poll)
       --profile <file>         write a timing trace of the build (Chrome trace event JSON:
                                chrome://tracing, ui.perfetto.dev); --watch rewrites it per build
   -h, --help                   show this help
@@ -204,6 +231,8 @@ const BUILD_OPTS: &[OptSpec] = &[
     strings("build-arg-file"),
     strings("secret"),
     string("plugin-timeout"),
+    string("plugin-memory"),
+    string("node"),
     strings("allow-exec"),
     strings("allow-plugin"),
     flag("allow-plugins"),
@@ -220,18 +249,24 @@ const BUILD_OPTS: &[OptSpec] = &[
     flag("allow-http"),
     flag("allow-private-network"),
     flag("allow-hardlinks"),
+    flag("keep-os-metadata"),
     string("max-download-bytes"),
     string("timeout"),
     string("proxy"),
     strings("no-proxy"),
     strings("allow-hosts"),
     strings("deny-hosts"),
+    string("network"),
+    strings("allow-secret-host"),
     string("connect-timeout"),
     string("read-timeout"),
     flag("json"),
     flag("dot"),
     flag("watch"),
+    flag("poll"),
+    string("poll-interval"),
     string("profile"),
+    string("manifest"),
     flag_s("help", 'h'),
     flag_s("version", 'v'),
 ];
@@ -249,7 +284,10 @@ const TOP: &[&Command] = &[
     &registry::PULL,
     &vendor::VENDOR,
     &outdated::OUTDATED,
+    &hosts::HOSTS,
     &bake::BAKE,
+    &integrity::VERIFY,
+    &integrity::DIFF,
 ];
 
 struct Group {
@@ -342,6 +380,29 @@ fn run_extra_command(argv: &[String]) -> i32 {
 }
 
 // ------------------------------------------------------------ build / validate / inspect
+
+/// `--node`, else `$SITEFILE_NODE` (ignored when empty): an absolute path.
+fn plugin_node(flag: Option<&str>) -> Result<Option<std::path::PathBuf>> {
+    let (value, from) = match flag {
+        Some(f) => (Some(f.to_string()), "--node"),
+        None => (
+            std::env::var("SITEFILE_NODE")
+                .ok()
+                .filter(|v| !v.is_empty()),
+            "SITEFILE_NODE",
+        ),
+    };
+    let Some(value) = value else {
+        return Ok(None);
+    };
+    if !std::path::Path::new(&value).is_absolute() {
+        return Err(SitefileError::plain(
+            ErrorCode::E_USAGE,
+            format!("{from} expects an absolute path to a Node binary, got '{value}'"),
+        ));
+    }
+    Ok(Some(std::path::PathBuf::from(value)))
+}
 
 fn positive_int(raw: &str, flag: &str) -> Result<u64> {
     let n = js_to_number(raw);
@@ -465,6 +526,16 @@ fn run_main(argv: &[String]) -> i32 {
             return usage_error("--cache-to can be given only once");
         }
     }
+    if !o.flag("watch") && (o.flag("poll") || o.has("poll-interval")) {
+        return usage_error(&format!(
+            "--{} needs --watch",
+            if o.has("poll-interval") {
+                "poll-interval"
+            } else {
+                "poll"
+            }
+        ));
+    }
     if o.flag("watch") {
         if command != "build" {
             return usage_error(&format!(
@@ -476,10 +547,16 @@ fn run_main(argv: &[String]) -> i32 {
         }
         servers::catch_signals();
         let arg_files = o.strs("build-arg-file");
+        let poll = match crate::watch::poll_option(o.flag("poll"), o.str("poll-interval")) {
+            Ok(p) => p,
+            Err(e) => return report(&e),
+        };
         let opts = crate::watch::WatchOptions {
             context: &context,
             sitefile: o.str("file").filter(|s| !s.is_empty()),
             arg_files: &arg_files,
+            poll,
+            plain: false,
         };
         if o.str("profile") == Some("") {
             return usage_error("--profile expects a file path");
@@ -532,7 +609,8 @@ fn run_profiled(
         Ok(code) => code,
         Err(e) => {
             failed = true;
-            report(&e)
+            // With --json, the failure is also machine-readable on stdout (code, span, needs).
+            report_json(&e, o.flag("json"))
         }
     };
     // Keep $SITEFILE_HOME under $SITEFILE_CACHE_MAX (never fails the command).
@@ -627,6 +705,16 @@ fn run_build_command(
     profiler: Option<Arc<Profiler>>,
     memo: Option<crate::memo::SharedMemo>,
 ) -> Result<i32> {
+    let manifest = o.str("manifest");
+    if manifest.is_some() && command != "build" {
+        return Ok(usage_error("--manifest is only for build"));
+    }
+    if manifest == Some("") {
+        return Ok(usage_error("--manifest expects a file path"));
+    }
+    if let Some(m) = manifest {
+        wrote.push(m.to_string());
+    }
     let network = network::network_option(o)?;
     let mut fetch_policy = crate::resources::types::DEFAULT_FETCH_POLICY;
     fetch_policy.network = network;
@@ -761,6 +849,10 @@ fn run_build_command(
         options.plugin_policy.timeout_ms = ms;
         options.tool_policy.timeout_ms = ms;
     }
+    if let Some(m) = o.str("plugin-memory").filter(|s| !s.is_empty()) {
+        options.plugin_policy.max_memory_mib = positive_int(m, "--plugin-memory")? as usize;
+    }
+    options.node = plugin_node(o.str("node"))?;
     options.allow_exec = o.strs("allow-exec");
     options.allow_plugin = o.strs("allow-plugin");
     options.allow_all_plugins = o.flag("allow-plugins");
@@ -774,6 +866,7 @@ fn run_build_command(
     let notice: Callback = Arc::new(|m: &str| err(&format!("{m}\n")));
     options.on_notice = Some(notice);
     options.allow_hardlinks = o.flag("allow-hardlinks");
+    options.keep_os_metadata = o.flag("keep-os-metadata");
     options.platform = o.str("platform").map(str::to_string);
     options.base_image = o.str("base").map(str::to_string);
     let tags = o.strs("tag");
@@ -864,7 +957,11 @@ fn run_build_command(
             };
             if !tags.is_empty() && out_flag.is_none() {
                 // -t without -o: store the image only; nothing is written to the context.
-                store_build_as_image(&build(&options)?, &tags, &info, &options)?;
+                let built = build(&options)?;
+                if let Some(m) = manifest {
+                    write_manifest(&built.output, m, context, o.flag("force"))?;
+                }
+                store_build_as_image(&built, &tags, &info, &options)?;
                 push_cache();
                 return Ok(0);
             }
@@ -883,6 +980,17 @@ fn run_build_command(
                 force: o.flag("force"),
                 attest,
             };
+            if let Some(m) = manifest {
+                let format = match format_override.or(sitefile_format) {
+                    Some(f) => f,
+                    None => plan_build(&options)?.export_format,
+                };
+                if format == ExportFormat::Directory && is_inside_dir(m, &out_dir) {
+                    return Ok(usage_error(&format!(
+                        "--manifest '{m}' is inside the exported directory '{out_dir}': write it elsewhere"
+                    )));
+                }
+            }
             let r = build_to_directory(&options, &out_dir, &target)?;
             let cwd = std::env::current_dir().unwrap_or_default();
             let rel = relative_path(&cwd, &r.out_path);
@@ -914,6 +1022,9 @@ fn run_build_command(
                 ),
             };
             out(&line);
+            if let Some(m) = manifest {
+                write_manifest(&r.result.output, m, context, o.flag("force"))?;
+            }
             // A Git context's lockfile lives in the temporary checkout: it is used, never written back.
             if r.result.lockfile_written && fetched.is_none() {
                 out("Updated Sitefile.lock\n");
@@ -1018,6 +1129,26 @@ fn run_build_command(
 }
 
 /// Entry point; returns the process exit code (0 ok, 1 build error, 2 usage, 70 internal error).
+/// True when `file` would be written inside the directory `dir` (lexically, from the cwd).
+pub fn is_inside_dir(file: &str, dir: &str) -> bool {
+    let rel = relative_path(
+        &crate::export::exporter::resolve_path(std::path::Path::new(dir)),
+        &crate::export::exporter::resolve_path(std::path::Path::new(file)),
+    );
+    !rel.is_empty() && !rel.starts_with("..") && !rel.starts_with('/')
+}
+
+/// `--manifest`: the exported files' manifest, written with the export's destination rules (and --force).
+fn write_manifest(tree: &crate::tree::Tree, file: &str, context: &str, force: bool) -> Result<()> {
+    let data = crate::integrity::encode_manifest(&crate::integrity::manifest_of(tree));
+    crate::export::exporter::export_file(
+        &data,
+        std::path::Path::new(file),
+        &crate::export::exporter::ExportOptions::new(context).force(force),
+    )?;
+    Ok(())
+}
+
 pub fn main(args: Vec<String>) -> i32 {
     if args.first().map(String::as_str) == Some("__serve-worker") {
         return servers::serve_worker(args.get(1).map(String::as_str).unwrap_or(""));

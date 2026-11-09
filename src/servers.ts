@@ -6,7 +6,7 @@ import path from 'node:path';
 import { sha256 } from './digest.js';
 import { SitefileError } from './errors.js';
 import { blobPathOf, decodeIndex, extractImageFiles, MEDIA, parseConfig, parseManifest, siteLayerIndex } from './oci.js';
-import { extractArchive } from './resources/archive.js';
+import { extractArchive, osMetadataWarning, withoutOsMetadata } from './resources/archive.js';
 import { LocalContext } from './resources/local.js';
 import { DEFAULT_ARCHIVE_LIMITS, type ArchiveLimits } from './resources/types.js';
 import { Store } from './store.js';
@@ -34,6 +34,8 @@ export interface ServerState {
     /** zip, tar, tar.gz/tgz, a Web Bundle or an OCI image archive; read again on every start, as a directory is. */
     | { readonly kind: 'archive'; readonly path: string };
   readonly spa: boolean;
+  /** `--keep-os-metadata`: serve a directory's or archive's OS metadata files too (absent: false). */
+  readonly keepOsMetadata?: boolean;
   /** The requested bind address (port 0 = pick a free port). */
   readonly bind: { readonly host: string; readonly port: number };
   readonly host: string;
@@ -174,21 +176,48 @@ function visible(tree: Tree): Tree {
   return Tree.fromFiles(tree.entries().filter(([p]) => p.split('/').every((seg) => !seg.startsWith('.') || seg === '' || seg === '.well-known')));
 }
 
-/** Load a directory into a Tree through the sandboxed local reader; hidden files (except .well-known) are not served. */
-export async function loadDirectoryTree(dir: string): Promise<Tree> {
+/** How a directory or archive is read for serving. */
+export interface ServedTreeOptions {
+  /** Serve OS metadata files (`__MACOSX/`, `._*`, `Thumbs.db`, `desktop.ini`, ...) too; default false. */
+  readonly keepOsMetadata?: boolean;
+  /** Told how many OS metadata files were skipped. */
+  readonly warn?: (message: string) => void;
+}
+
+/** `tree` as served: without OS metadata (unless kept; with a warning naming `origin`) and hidden files except `.well-known`. */
+function served(tree: Tree, origin: string, options: ServedTreeOptions): Tree {
+  if (!options.keepOsMetadata) {
+    const r = withoutOsMetadata(tree);
+    if (r.skipped > 0) options.warn?.(osMetadataWarning(origin, r.skipped));
+    tree = r.tree;
+  }
+  return visible(tree);
+}
+
+/**
+ * Load a directory into a Tree through the sandboxed local reader; hidden files (except .well-known)
+ * and OS metadata files are not served.
+ */
+export async function loadDirectoryTree(dir: string, options: ServedTreeOptions = {}): Promise<Tree> {
   const ctx = await LocalContext.open(dir, { sitefileignore: false });
   const { tree } = await ctx.readTree('', 'serve');
-  return visible(tree);
+  return served(tree, dir, options);
 }
 
 /**
  * Load an archive file into a Tree. The format comes from the bytes, never the name: zip, tar, tar.gz,
  * a Web Bundle, or an OCI image archive (a tar holding an OCI layout, as `build -o x.oci.tar` and `save`
  * write it). A zip, tar or Web Bundle is extracted with `limits` (unsafe entries are refused) and served
- * like a directory, without hidden files except `.well-known`; an OCI archive serves its first image's
- * files, like that image from the store, after checking every blob's digest and its site layer against `limits`.
+ * like a directory, without hidden files except `.well-known` and without OS metadata files (unless
+ * `options.keepOsMetadata`); an OCI archive serves its first image's files, like that image from the
+ * store, after checking every blob's digest and its site layer against `limits`.
+ * `hidden` keeps hidden files and OS metadata (verify and diff compare every file).
  */
-export async function loadArchiveTree(file: string, limits: ArchiveLimits = DEFAULT_ARCHIVE_LIMITS): Promise<Tree> {
+export async function loadArchiveTree(
+  file: string,
+  limits: ArchiveLimits = DEFAULT_ARCHIVE_LIMITS,
+  options: ServedTreeOptions & { readonly hidden?: boolean } = {},
+): Promise<Tree> {
   const origin = file;
   const unreadable = (): SitefileError => new SitefileError('E_ARCHIVE', `cannot read '${origin}'`);
   const st = await fs.stat(file).catch((e: NodeJS.ErrnoException) => {
@@ -200,9 +229,10 @@ export async function loadArchiveTree(file: string, limits: ArchiveLimits = DEFA
     throw new SitefileError('E_ARCHIVE_LIMIT', `${origin}: archive expands beyond ${limits.maxTotalBytes} bytes`);
   }
   const bytes = new Uint8Array(await fs.readFile(file).catch(() => { throw unreadable(); }));
-  if (looksLikeWarc(bytes)) return visible(readWarc(bytes, origin, limits));
-  const tree = await extractArchive(bytes, origin, limits);
-  return tree.get('/oci-layout') ? ociArchiveTree(tree, origin, limits) : visible(tree);
+  const warc = looksLikeWarc(bytes);
+  const tree = warc ? readWarc(bytes, origin, limits) : await extractArchive(bytes, origin, limits);
+  if (!warc && tree.get('/oci-layout')) return ociArchiveTree(tree, origin, limits);
+  return options.hidden ? tree : served(tree, origin, options);
 }
 
 /** The files of the first image in an extracted OCI layout. */
@@ -248,14 +278,14 @@ async function ociArchiveTree(layout: Tree, origin: string, limits: ArchiveLimit
   return extractImageFiles(m, cfg, layerBytes, origin);
 }
 
-/** The tree a server state serves. */
-export async function loadServedTree(store: Store, source: ServerState['source']): Promise<Tree> {
+/** The tree a server state serves (`options` apply to a directory or archive). */
+export async function loadServedTree(store: Store, source: ServerState['source'], options: ServedTreeOptions = {}): Promise<Tree> {
   switch (source.kind) {
     case 'image':
       return store.loadTree(source.imageId);
     case 'dir':
-      return loadDirectoryTree(source.path);
+      return loadDirectoryTree(source.path, options);
     case 'archive':
-      return loadArchiveTree(source.path);
+      return loadArchiveTree(source.path, DEFAULT_ARCHIVE_LIMITS, options);
   }
 }

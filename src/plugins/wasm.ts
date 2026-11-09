@@ -83,9 +83,6 @@ parentPort.on('message', ({ id, request }) => {
 });
 `;
 
-/** Largest linear memory a wasm plugin may use (default 1 GiB). */
-const DEFAULT_MAX_MEMORY = 1024 * 1024 * 1024;
-
 interface Pending {
   resolve: (out: Uint8Array) => void;
   reject: (e: Error) => void;
@@ -155,7 +152,7 @@ class WasmLane {
     if (this.worker) return this.worker;
     const w = new Worker(WORKER, {
       eval: true,
-      workerData: { bytes: this.bytes, maxMemory: DEFAULT_MAX_MEMORY },
+      workerData: { bytes: this.bytes, maxMemory: this.policy.maxMemoryMiB * 1024 * 1024 },
       // The worker's own JS heap; wasm memory is checked after each call.
       resourceLimits: { maxOldGenerationSizeMb: 256 },
       env: {},
