@@ -1150,6 +1150,8 @@ directory or a zip, tar or Web Bundle is also served without OS metadata files (
 archive serves the first image in its `index.json` exactly as that image would be served from the store, after
 every blob it reads is checked against its digest and the site layer against the same limits. A file that is
 none of these is `error[E_TYPE]: <file>: not a recognized archive (expected tar, tar.gz, zip or web bundle)`.
+An xz, zstd or bzip2 stream (`.tar.xz`, `.tar.zst`, `.tar.bz2`), a 7z or a RAR archive is named instead, with
+what to do: `(it is zstd-compressed, e.g. .tar.zst; recompress it as .tar.gz or zip)`.
 In a server record (`$SITEFILE_HOME/servers/<id>.json`) the source is `{"kind": "archive", "path": ...}`, next
 to `image` (`imageId`) and `dir` (`path`).
 
@@ -1172,6 +1174,23 @@ to `image` (`imageId`) and `dir` (`path`).
   `oauth-authorization-server` and `nodeinfo` under `/.well-known/` are `application/json`, `/.well-known/webfinger`
   is `application/jrd+json`, `/.well-known/host-meta` is `application/xrd+xml` (`_headers` can still override);
   `ETag` is the file digest and `If-None-Match` gives `304`; `cache-control: no-cache`;
+  **byte ranges**: file responses send `Accept-Ranges: bytes`, and a `GET` with one range (`Range: bytes=a-b`,
+  `bytes=a-` or `bytes=-n`) gets `206 Partial Content` with `Content-Range: bytes a-b/size` and those bytes (an
+  end past the file is clamped); a range starting at or past the end (or `bytes=-0`, or any range of an empty
+  file) is `416` with `Content-Range: bytes */size`. `If-Range` must equal the ETag exactly (strong comparison;
+  a date or other value gets the whole file with `200`), and `If-None-Match` is checked first. Several ranges
+  (`bytes=0-1,5-6`), other units and malformed values are ignored (the whole file, `200`), as RFC 9110 allows;
+  `HEAD` ignores `Range` and reports the full length. Under `serve --watch` a range applies to the page as
+  sent (with the reload script). `404` pages are never ranged;
+  **`Last-Modified`** on file responses (`200`, `206`, `304`): for an image, when it was first stored (as
+  `images` shows it; the config's `created` is the Unix epoch unless `SOURCE_DATE_EPOCH` is set, so it is not
+  used); for a directory, the newest modification time of the files under it (hidden entries but `.well-known`
+  skipped); for an archive, the file's modification time; under `--watch`, the time of the build being served.
+  `If-Modified-Since` (an IMF-fixdate; other date formats are ignored) gives `304` when the files are not newer,
+  but only when the request has no `If-None-Match`, which wins;
+  **`103 Early Hints`**: before a `200` HTML page answering a `GET` over HTTP/1.1, the link-values of its `Link`
+  header (from `_headers`) with `rel=preload` or `rel=preconnect` are sent in a `103` response, as Cloudflare
+  does (`Link: </app.css>; rel=preload; as=style`); the page itself keeps the whole `Link` header;
   `x-content-type-options: nosniff`. An absolute-form request target (`GET http://host/path?q`, as proxies send
   it; RFC 9112 section 3.2.2) is answered by its path and query; the authority is ignored. Paths are
   percent-decoded per segment; `..`, an encoded `/`, NUL, control
@@ -1190,12 +1209,12 @@ to `image` (`imageId`) and `dir` (`path`).
     with characters outside printable ASCII.
   - `_headers`: a path pattern line (`*` matches any characters, `/` included), then indented `Name: value`
     lines. Every matching block applies, in file order; a header set by several blocks gets its values joined
-    with `, `. They are added to file, `304` and `404` responses (not to redirects) and can replace
+    with `, `. They are added to file, `206`, `304`, `404` and `416` responses (not to redirects) and can replace
     `cache-control` and the other defaults; `content-length`, `etag`, `location`, `connection`,
-    `keep-alive` and `transfer-encoding` cannot be set. Lines with an invalid name or a control character in
+    `keep-alive`, `transfer-encoding`, `accept-ranges`, `content-range` and `last-modified` cannot be set. Lines with an invalid name or a control character in
     the value are ignored, as are `! Name` detach lines and patterns that are not paths.
 - `-d` detaches. A server is tracked by `$SITEFILE_HOME/servers/<id>.json` (`id`, `name`, `image`, `source`, `spa`,
-  requested `bind`, `host`, `port`, `pid`, `started`, `logFile`, `ready`) and `<id>.log`. `serve -d` writes the
+  requested `bind`, `host`, `port`, `pid`, `started`, `logFile`, `ready`, and `project` for servers `up` started) and `<id>.log`. `serve -d` writes the
   state, spawns a detached `node serve-worker.js <id>` with stdout/stderr on the log, and waits until the worker
   has recorded its pid and port (a failure to start is reported with the worker's error and leaves no entry).
   `servers` never trusts the file alone: **running** means the pid is alive *and* the port answers with this server's
@@ -1204,3 +1223,54 @@ to `image` (`imageId`) and `dir` (`path`).
 - `stop` sends `SIGTERM`, waits `--time` seconds (default 5), then `SIGKILL`; stopping an exited server is a no-op.
   `rm` refuses a running server unless `-f`. `restart` stops and starts it again with the same name and bind
   address, serving the same image ID (a directory or archive file is re-read). `logs -f` follows the log until Ctrl-C.
+
+### Several servers: `up`, `down`, `ps`
+
+```
+sitefile up   [-f sitefile.servers.yaml] [--time secs]
+sitefile down [-f sitefile.servers.yaml] [--time secs]
+sitefile ps   [-f sitefile.servers.yaml] [--json]
+```
+
+A **servers file** describes several detached servers, like a Compose file. Without `-f`, the first of
+`sitefile.servers.yaml`, `sitefile.servers.yml` and `sitefile.servers.json` in the current directory is used.
+
+```yaml
+servers:
+  docs:                       # the server's name (as serve -d --name)
+    source: ./docs/dist       # what serve takes: a directory or archive file, or an image
+    publish: 8081             # [host:]port, as serve -p (default: 127.0.0.1 and a free port)
+  app:
+    source: ./app/dist
+    spa: true                 # as serve --spa (default false)
+  theme:
+    source: theme:1           # an image from the local store
+```
+
+- `servers` is the only top-level key; each server takes `source` (required), `publish` (a string, or a port
+  number) and `spa`. Unknown keys, bad names and bad values are `E_DATA` naming the file and server. Names
+  follow `serve --name` (letters, digits, `_`, `.`, `-`), and a name of digits only is refused.
+- A `source` written as a path (starting with `./`, `../`, `/` or `~`, or ending in `/`) is relative to the
+  servers file's directory, not the current one. A bare name is an image reference or ID, else an archive file
+  of that name next to the servers file (`site.zip`).
+- `up` resolves every entry first, so a typo or a missing directory starts nothing, then starts the servers in
+  file order as `serve -d` would, recorded with the servers file's real path (`"project"` in the server record).
+  It is idempotent:
+  - a server that is running with the same source (the same image ID, or the same real path), `publish` and
+    `spa` is left alone: `docs (<id>) is up to date at <url>`;
+  - an exited one is restarted with the same ID (`Restarted …`);
+  - one whose entry changed is stopped and replaced (`Recreated …`);
+  - a new one is started (`Started …`).
+
+  A server with the same name that the file did not start (`serve -d --name docs`, or another servers file)
+  is refused (`E_SERVER`) before anything starts. A server the file started but no longer lists gets a
+  warning and keeps running until `down`. If one server fails to start, the others still start, and `up`
+  exits 1.
+- `down` stops (SIGTERM, then SIGKILL after `--time` seconds) and removes every server the file started,
+  also ones it no longer lists, and prints `Removed <name> (<id>)` for each. Other servers are not touched.
+- `ps` lists the file's servers in file order (`NAME SITE URL STATUS ID`): `running`, `exited`, or `not
+  created`. For a server that was never started, SITE is the `source` as written. Servers the file started
+  but no longer lists come after the others, with `(not in the file)` added to their status. `--json` gives
+  `[{"name", "site", "url", "status", "id", "listed"}]`.
+- Not yet: watch-mode servers (`serve --watch` runs in the foreground only), and parked folders
+  (`<name>.localhost` for every subfolder, which needs host-name routing). See johnhenry/sitefile#223.

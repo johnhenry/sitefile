@@ -1084,6 +1084,7 @@ fn build_with(options: &BuildOptions, temp_dirs: &Mutex<Vec<PathBuf>>) -> Result
         plugins: {
             let mut h = PluginHost::new(options.plugin_policy, move |m: &str| plugin_warn(m));
             h.set_store_home(options.store_home.clone());
+            h.set_reuses_results(options.cache_dir.is_some() || memo.is_some());
             if let Some(node) = &options.node {
                 h.set_node(node.clone());
             }
@@ -1423,6 +1424,8 @@ pub struct ExportedBuild {
     pub file_digest: Option<String>,
     /// oci: the image's manifest digest.
     pub manifest_digest: Option<String>,
+    /// car: the root CID (CIDv1, base32).
+    pub root_cid: Option<String>,
     /// Watch mode: set when the directory export applied only the changes (export::incremental).
     pub incremental: Option<crate::export::incremental::Applied>,
     /// `--experimental-dictionary`: the paths that got a `.dcz` delta.
@@ -1714,6 +1717,7 @@ fn export_build_inner(
                 bytes: Some(written.bytes),
                 file_digest: Some(digest),
                 manifest_digest: Some(img.manifest_digest.clone()),
+                root_cid: None,
                 incremental: None,
                 dictionary_deltas: None,
             });
@@ -1730,6 +1734,7 @@ fn export_build_inner(
             bytes: None,
             file_digest: None,
             manifest_digest: Some(img.manifest_digest.clone()),
+            root_cid: None,
             incremental: None,
             dictionary_deltas: None,
         });
@@ -1747,8 +1752,23 @@ fn export_build_inner(
             bytes: None,
             file_digest: None,
             manifest_digest: None,
+            root_cid: None,
             incremental: written.incremental,
             dictionary_deltas: None,
+        });
+    }
+    if format == ExportFormat::Car {
+        let (data, root) = crate::export::car::encode_car(&result.output)?;
+        let written = export_file(&data, out, &export_options)?;
+        return Ok(ExportedBuild {
+            result,
+            format,
+            out_path: written.out_file,
+            bytes: Some(written.bytes),
+            file_digest: Some(sha256(&data)),
+            manifest_digest: None,
+            root_cid: Some(root),
+            incremental: None,
         });
     }
     let data = encode_tree(
@@ -1781,6 +1801,7 @@ fn export_build_inner(
         bytes: Some(written.bytes),
         file_digest: Some(digest),
         manifest_digest: None,
+        root_cid: None,
         incremental: None,
         dictionary_deltas: None,
     })

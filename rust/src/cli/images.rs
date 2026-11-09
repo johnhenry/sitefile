@@ -19,7 +19,10 @@ use crate::store::{diff_trees, short_id, Store};
 use serde_json::{json, Map, Value};
 use std::path::Path;
 
-pub const EXPORT_FORMATS: &str = "directory, zip, tar, tgz, wbn, oci";
+/// Every export format, comma-separated (`EXPORT_FORMATS.join(', ')` in TypeScript).
+pub fn export_formats() -> String {
+    ExportFormat::ALL.map(ExportFormat::as_str).join(", ")
+}
 
 fn split(key: &str) -> (String, String) {
     let i = key.rfind(':').unwrap_or(key.len());
@@ -337,7 +340,7 @@ pub const SAVE: Command = Command {
     name: "save",
     summary: "export an image to a directory or archive",
     usage: "save <ref|id> -o <out> [--format fmt] [--base-url url] [--manifest file] [--force]",
-    description: "Write an image's files to a directory, or to a zip, tar, tar.gz (tgz) or wbn archive, or the image itself as\nan OCI archive (-o x.oci.tar) or OCI layout directory (--format oci). The format is chosen like \"build -o\":\nfrom --format, else the extension (.zip .tar .tar.gz .tgz .wbn .wbn.gz .oci.tar), else a directory; a wbn\nwritten to *.wbn.gz is gzipped.\nArchives are deterministic (set SOURCE_DATE_EPOCH to stamp them). A non-empty destination needs --force.",
+    description: "Write an image's files to a directory, or to a zip, tar, tar.gz (tgz) or wbn archive, an IPFS CAR, a single-file\npage (html, mhtml), or the image itself as\nan OCI archive (-o x.oci.tar) or OCI layout directory (--format oci). The format is chosen like \"build -o\":\nfrom --format, else the extension (.zip .tar .tar.gz .tgz .wbn .wbn.gz .oci.tar .car .mhtml), else a directory; a wbn\nwritten to *.wbn.gz is gzipped.\nArchives are deterministic (set SOURCE_DATE_EPOCH to stamp them). A non-empty destination needs --force.",
     flags: &[
         "-o, --out <path>     destination (required)",
         "    --format <fmt>   directory | zip | tar | tgz | wbn | oci (alias tar.gz)",
@@ -367,7 +370,8 @@ fn run_save(v: &Parsed) -> Result<i32> {
         format = ExportFormat::parse(v.str("format").unwrap_or(""));
         if format.is_none() {
             return usage(format!(
-                "--format expects one of {EXPORT_FORMATS} (or tar.gz)"
+                "--format expects one of {} (or tar.gz)",
+                export_formats()
             ));
         }
     }
@@ -453,18 +457,27 @@ fn run_save(v: &Parsed) -> Result<i32> {
             shown(&w.out_dir)
         ));
     } else {
-        let data = encode_tree(
-            &tree,
-            format,
-            &EncodeOptions {
-                writer: WriterOptions {
-                    epoch: source_date_epoch()?,
-                    dirs: Vec::new(),
+        let car = if format == ExportFormat::Car {
+            Some(crate::export::car::encode_car(&tree)?)
+        } else {
+            None
+        };
+        let data = if let Some((bytes, _)) = &car {
+            bytes.clone()
+        } else {
+            encode_tree(
+                &tree,
+                format,
+                &EncodeOptions {
+                    writer: WriterOptions {
+                        epoch: source_date_epoch()?,
+                        dirs: Vec::new(),
+                    },
+                    base_url: v.str("base-url").map(str::to_string),
+                    compression: compression_from_extension(out_path, format),
                 },
-                base_url: v.str("base-url").map(str::to_string),
-                compression: compression_from_extension(out_path, format),
-            },
-        )?;
+            )?
+        };
         let w = export_file(&data, out_p, &opts)?;
         let name = if format == ExportFormat::Tgz {
             "tar.gz"
@@ -472,11 +485,12 @@ fn run_save(v: &Parsed) -> Result<i32> {
             format.as_str()
         };
         out(&format!(
-            "Saved {} ({} files) to {} ({name}, {} bytes)\n",
+            "Saved {} ({} files) to {} ({name}, {} bytes{})\n",
             short_id(&id),
             tree.len(),
             shown(&w.out_file),
-            w.bytes
+            w.bytes,
+            car.map(|(_, r)| format!(", root {r}")).unwrap_or_default()
         ));
     }
     write_manifest()?;
