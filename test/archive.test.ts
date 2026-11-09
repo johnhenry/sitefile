@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { gzipSync } from 'node:zlib';
+import { crc32, gzipSync } from 'node:zlib';
 import { extractArchive } from '../src/resources/archive.js';
 import { DEFAULT_ARCHIVE_LIMITS, type ArchiveLimits } from '../src/resources/types.js';
 import { isSitefileError, type ErrorCode } from '../src/errors.js';
@@ -204,4 +204,50 @@ test('trailing zero bytes after a gzip member are ignored; other trailing bytes 
   const gz = gzipSync(tar([{ name: 'a', data: 'x' }]));
   assert.deepEqual(paths(await extractArchive(Buffer.concat([gz, Buffer.alloc(9)]), 't')), ['/a']);
   await rejects(Buffer.concat([gz, Buffer.from([1, 2, 3])]), 'E_ARCHIVE', /corrupt compressed data/);
+});
+
+test('zip names: UTF-8 with bit 11, the 0x7075 Unicode Path field, UTF-8 or else CP437 without it', async () => {
+  const cp437 = Uint8Array.from([0x63, 0x61, 0x66, 0x82, 0x2e, 0x74, 0x78, 0x74]); // "caf\x82.txt": é in CP437
+  const unicode = (raw: Uint8Array, name: string, crc = crc32(raw)): Uint8Array => {
+    const u = Buffer.from(name);
+    const f = Buffer.alloc(9);
+    f.writeUInt16LE(0x7075, 0);
+    f.writeUInt16LE(5 + u.length, 2);
+    f[4] = 1;
+    f.writeUInt32LE(crc, 5);
+    return Buffer.concat([f, u]);
+  };
+  const one = async (e: Parameters<typeof zip>[0][0]): Promise<string[]> => paths(await extractArchive(zip([e]), 't'));
+  assert.deepEqual(await one({ name: cp437, data: 'x' }), ['/caf\u00e9.txt']);
+  assert.deepEqual(await one({ name: cp437, data: 'x', flags: 0x800 }), ['/caf\ufffd.txt']);
+  assert.deepEqual(await one({ name: 'caf\u00e9.txt', data: 'x' }), ['/caf\u00e9.txt']);
+  assert.deepEqual(await one({ name: cp437, data: 'x', extra: unicode(cp437, 'r\u00e9sum\u00e9.txt') }), ['/r\u00e9sum\u00e9.txt']);
+  // A stale field (its CRC is not the name's) is ignored, as is one with bit 11 set.
+  assert.deepEqual(await one({ name: cp437, data: 'x', extra: unicode(cp437, 'stale.txt', 1) }), ['/caf\u00e9.txt']);
+  assert.deepEqual(await one({ name: 'a.txt', data: 'x', flags: 0x800, extra: unicode(Buffer.from('a.txt'), 'b.txt') }), ['/a.txt']);
+  // Decoded names are checked like any other.
+  await rejects(zip([{ name: cp437, data: 'x', extra: unicode(cp437, '../evil') }]), 'E_ARCHIVE_UNSAFE', /'\.\.' segment/);
+  await rejects(zip([{ name: cp437, data: '1' }, { name: 'caf\u00e9.txt', data: '2' }]), 'E_CONFLICT', /duplicate/);
+});
+
+test('a flipped byte in a stored entry fails the CRC-32 check (#183)', async () => {
+  const z = zip([{ name: 'index.html', data: '<h1>hello</h1>' }]);
+  assert.equal(paths(await extractArchive(z, 't')).length, 1);
+  z[44] = z[44]! ^ 0x20;
+  await rejects(z, 'E_ARCHIVE', /'index\.html' fails its CRC-32 check/);
+  const e = zip([{ name: 'empty', data: '' }]);
+  const at = e.length - 22 - 51 + 16; // the central CRC
+  e[at] = e[at]! ^ 1;
+  await rejects(e, 'E_ARCHIVE', /'empty' fails its CRC-32 check/);
+});
+
+test('formats sitefile does not read are named in the E_TYPE error (#221)', async () => {
+  const pad = (m: number[]): Uint8Array => Buffer.concat([Buffer.from(m), Buffer.alloc(600)]);
+  await rejects(pad([0xfd, 0x37, 0x7a, 0x58, 0x5a, 0x00]), 'E_TYPE', /not a recognized archive \(it is xz-compressed, e\.g\. \.tar\.xz; recompress it as \.tar\.gz or zip\)$/);
+  await rejects(pad([0x28, 0xb5, 0x2f, 0xfd]), 'E_TYPE', /\(it is zstd-compressed, e\.g\. \.tar\.zst;/);
+  await rejects(Buffer.from('BZh91AY&SY'), 'E_TYPE', /\(it is bzip2-compressed/);
+  await rejects(pad([0x37, 0x7a, 0xbc, 0xaf, 0x27, 0x1c]), 'E_TYPE', /\(it is a 7z archive; convert it to zip or tar\)$/);
+  await rejects(Buffer.from('Rar!\x1a\x07\x01\x00', 'latin1'), 'E_TYPE', /\(it is a RAR archive; convert it to zip or tar\)$/);
+  // Text that merely starts like a magic number is just unrecognized.
+  await rejects(Buffer.from('BZhello'), 'E_TYPE', /\(expected tar, tar\.gz, zip or web bundle\)$/);
 });

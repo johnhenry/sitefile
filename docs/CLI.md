@@ -1117,6 +1117,8 @@ directory or a zip, tar or Web Bundle is also served without OS metadata files (
 archive serves the first image in its `index.json` exactly as that image would be served from the store, after
 every blob it reads is checked against its digest and the site layer against the same limits. A file that is
 none of these is `error[E_TYPE]: <file>: not a recognized archive (expected tar, tar.gz, zip or web bundle)`.
+An xz, zstd or bzip2 stream (`.tar.xz`, `.tar.zst`, `.tar.bz2`), a 7z or a RAR archive is named instead, with
+what to do: `(it is zstd-compressed, e.g. .tar.zst; recompress it as .tar.gz or zip)`.
 In a server record (`$SITEFILE_HOME/servers/<id>.json`) the source is `{"kind": "archive", "path": ...}`, next
 to `image` (`imageId`) and `dir` (`path`).
 
