@@ -155,6 +155,12 @@
   (`Language`, `Country`, `Cookie`), and statuses 410 and 451 are now
   translated rather than listed as unsupported. A target `:name` that the
   source does not capture is still refused.
+- **`EXPORT … AS epub`** (johnhenry/sitefile#209): an EPUB 3 book of the
+  site's XHTML pages (index first), with a generated package document and
+  navigation document (or the site's `/nav.xhtml`), deterministic metadata
+  and `mimetype` stored first without an extra field. The zip writer takes a
+  list of entries to write first that way, in both implementations. Example
+  `examples/book`; conformance `example/book:epub-*`, `case/err-epub-no-page`.
 
 - **`serve --spa` falls back by navigation** (johnhenry/sitefile#194): the
   app shell answers only page navigations (`Sec-Fetch-Mode`/`Sec-Fetch-Dest`,

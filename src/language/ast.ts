@@ -237,8 +237,8 @@ export function parseOciCompression(name: string): OciCompression | undefined {
   return (OCI_COMPRESSIONS as readonly string[]).includes(n) ? (n as OciCompression) : undefined;
 }
 
-export type ExportFormat = 'directory' | 'zip' | 'tar' | 'tgz' | 'wbn' | 'oci' | 'car' | 'html' | 'mhtml' | 'warc' | 'swbn' | 'wacz';
-export const EXPORT_FORMATS: readonly ExportFormat[] = ['directory', 'zip', 'tar', 'tgz', 'wbn', 'oci', 'car', 'html', 'mhtml', 'warc', 'swbn', 'wacz'];
+export type ExportFormat = 'directory' | 'zip' | 'tar' | 'tgz' | 'wbn' | 'oci' | 'car' | 'html' | 'mhtml' | 'warc' | 'swbn' | 'wacz' | 'epub';
+export const EXPORT_FORMATS: readonly ExportFormat[] = ['directory', 'zip', 'tar', 'tgz', 'wbn', 'oci', 'car', 'html', 'mhtml', 'warc', 'swbn', 'wacz', 'epub'];
 
 /** Parse a format name (`tar.gz` is an alias for `tgz`); undefined if unknown. */
 export function parseExportFormat(name: string): ExportFormat | undefined {

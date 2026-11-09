@@ -340,10 +340,10 @@ pub const SAVE: Command = Command {
     name: "save",
     summary: "export an image to a directory or archive",
     usage: "save <ref|id> -o <out> [--format fmt] [--base-url url] [--manifest file] [--force]",
-    description: "Write an image's files to a directory, or to a zip, tar, tar.gz (tgz) or wbn archive, an IPFS CAR, a single-file\npage (html, mhtml), a WARC or WACZ, or the image itself as\nan OCI archive (-o x.oci.tar) or OCI layout directory (--format oci). The format is chosen like \"build -o\":\nfrom --format, else the extension (.zip .tar .tar.gz .tgz .wbn .wbn.gz .oci.tar .car .mhtml .warc .warc.gz .swbn .wacz), else a directory; a wbn\nwritten to *.wbn.gz is gzipped.\nArchives are deterministic (set SOURCE_DATE_EPOCH to stamp them). A non-empty destination needs --force.",
+    description: "Write an image's files to a directory, or to a zip, tar, tar.gz (tgz) or wbn archive, an IPFS CAR, a single-file\npage (html, mhtml), a WARC or WACZ, an EPUB, or the image itself as\nan OCI archive (-o x.oci.tar) or OCI layout directory (--format oci). The format is chosen like \"build -o\":\nfrom --format, else the extension (.zip .tar .tar.gz .tgz .wbn .wbn.gz .oci.tar .car .mhtml .warc .warc.gz .swbn .wacz .epub), else a directory; a wbn\nwritten to *.wbn.gz is gzipped.\nArchives are deterministic (set SOURCE_DATE_EPOCH to stamp them). A non-empty destination needs --force.",
     flags: &[
         "-o, --out <path>     destination (required)",
-        "    --format <fmt>   directory | zip | tar | tgz | wbn | oci | car | html | mhtml | warc | swbn | wacz (alias tar.gz)",
+        "    --format <fmt>   directory | zip | tar | tgz | wbn | oci | car | html | mhtml | warc | swbn | wacz | epub (alias tar.gz)",
         "    --base-url <url> https URL ending in \"/\" (wbn only; required for wbn)",
         "    --manifest <file> also write a manifest of the files (see sitefile verify)",
         "    --force          replace a non-empty destination or an existing file",

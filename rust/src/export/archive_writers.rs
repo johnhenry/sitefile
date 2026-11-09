@@ -171,7 +171,19 @@ fn extended_timestamp(epoch: Option<u64>) -> [u8; 9] {
 
 /// Zip (no zip64). Deflate when it shrinks the data, otherwise stored.
 pub fn write_zip(tree: &Tree, options: &WriterOptions) -> Result<Vec<u8>> {
-    let entries = entries_of(tree)?;
+    write_zip_first(tree, options, &[])
+}
+
+/// [`write_zip`] with `first` (tree paths, e.g. `/mimetype` for EPUB) written first, in that
+/// order, stored and without an extra field; the rest follow in path order.
+pub fn write_zip_first(tree: &Tree, options: &WriterOptions, first: &[&str]) -> Result<Vec<u8>> {
+    let all = entries_of(tree)?;
+    let first_names: Vec<&str> = first.iter().map(|p| &p[1..]).collect();
+    let mut entries: Vec<&Entry<'_>> = Vec::new();
+    for n in &first_names {
+        entries.extend(all.iter().filter(|e| e.name == *n));
+    }
+    entries.extend(all.iter().filter(|e| !first_names.contains(&e.name)));
     if entries.len() > ZIP_MAX_ENTRIES {
         return Err(SitefileError::plain(
             E_EXPORT,
@@ -201,8 +213,9 @@ pub fn write_zip(tree: &Tree, options: &WriterOptions) -> Result<Vec<u8>> {
                 ),
             ));
         }
+        let plain = first_names.contains(&e.name);
         // Already-compressed media is stored as is: deflate would only spend time to gain nothing (#203).
-        let deflated = if is_compressed_media(&e.name) {
+        let deflated = if plain || is_compressed_media(&e.name) {
             None
         } else {
             Some(deflate_raw(e.bytes))
@@ -212,6 +225,7 @@ pub fn write_zip(tree: &Tree, options: &WriterOptions) -> Result<Vec<u8>> {
             Some(d) if !stored => d,
             _ => e.bytes,
         };
+        let extra: &[u8] = if plain { &[] } else { &ut };
         if e.bytes.len() as u64 > ZIP_MAX || data.len() as u64 > ZIP_MAX {
             return Err(SitefileError::plain(
                 E_EXPORT,
@@ -238,9 +252,9 @@ pub fn write_zip(tree: &Tree, options: &WriterOptions) -> Result<Vec<u8>> {
         out.extend((data.len() as u32).to_le_bytes());
         out.extend((e.bytes.len() as u32).to_le_bytes());
         out.extend((name.len() as u16).to_le_bytes());
-        out.extend((ut.len() as u16).to_le_bytes());
+        out.extend((extra.len() as u16).to_le_bytes());
         out.extend_from_slice(name);
-        out.extend_from_slice(&ut);
+        out.extend_from_slice(extra);
         out.extend_from_slice(data);
 
         central.extend(0x0201_4b50u32.to_le_bytes());
@@ -254,12 +268,12 @@ pub fn write_zip(tree: &Tree, options: &WriterOptions) -> Result<Vec<u8>> {
         central.extend((data.len() as u32).to_le_bytes());
         central.extend((e.bytes.len() as u32).to_le_bytes());
         central.extend((name.len() as u16).to_le_bytes());
-        central.extend((ut.len() as u16).to_le_bytes());
+        central.extend((extra.len() as u16).to_le_bytes());
         central.extend([0u8; 6]); // comment, disk number, internal attrs
         central.extend(((0o100000 | e.mode) << 16).to_le_bytes());
         central.extend((offset as u32).to_le_bytes());
         central.extend_from_slice(name);
-        central.extend_from_slice(&ut);
+        central.extend_from_slice(extra);
     }
     let offset = out.len() as u64;
     let cd_size = central.len() as u64;

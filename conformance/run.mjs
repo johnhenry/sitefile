@@ -139,6 +139,9 @@ function cases() {
     ex('blog', { suffix: ':wbn', out: 'site.wbn', args: ['--base-url', 'https://blog.example/'], compare: 'bytes' }),
     ex('blog', { suffix: ':wbn-gzip', out: 'site.wbn.gz', args: ['--base-url', 'https://blog.example/'], compare: 'bytes' }),
     ex('blog', { suffix: ':tar-bytes', out: 'site.tar', compare: 'bytes' }),
+    // EXPORT … AS epub (issue #209): mimetype stored first, the OPF and nav document generated.
+    ex('book', { suffix: ':epub-bytes', out: 'book.epub', compare: 'bytes' }),
+    ex('book', { suffix: ':epub-epoch-bytes', out: 'book.epub', env: { SOURCE_DATE_EPOCH: '1700000000' }, args: ['--build-arg', 'TITLE=Odd & <Title>'], compare: 'bytes' }),
     ex('blog', { suffix: ':car-bytes', out: 'site.car', compare: 'bytes' }),
     ex('data', { suffix: ':car-format', out: 'site-car', args: ['--format', 'car'], compare: 'bytes' }),
     // Attestations (--provenance, --sbom): OCI 1.1 referrers of an unchanged image.

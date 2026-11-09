@@ -1,6 +1,7 @@
 pub mod archive_writers;
 pub mod attest;
 pub mod car;
+pub mod epub;
 pub mod exporter;
 pub mod formats;
 pub mod incremental;

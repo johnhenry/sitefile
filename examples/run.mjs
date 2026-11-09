@@ -54,6 +54,14 @@ const examples = {
     assert.match(read(site, 'index.html'), /Tom &amp; &lt;Jerry&gt;/, 'build arg is substituted and HTML-escaped');
     assert.ok(files(site).includes('style.css'));
   },
+  book() {
+    const out = mkdtempSync(path.join(os.tmpdir(), 'sitefile-example-book-'));
+    temps.push(out);
+    run(['build', path.join(here, 'book'), '-o', path.join(out, 'book.epub'), '--force']);
+    const epub = readFileSync(path.join(out, 'book.epub'));
+    assert.equal(epub.subarray(30, 38).toString('latin1'), 'mimetype', 'EXPORT AS epub writes mimetype first');
+    assert.equal(epub.subarray(38, 58).toString('latin1'), 'application/epub+zip', 'stored');
+  },
   inline() {
     assert.ok(files(build('inline')).includes('index.html'), 'a template written inside the Sitefile renders');
   },

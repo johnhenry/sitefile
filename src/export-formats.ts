@@ -1,3 +1,4 @@
+import { writeEpub } from './epub.js';
 import { SitefileError } from './errors.js';
 import { writeTar, writeTgz, writeZip, type WriterOptions } from './archive-writers.js';
 import { gzip } from './deflate.js';
@@ -18,7 +19,7 @@ export function isArchiveFormat(f: ExportFormat): f is ArchiveFormat {
 
 /**
  * Default output path relative to the context: `dist`, `dist.zip`, `dist.tar`, `dist.tar.gz`, `dist.wbn`
- * (`dist.wbn.gz` for a gzipped bundle), `dist.oci.tar`, `dist.car`, `dist.html`, `dist.mhtml`, `dist.warc` (`dist.warc.gz` gzipped), `dist.swbn`, `dist.wacz`.
+ * (`dist.wbn.gz` for a gzipped bundle), `dist.oci.tar`, `dist.car`, `dist.html`, `dist.mhtml`, `dist.warc` (`dist.warc.gz` gzipped), `dist.swbn`, `dist.wacz`, `dist.epub`.
  */
 export function defaultOutName(format: ExportFormat, compression?: OciCompression): string {
   switch (format) {
@@ -46,6 +47,8 @@ export function defaultOutName(format: ExportFormat, compression?: OciCompressio
       return 'dist.swbn';
     case 'wacz':
       return 'dist.wacz';
+    case 'epub':
+      return 'dist.epub';
   }
 }
 
@@ -83,6 +86,8 @@ export function encodeTree(tree: Tree, format: ArchiveFormat, options: EncodeOpt
       throw new SitefileError('E_VALIDATION', "swbn export needs a signing key: build with 'EXPORT ... AS swbn KEY <secret-id>' and --secret");
     case 'wacz':
       return writeWacz(tree, { baseUrl: options.baseUrl, epoch: options.epoch });
+    case 'epub':
+      return writeEpub(tree, options.epoch);
   }
 }
 
@@ -99,6 +104,7 @@ export function formatFromExtension(out: string): ExportFormat | undefined {
   if (name.endsWith('.warc') || name.endsWith('.warc.gz')) return 'warc';
   if (name.endsWith('.wacz')) return 'wacz';
   if (name.endsWith('.mhtml') || name.endsWith('.mht')) return 'mhtml';
+  if (name.endsWith('.epub')) return 'epub';
   return undefined;
 }
 
