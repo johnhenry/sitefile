@@ -54,7 +54,9 @@ The grammar follows the real scanner and parser (`src/language/scanner.ts`,
 ## Requirements
 
 Highlighting needs nothing else. The language features need the `sitefile`
-Rust binary (the crate in `rust/`, binary name `sitefile`) on your `PATH`:
+Rust binary (the crate in `rust/`, binary name `sitefile`) on your `PATH`.
+Download a [prebuilt release binary](../../README.md#prebuilt-binaries)
+(macOS and Linux, verified against `SHA256SUMS`), or build it:
 
 ```bash
 cargo install --path rust        # from a clone of the repository; installs ~/.cargo/bin/sitefile
@@ -89,9 +91,17 @@ restarts it).
 
 The client handles `file` and `untitled` Sitefile documents.
 
-## Install locally
+## Install
 
-The extension is not on the Marketplace. Build the package and install it:
+The extension is not on the Marketplace. Each
+[GitHub Release](https://github.com/johnhenry/sitefile/releases) after v0.0.5
+carries a packaged `sitefile-vscode-<version>.vsix` (listed in `SHA256SUMS`):
+
+```bash
+code --install-extension sitefile-vscode-0.2.0.vsix
+```
+
+Or build the package from a clone and install it:
 
 ```bash
 cd editors/vscode

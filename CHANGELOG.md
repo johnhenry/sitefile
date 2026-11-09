@@ -2,6 +2,23 @@
 
 ## Unreleased
 
+- **The version comes from `package.json`** (johnhenry/sitefile#146): `sitefile --version`, the help
+  text and the builder version in build attestations said `0.1.0` in both implementations. TypeScript
+  now reads `package.json`; Rust reports `rust/Cargo.toml`'s version (now `0.0.5`), and tests on both
+  sides (`test/version.test.ts`, `rust/tests/version.rs`) fail when it differs from `package.json`.
+  New conformance case `version`. **Attestation bytes change**: `--provenance` statements record the
+  real version (`runDetails.builder.version.sitefile`, as does the SBOM's tool component), so their
+  digests and OCI referrer digests differ from earlier builds, and will change with every release.
+  Image IDs are unchanged.
+- **Release binaries** (johnhenry/sitefile#69): a new workflow,
+  `.github/workflows/release-binaries.yml`, attaches `sitefile-<version>-<target>.tar.gz` for
+  macOS (arm64, x86_64) and Linux (x86_64, arm64; glibc), the VS Code extension
+  `sitefile-vscode-<version>.vsix` and `SHA256SUMS` to each GitHub Release. It runs after a
+  successful npm publish (or on a hand-made release, or by dispatch with a `dry_run` input) and
+  publishes nothing itself; publish.yml is unchanged. No Windows build yet (the Rust port uses Unix
+  file APIs). README "Install" covers npm, the prebuilt binaries with checksum verification, and
+  `cargo install`; docs/RUST.md and the editor READMEs point at the binaries. The MIT `LICENSE`
+  was already present and in the npm package.
 - **`serve -d --watch <context>`** (johnhenry/sitefile#306): a detached server can build a Sitefile project. The
   worker runs the in-memory build loop of `serve --watch` (rebuild on change, live reload, error overlay on a
   failed build, the last good build served; a failed first build serves an empty site with the error). It listens

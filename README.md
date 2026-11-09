@@ -53,9 +53,42 @@ npx @johnhenry/sitefile build .      # or without installing
 ```
 
 Requires Node.js 26 or later; the npm package has no runtime dependencies.
-The Rust binary (faster, and the one that provides `sitefile lsp` for editors)
-builds from this repository: `cargo install --path rust`. Prebuilt binaries are
-not published yet (johnhenry/sitefile#69).
+
+### Prebuilt binaries
+
+The Rust binary is faster and is the one that provides `sitefile lsp` for
+editors. Each [GitHub Release](https://github.com/johnhenry/sitefile/releases)
+after v0.0.5 carries `sitefile-<version>-<target>.tar.gz` for
+`aarch64-apple-darwin`, `x86_64-apple-darwin`, `x86_64-unknown-linux-gnu`
+and `aarch64-unknown-linux-gnu` (each holds `sitefile`, `LICENSE` and
+`README.md`), the VS Code extension `sitefile-vscode-<version>.vsix`, and
+`SHA256SUMS`. Download, verify, and put the binary on `PATH`:
+
+```bash
+v=0.0.6 t=aarch64-apple-darwin     # the release you want; a target from the list above
+base=https://github.com/johnhenry/sitefile/releases/download/v$v
+curl -fsSLO "$base/sitefile-$v-$t.tar.gz" -O "$base/SHA256SUMS"
+shasum -a 256 -c --ignore-missing SHA256SUMS   # Linux: sha256sum -c --ignore-missing SHA256SUMS
+tar -xzf "sitefile-$v-$t.tar.gz"
+install -m 755 "sitefile-$v-$t/sitefile" ~/.local/bin/   # any directory on PATH
+```
+
+Or with the GitHub CLI: `gh release download v$v -R johnhenry/sitefile -p
+'*aarch64-apple-darwin*' -p SHA256SUMS`. The macOS binaries are not signed or
+notarized: if Gatekeeper blocks a downloaded one, run
+`xattr -d com.apple.quarantine sitefile`. The Linux binaries link glibc
+(built on Ubuntu 22.04, glibc 2.35). There is no Windows build yet: the Rust
+port uses Unix file APIs.
+
+### From source
+
+```bash
+git clone https://github.com/johnhenry/sitefile && cd sitefile
+cargo install --locked --path rust   # installs ~/.cargo/bin/sitefile
+```
+
+Needs a stable Rust toolchain (1.85 or later) and a C compiler (`ring` and
+the vendored Brotli encoder are C).
 
 `@johnhenry/sitefile` is a new package: it was never published to npm under any
 name, and `0.0.0` is its first version.
@@ -309,13 +342,16 @@ sites, with a fraction of the memory; see [docs/RUST.md](docs/RUST.md) and
 Highlighting works on its own; the language features (diagnostics,
 completion, hover, go to definition, references, rename, outline) come from
 the Rust binary's language server, `sitefile lsp`
-([docs/LSP.md](docs/LSP.md)), so put it on `PATH` with
-`cargo install --path rust` or point the editor at it.
+([docs/LSP.md](docs/LSP.md)), so put it on `PATH` (a
+[prebuilt binary](#prebuilt-binaries) or `cargo install --path rust`) or
+point the editor at it.
 
 - **VS Code**: [editors/vscode/](editors/vscode/), a TextMate grammar plus a
   language client that starts `sitefile lsp` (`sitefile.server.path`). Not
-  published; `(cd editors/vscode && npm install && npm run package)`, then
-  `code --install-extension editors/vscode/sitefile-0.2.0.vsix`.
+  on the Marketplace; download `sitefile-vscode-<version>.vsix` from a
+  [release](https://github.com/johnhenry/sitefile/releases) and
+  `code --install-extension sitefile-vscode-<version>.vsix`, or build it
+  (`cd editors/vscode && npm install && npm run package`).
 - **Zed**: [editors/zed/](editors/zed/), tree-sitter highlighting and the
   `sitefile-lsp` language server; **zed: install dev extension** on
   `editors/zed`.
