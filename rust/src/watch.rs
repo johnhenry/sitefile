@@ -23,9 +23,37 @@ use std::time::{Duration, Instant};
 pub const DEBOUNCE: Duration = Duration::from_millis(100);
 /// How often the watched paths are scanned.
 pub const POLL: Duration = Duration::from_millis(100);
+/// Default interval of `--poll`.
+pub const DEFAULT_POLL: Duration = Duration::from_millis(1000);
+
+/// `--poll` / `--poll-interval <ms>` (the interval implies polling): the scan interval, or `None`
+/// for the default ([`POLL`]). Same rules and message as `pollOption` in src/cli/watch.ts.
+pub fn poll_option(poll: bool, interval: Option<&str>) -> Result<Option<Duration>> {
+    let Some(i) = interval else {
+        return Ok(poll.then_some(DEFAULT_POLL));
+    };
+    match i.parse::<u64>() {
+        Ok(n)
+            if n >= 10
+                && !i.is_empty()
+                && i.len() <= 9
+                && i.bytes().all(|b| b.is_ascii_digit()) =>
+        {
+            Ok(Some(Duration::from_millis(n)))
+        }
+        _ => Err(SitefileError::plain(
+            E_USAGE,
+            format!(
+                "--poll-interval expects a whole number of milliseconds (10 or more), got '{i}'"
+            ),
+        )),
+    }
+}
 
 const MSG_CHANGE: &str = "Change detected, rebuilding\n";
 const MSG_FAILED: &str = "Build failed; keeping the last good output\n";
+const MSG_CHANGE_PLAIN: &str = "Change detected, re-reading\n";
+const MSG_FAILED_PLAIN: &str = "Read failed; serving the last good copy\n";
 
 /// `p` is `dir` or inside it (both absolute).
 pub fn is_within(p: &Path, dir: &Path) -> bool {
@@ -145,6 +173,11 @@ pub struct WatchOptions<'a> {
     pub sitefile: Option<&'a str>,
     /// `--build-arg-file` files (re-read by every build).
     pub arg_files: &'a [String],
+    /// `--poll`: scan every this long instead of every [`POLL`]. (This implementation always polls;
+    /// the flag only slows the scans down, for network shares where each stat is slow.)
+    pub poll: Option<Duration>,
+    /// `serve --watch ./dir` without a Sitefile: the directory is re-read, not built (other messages).
+    pub plain: bool,
 }
 
 /// Build once, then rebuild whenever a watched path changes, until `stop()`.
@@ -213,7 +246,7 @@ pub fn watch_loop(
 
     let mut dirty_since: Option<Instant> = None;
     while !stop() {
-        std::thread::sleep(POLL);
+        std::thread::sleep(o.poll.unwrap_or(POLL));
         let snap = w.scan();
         if snap != last {
             last = snap;
@@ -222,9 +255,17 @@ pub fn watch_loop(
         }
         if dirty_since.is_some_and(|t| t.elapsed() >= DEBOUNCE) {
             dirty_since = None;
-            out(MSG_CHANGE);
+            out(if o.plain {
+                MSG_CHANGE_PLAIN
+            } else {
+                MSG_CHANGE
+            });
             if run(&mut w, &mut last) != 0 {
-                err(MSG_FAILED);
+                err(if o.plain {
+                    MSG_FAILED_PLAIN
+                } else {
+                    MSG_FAILED
+                });
             }
             // a change during the build differs from `last` in the next scan: one follow-up build
         }
@@ -255,6 +296,19 @@ mod tests {
             &[root],
             &ignored
         ));
+    }
+
+    #[test]
+    fn poll_option_rules() {
+        assert_eq!(poll_option(false, None).unwrap(), None);
+        assert_eq!(poll_option(true, None).unwrap(), Some(DEFAULT_POLL));
+        assert_eq!(
+            poll_option(false, Some("250")).unwrap(),
+            Some(Duration::from_millis(250))
+        );
+        for bad in ["5", "1.5", "x", "-1", "", "+50"] {
+            assert!(poll_option(true, Some(bad)).is_err(), "{bad}");
+        }
     }
 
     #[test]

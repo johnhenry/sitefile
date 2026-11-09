@@ -1,0 +1,5 @@
+FROM scratch
+# A pinned plugin folder can't hold a symlink (plugins/lib/alias.mjs): it could change what an import resolves to.
+PLUGIN up FROM ./plugins/up.mjs INTEGRITY sha256:48225cefca53bca66c5abdae2412ea144cbeefbddc8c66809adfe68512be3f03
+TRANSFORM ./a.txt WITH up TO /a.txt
+EXPORT /

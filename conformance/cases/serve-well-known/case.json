@@ -1,0 +1,114 @@
+{
+  "command": "serve",
+  "requests": [
+    {
+      "target": "/.well-known/apple-app-site-association",
+      "expect": {
+        "status": 200,
+        "headers": {
+          "content-type": "application/json; charset=utf-8"
+        },
+        "body": "{}\n"
+      }
+    },
+    {
+      "target": "/apple-app-site-association",
+      "expect": {
+        "status": 200,
+        "headers": {
+          "content-type": "application/json; charset=utf-8"
+        },
+        "body": "{}\n"
+      }
+    },
+    {
+      "target": "/.well-known/openid-configuration",
+      "expect": {
+        "status": 200,
+        "headers": {
+          "content-type": "application/json; charset=utf-8"
+        },
+        "body": "{}\n"
+      }
+    },
+    {
+      "target": "/.well-known/oauth-authorization-server",
+      "expect": {
+        "status": 200,
+        "headers": {
+          "content-type": "application/json; charset=utf-8"
+        },
+        "body": "{}\n"
+      }
+    },
+    {
+      "target": "/.well-known/webfinger",
+      "expect": {
+        "status": 200,
+        "headers": {
+          "content-type": "application/jrd+json; charset=utf-8"
+        },
+        "body": "{}\n"
+      }
+    },
+    {
+      "target": "/.well-known/nodeinfo",
+      "expect": {
+        "status": 200,
+        "headers": {
+          "content-type": "application/json; charset=utf-8"
+        },
+        "body": "{}\n"
+      }
+    },
+    {
+      "target": "/.well-known/host-meta",
+      "expect": {
+        "status": 200,
+        "headers": {
+          "content-type": "application/xrd+xml; charset=utf-8"
+        },
+        "body": "{}\n"
+      }
+    },
+    {
+      "target": "/.well-known/host-meta.json",
+      "expect": {
+        "status": 200,
+        "headers": {
+          "content-type": "application/json; charset=utf-8"
+        },
+        "body": "{}\n"
+      }
+    },
+    {
+      "target": "/.well-known/other",
+      "expect": {
+        "status": 200,
+        "headers": {
+          "content-type": "application/octet-stream"
+        },
+        "body": "{}\n"
+      }
+    },
+    {
+      "target": "/docs/.well-known/webfinger",
+      "expect": {
+        "status": 200,
+        "headers": {
+          "content-type": "application/octet-stream"
+        },
+        "body": "{}\n"
+      }
+    },
+    {
+      "target": "/.well-known/webfinger?resource=acct:a@example.com",
+      "expect": {
+        "status": 200,
+        "headers": {
+          "content-type": "application/jrd+json; charset=utf-8"
+        }
+      }
+    }
+  ]
+}

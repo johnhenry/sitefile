@@ -8,11 +8,71 @@
   `null` for fingerprinted files) to `/sw-manifest.json` and/or injects it at
   `self.__WB_MANIFEST`. Both implementations, with conformance cases; example
   `examples/precache`.
+- **DOM-morphing reload with scroll restore** (johnhenry/sitefile#200): when a
+  rebuild changed only existing HTML files, the reload event carries
+  `"morph":true` and pages update in place (scroll, focus and form input
+  stay), falling back to a full reload when their scripts changed. Full
+  reloads keep the scroll position. `--reload full` turns morphing off.
+- **`serve --watch --navigate-to-changed`** (johnhenry/sitefile#199): after a
+  rebuild that changed exactly one page, the reload event carries its URL
+  (`{"type":"reload","path":"/posts/hello/"}`) and open pages go there.
+- **Build-error overlay and Rebuilding badge** (johnhenry/sitefile#198): the
+  `serve --watch` stream sends `{"type":"building"}` when a rebuild starts,
+  `{"type":"error",code,message,file,line,column}` when it fails (also to
+  pages that connect while it is broken) and `{"type":"ok"}` for a good
+  rebuild with identical output. Pages show a badge while rebuilding and a
+  dismissible overlay (in a shadow root) on errors; `--no-overlay` turns
+  both off.
+- **Browser console errors in the `serve --watch` log** (johnhenry/sitefile#174):
+  the live-reload client forwards uncaught errors, unhandled rejections,
+  `console.error` and `console.warn` (`--console`: also `log` and `info`) to
+  `POST /__sitefile/console`, and the server prints them as `browser error: ...`
+  lines. Same-origin only (`Origin` must match `Host`), 16 KiB per message,
+  50 messages per 10 s.
+- **`serve --watch` for a plain directory, with CSS injection**
+  (johnhenry/sitefile#168): `serve --watch ./dir` on a directory without a
+  `Sitefile` (and without `-f`, `--target` or `--build-arg*`) serves it as it
+  is and re-reads it on change. Events are now JSON:
+  `{"type":"reload"}`, or `{"type":"css","paths":[...]}` when only existing
+  stylesheets changed, in which case pages swap the `<link>` instead of
+  reloading (`--no-css-inject` turns that off). A rebuild with identical
+  output sends no event.
+- **`--poll` for watch mode** (johnhenry/sitefile#225): `build --watch` and
+  `serve --watch` take `--poll` (stat polling every 1000 ms instead of file
+  system events, for network shares, Docker bind mounts and WSL) and
+  `--poll-interval <ms>` (implies `--poll`).
+- **Live reload through tunnels and proxies** (johnhenry/sitefile#226): the
+  `/__sitefile/reload` stream is sent with `X-Accel-Buffering: no` and
+  `Cache-Control: no-cache, no-transform`, and the TypeScript server now sends
+  the same `: ping` comment every 15 s as the Rust one, so a buffering or
+  idle-cutting proxy passes events through. The client finds the stream
+  relative to its own URL and, when an answer is not an event stream (a proxy
+  error page), reconnects with backoff (1 s doubling to 30 s).
 - **Live reload gets past caching service workers** (johnhenry/sitefile#229):
   before reloading after a rebuild, the `serve --watch` client unregisters the
   page origin's service workers and empties its Cache Storage, so a site with
   a caching service worker shows the new build. `--keep-service-workers`
   turns it off.
+- **`sitefile hosts`** (johnhenry/sitefile#176): lists the hosts a build would
+  contact (remote IMPORTs, FROM image registries, the BASE registry) from the
+  plan alone, with what needs each and its status under `--allow-hosts`,
+  `--deny-hosts`, `--network strict` and `--allow-secret-host` (`--json` with
+  `needs`). Nothing is fetched. Both implementations, with a conformance case.
+- **`serve`: `/about/` no longer 404s when only `about.html` exists**
+  (johnhenry/sitefile#188): it redirects (`301`, query kept) to the clean URL
+  `/about`, in both servers. `/about.html` still answers 200; which spelling
+  is canonical is johnhenry/sitefile#192.
+- **`serve` accepts absolute-form request targets** (johnhenry/sitefile#189):
+  `GET http://host/path?q HTTP/1.1` is answered like `GET /path?q` (the
+  authority is ignored) instead of `400`, in both servers, as RFC 9112
+  requires.
+- **Extensionless well-known files get their type** (johnhenry/sitefile#180):
+  `serve` and Web Bundle export send `/.well-known/apple-app-site-association`
+  (and `/apple-app-site-association`), `openid-configuration`,
+  `oauth-authorization-server` and `nodeinfo` as `application/json`,
+  `webfinger` as `application/jrd+json` and `host-meta` as
+  `application/xrd+xml`, instead of `application/octet-stream`. Extension
+  matching is ASCII case-insensitive in both implementations.
 - **A fuller content-type table** (johnhenry/sitefile#179): `serve` and Web
   Bundle export type 75 extensions (WebVTT, XSLT, feeds, `.cjs`, source maps,
   fonts, more images, audio, video, HLS/DASH, glTF, archives, ...) instead of
@@ -20,6 +80,25 @@
   `nosniff`. One generated table (`tools/gen-mime.mjs`) feeds both
   implementations. A `serve` conformance case kind (`"command": "serve"`)
   compares both servers' answers to raw HTTP requests.
+- **Choose the Node that runs JavaScript plugins** (johnhenry/sitefile#159):
+  `--node /abs/path`, `SITEFILE_NODE` or `BuildOptions.node` / `node` names
+  the binary (relative paths are a usage error); the default stays the running
+  Node (TypeScript) or `node` on PATH (Rust). Before the first plugin starts
+  the binary is resolved, its `--version` must be at least 26.0.0 (Node 25
+  added network permissions), and `plugins run on node <version> (<path>)` is
+  printed. An older binary fails with `E_PLUGIN` at the `PLUGIN` line. `bake`
+  passes `--node` through.
+- **`sitefile diff`** (johnhenry/sitefile#212): files added, removed and
+  changed (with sizes, digests and modes) between two images, directories or
+  archives, plus the `_redirects`/`_headers` rules added and removed;
+  `--json` and `--exit-code`. Conformance step case `steps-diff`.
+
+- **OS metadata is filtered from archives** (#186): `IMPORT … AS tree` and
+  `serve` of a zip, tar or Web Bundle (and `serve ./dir`) drop `__MACOSX/`,
+  `._*`, `.DS_Store`, `Icon\r`, `Thumbs.db` and `desktop.ini`, with a warning
+  giving the count; `--keep-os-metadata` (`keepOsMetadata`) keeps them. A
+  Finder-made zip is now a single top-level folder. Changes the output (and
+  image ID) of builds that imported such archives. Both implementations.
 - **File manifests and `sitefile verify`** (johnhenry/sitefile#211):
   `build --manifest <file>` and `save --manifest <file>` write every exported
   file's path, size and SHA-256 with an RFC 6962 Merkle root; `sitefile verify
@@ -62,6 +141,15 @@
   default stays `open`. With `--json`, a failed command also prints
   `{"error": {code, message, span, needs}}` on stdout, and `outdated --json`
   error rows include `needs`. Both implementations, with conformance cases.
+- **`INTEGRITY` on a JavaScript plugin pins its folder** (johnhenry/sitefile#158):
+  a JS plugin can read and import every file in its folder, so its
+  `INTEGRITY` is now the folder digest (`sha256:` + the digest the TRANSFORM
+  cache already uses) instead of the module file's. A changed helper, data
+  file or vendored dependency fails with `E_INTEGRITY`, the error gives the
+  folder's current digest, and a pinned folder may not contain symlinks.
+  **Breaking:** an existing pin on a JS plugin (the module file's digest)
+  fails until replaced with the digest from the error. Wasm pins are
+  unchanged.
 
 ## 0.0.2 (2026-11-08)
 
