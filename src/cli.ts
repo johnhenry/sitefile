@@ -111,6 +111,8 @@ Options:
       --allow-http             permit plain http:// imports
       --allow-private-network  permit loopback/private network addresses
       --allow-hardlinks        permit hard-linked files in the context (you assert they are safe)
+      --keep-os-metadata       keep __MACOSX, ._*, .DS_Store, Thumbs.db and desktop.ini in archives
+                               imported AS tree (default: skipped with a warning)
       --max-download-bytes <n> per-resource size limit (default ${DEFAULT_FETCH_POLICY.maxBytes})
       --timeout <ms>           per-resource fetch timeout (default ${DEFAULT_FETCH_POLICY.timeoutMs})
 ${networkHelp(25).map((l) => `      ${l}`).join('\n')}
@@ -183,6 +185,7 @@ export async function main(
         'allow-http': { type: 'boolean' },
         'allow-private-network': { type: 'boolean' },
         'allow-hardlinks': { type: 'boolean' },
+        'keep-os-metadata': { type: 'boolean' },
         'max-download-bytes': { type: 'string' },
         timeout: { type: 'string' },
         json: { type: 'boolean' },
@@ -364,6 +367,7 @@ export async function main(
       ...(remoteCache ? { remoteCache } : {}),
       onNotice: (m) => process.stderr.write(`${m}\n`),
       allowHardlinks: !!o['allow-hardlinks'],
+      keepOsMetadata: !!o['keep-os-metadata'],
       ...(o.platform !== undefined ? { platform: o.platform } : {}),
       ...(o.base !== undefined ? { baseImage: o.base } : {}),
       // inspect never pulls; a non-oci export (with no image tag) has no use for a BASE

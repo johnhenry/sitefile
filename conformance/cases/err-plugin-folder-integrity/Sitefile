@@ -1,0 +1,5 @@
+FROM scratch
+# The digest of up.mjs alone: the folder (with lib/word.mjs) doesn't match, and the error gives its digest.
+PLUGIN up FROM ./plugins/up.mjs INTEGRITY sha256:9c5db8d6f9ff829991deed894563ff1a21cd7e7959082e02a63d421986e9083b
+TRANSFORM ./a.txt WITH up TO /a.txt
+EXPORT /
