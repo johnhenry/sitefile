@@ -9,6 +9,7 @@ pub mod common;
 pub mod git_context;
 pub mod hosts;
 pub mod images;
+pub mod import_config;
 pub mod integrity;
 pub mod network;
 pub mod outdated;
@@ -66,6 +67,11 @@ Integrity:
 Variants:
   sitefile bake [targets...] [-f file] [--print]   build several targets (matrix, groups) from
                                                    sitefile.bake.yaml; --print shows the plan
+
+Host config files:
+  sitefile import-config <file> [--json]           translate netlify.toml, vercel.json, firebase.json,
+                                                   staticwebapp.config.json, wrangler.toml or .htaccess
+                                                   into _redirects and _headers
 
 Offline builds:
   sitefile vendor [context] [--vendor-dir dir]     download remote imports and the BASE image into
@@ -293,6 +299,7 @@ const TOP: &[&Command] = &[
     &up::UP,
     &up::DOWN,
     &up::PS,
+    &import_config::IMPORT_CONFIG,
 ];
 
 struct Group {
