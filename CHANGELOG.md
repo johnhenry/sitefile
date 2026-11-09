@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- **Synced browsing: `serve --watch --sync[=scroll]`** (johnhenry/sitefile#309): opt-in, for
+  `serve --watch` and `serve -d --watch` (the record keeps it). Each open page reports its path,
+  fragment and title (and with `=scroll` its scroll position) to `POST /__sitefile/client`
+  (same origin only, size- and rate-limited, no query strings, form contents, keys or cookies);
+  a navigation in one page is sent to the others as `{"type":"navigate"}` (and scrolling as
+  `{"type":"scroll"}`), which follow unless a form field has focus. Connected pages are listed
+  at `GET /__sitefile/clients` (loopback, non-browser clients only) and logged as `client`
+  lines (`{"type":"client",…}` with `--log-format json`), for Sitefile Desktop. Without
+  `--sync` nothing changes. Both implementations, with conformance cases.
 - **`serve -d --watch ./dir`, and pages reload after a server restart** (johnhenry/sitefile#304):
   a detached server can watch a plain directory (no Sitefile): it re-reads it on change and
   live-reloads open pages, CSS swaps included; `--poll`/`--poll-interval` apply. The record keeps

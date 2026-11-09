@@ -391,6 +391,37 @@ pub struct LiveReloadOptions {
     /// `--reload morph` (true, the default) updates a page in place when only HTML changed;
     /// `--reload full` (false) always reloads.
     pub morph: bool,
+    /// `--sync`: pages report where they are ([`CLIENT_PATH`], listed at [`CLIENTS_PATH`]) and
+    /// follow each other's navigation, and scrolling too with `--sync=scroll`. None: off.
+    pub sync: Option<SyncMode>,
+}
+
+/// What `--sync` mirrors between open pages (`SyncMode` in src/server.ts).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SyncMode {
+    /// `--sync`: navigation.
+    Nav,
+    /// `--sync=scroll`: navigation and scrolling.
+    Scroll,
+}
+
+impl SyncMode {
+    /// `nav` or `scroll` (as recorded and sent to the client script).
+    pub fn as_str(self) -> &'static str {
+        match self {
+            SyncMode::Nav => "nav",
+            SyncMode::Scroll => "scroll",
+        }
+    }
+
+    /// `nav` or `scroll`, else None.
+    pub fn parse(s: &str) -> Option<SyncMode> {
+        match s {
+            "nav" => Some(SyncMode::Nav),
+            "scroll" => Some(SyncMode::Scroll),
+            _ => None,
+        }
+    }
 }
 
 impl Default for LiveReloadOptions {
@@ -402,6 +433,7 @@ impl Default for LiveReloadOptions {
             overlay: true,
             navigate_to_changed: false,
             morph: true,
+            sync: None,
         }
     }
 }
@@ -410,14 +442,18 @@ impl Default for LiveReloadOptions {
 /// the same fixed order as `clientScript` in src/server.ts).
 pub fn client_script(options: &LiveReloadOptions) -> String {
     format!(
-        "{}({{\"resetServiceWorkers\":{},\"cssInject\":{},\"console\":{},\"overlay\":{},\"navigateToChanged\":{},\"reload\":\"{}\"}});\n",
+        "{}({{\"resetServiceWorkers\":{},\"cssInject\":{},\"console\":{},\"overlay\":{},\"navigateToChanged\":{},\"reload\":\"{}\"{}}});\n",
         reload_client(),
         options.reset_service_workers,
         options.css_inject,
         options.console,
         options.overlay,
         options.navigate_to_changed,
-        if options.morph { "morph" } else { "full" }
+        if options.morph { "morph" } else { "full" },
+        options
+            .sync
+            .map(|m| format!(",\"sync\":\"{}\"", m.as_str()))
+            .unwrap_or_default()
     )
 }
 
@@ -518,6 +554,146 @@ pub fn is_same_origin_post(headers: &HashMap<String, String>) -> bool {
     *origin == format!("http://{host}") || *origin == format!("https://{host}")
 }
 
+/// Reserved for location reports (POST) from pages while `serve --watch --sync` runs.
+pub const CLIENT_PATH: &str = "/__sitefile/client";
+/// Reserved for the list of connected pages (GET, loopback only, not from a browser) while
+/// `serve --watch --sync` runs.
+pub const CLIENTS_PATH: &str = "/__sitefile/clients";
+/// Largest location report accepted (bytes).
+pub const MAX_CLIENT_BODY: u64 = 4096;
+/// At most this many reports are accepted from one page per [`CLIENT_WINDOW`] (more get `429`).
+pub const CLIENT_REPORT_LIMIT: u32 = 60;
+pub const CLIENT_WINDOW: Duration = Duration::from_secs(10);
+/// At most this many pages are tracked (one that left is forgotten first to make room).
+pub const MAX_CLIENTS: usize = 64;
+
+/// One location report from a page's client script (`ClientReport` in src/server.ts).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClientReport {
+    pub id: String,
+    pub url: String,
+    pub title: String,
+    pub nav: bool,
+    pub scroll: Option<(u32, u32)>,
+}
+
+fn is_client_id(s: &str) -> bool {
+    s.len() == 16 && s.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
+}
+
+/// A location report body, or None when it is not one (`parseClientReport` in src/server.ts).
+pub fn parse_client_report(body: &str) -> Option<ClientReport> {
+    let v: serde_json::Value = serde_json::from_str(body).ok()?;
+    let o = v.as_object()?;
+    let id = o.get("id")?.as_str().filter(|s| is_client_id(s))?;
+    let url = o.get("url")?.as_str()?;
+    let b = url.as_bytes();
+    if url.len() > 2048
+        || b.first() != Some(&b'/')
+        || b.get(1) == Some(&b'/')
+        || !b.iter().all(|c| (0x21..=0x7e).contains(c))
+    {
+        return None;
+    }
+    let title = match o.get("title") {
+        None => "",
+        Some(t) => t.as_str()?,
+    };
+    let nav = match o.get("nav") {
+        None => false,
+        Some(n) => n.as_bool()?,
+    };
+    let part = |x: &serde_json::Value| -> Option<u32> {
+        let f = x.as_f64()?;
+        (f.fract() == 0.0 && (0.0..=10000.0).contains(&f)).then_some(f as u32)
+    };
+    let scroll = match o.get("scroll") {
+        None => None,
+        Some(sc) => {
+            let a = sc.as_array().filter(|a| a.len() == 2)?;
+            Some((part(&a[0])?, part(&a[1])?))
+        }
+    };
+    Some(ClientReport {
+        id: id.to_string(),
+        url: url.to_string(),
+        title: clean_text(title, 200),
+        nav,
+        scroll,
+    })
+}
+
+/// The tab ID a page's event stream names (`?client=<id>`, the first `client`), else None
+/// (`streamClientId` in src/server.ts).
+pub fn stream_client_id(search: &str) -> Option<String> {
+    let q = search.strip_prefix('?').unwrap_or(search);
+    for pair in q.split('&') {
+        let Some((k, v)) = pair.split_once('=') else {
+            continue;
+        };
+        if k != "client" {
+            continue;
+        }
+        return is_client_id(v).then(|| v.to_string());
+    }
+    None
+}
+
+/// Whether a request for [`CLIENTS_PATH`] comes from the operator, not a page: a loopback client
+/// that sends no `Origin` and no `Sec-Fetch-*` header (`isOperatorRequest` in src/server.ts).
+pub fn is_operator_request(remote: &str, headers: &HashMap<String, String>) -> bool {
+    is_loopback_text(remote)
+        && !headers.contains_key("origin")
+        && !headers.contains_key("sec-fetch-site")
+        && !headers.contains_key("sec-fetch-mode")
+}
+
+/// A `--sync` log line, text or JSON (`clientLogLine` in src/server.ts).
+#[allow(clippy::too_many_arguments)]
+pub fn client_log_line(
+    json: bool,
+    ts: &str,
+    event: &str,
+    id: &str,
+    url: &str,
+    title: &str,
+    remote: &str,
+    device: &str,
+) -> String {
+    if !json {
+        return format!("client {event} {id} {url} {remote} {device}");
+    }
+    format!(
+        "{{\"type\":\"client\",\"ts\":{},\"event\":{},\"id\":{},\"url\":{}{},\"remote\":{},\"device\":{}}}",
+        json_str(ts),
+        json_str(event),
+        json_str(id),
+        json_str(url),
+        if title.is_empty() {
+            String::new()
+        } else {
+            format!(",\"title\":{}", json_str(title))
+        },
+        json_str(remote),
+        json_str(device)
+    )
+}
+
+/// A page `--sync` knows about.
+struct ClientEntry {
+    id: String,
+    remote: String,
+    device: String,
+    /// Empty until its first report.
+    url: String,
+    title: String,
+    since: String,
+    last_seen: String,
+    /// Its open event streams; 0: it left (kept, so it keeps its `since` if it comes back).
+    streams: u32,
+    window: Option<(Instant, u32)>,
+}
+
 /// The event that tells every page to reload.
 pub const RELOAD_EVENT: &str = "{\"type\":\"reload\"}";
 /// Sent when a rebuild starts (pages show a Rebuilding badge).
@@ -613,7 +789,8 @@ pub fn reload_event_for(
 #[derive(Default)]
 struct Events {
     next: u64,
-    recent: std::collections::VecDeque<(u64, String)>,
+    /// Each event, and the tab whose streams skip it (`--sync` events go to the other pages).
+    recent: std::collections::VecDeque<(u64, String, Option<String>)>,
 }
 const KEPT_EVENTS: usize = 64;
 
@@ -638,6 +815,10 @@ pub struct LiveReload {
     /// the event ID, so a page that reconnects after a restart sends the old one in
     /// `Last-Event-ID` and is told to reload.
     instance: String,
+    /// `--sync`, else None.
+    sync: Option<SyncMode>,
+    /// `--sync`: the pages that reported, in the order they first connected.
+    known: Mutex<Vec<ClientEntry>>,
 }
 
 impl LiveReload {
@@ -649,6 +830,7 @@ impl LiveReload {
         Arc::new(LiveReload {
             script: client_script(options),
             console: options.console,
+            sync: options.sync,
             instance: crate::export::exporter::random_hex(8),
             ..LiveReload::default()
         })
@@ -738,6 +920,149 @@ impl LiveReload {
         res(204, h, &[])
     }
 
+    /// `--sync`, else None.
+    pub fn sync(&self) -> Option<SyncMode> {
+        self.sync
+    }
+
+    /// `--sync`: count a stream that opened for tab `id`; false when [`MAX_CLIENTS`] are connected
+    /// (the stream is then not tracked).
+    fn track(&self, id: &str, remote: &str, device: &str) -> bool {
+        let Ok(mut known) = self.known.lock() else {
+            return false;
+        };
+        let now = crate::store::now_iso();
+        if !known.iter().any(|e| e.id == id) {
+            if known.len() >= MAX_CLIENTS {
+                let Some(gone) = known.iter().position(|e| e.streams == 0) else {
+                    return false;
+                };
+                known.remove(gone);
+            }
+            known.push(ClientEntry {
+                id: id.to_string(),
+                remote: String::new(),
+                device: String::new(),
+                url: String::new(),
+                title: String::new(),
+                since: now.clone(),
+                last_seen: String::new(),
+                streams: 0,
+                window: None,
+            });
+        }
+        if let Some(e) = known.iter_mut().find(|e| e.id == id) {
+            e.remote = remote.to_string();
+            e.device = device.to_string();
+            e.last_seen = now;
+            e.streams += 1;
+        }
+        true
+    }
+
+    /// `--sync`: a stream of tab `id` closed.
+    fn untrack(&self, id: &str) {
+        if let Ok(mut known) = self.known.lock() {
+            if let Some(e) = known.iter_mut().find(|e| e.id == id) {
+                e.streams = e.streams.saturating_sub(1);
+                e.last_seen = crate::store::now_iso();
+            }
+        }
+    }
+
+    /// `--sync`: take a page's location report (`LiveReload.report` in src/server.ts): the status
+    /// to answer and the log line it gives.
+    pub fn report(&self, r: &ClientReport, now: Instant, json: bool) -> (u16, Option<String>) {
+        let Some(sync) = self.sync else {
+            return (404, None);
+        };
+        let Ok(mut known) = self.known.lock() else {
+            return (404, None);
+        };
+        let Some(e) = known.iter_mut().find(|e| e.id == r.id && e.streams > 0) else {
+            return (404, None);
+        };
+        let (start, count) = match e.window {
+            Some((start, count)) if now.duration_since(start) < CLIENT_WINDOW => (start, count + 1),
+            _ => (now, 1),
+        };
+        e.window = Some((start, count));
+        if count > CLIENT_REPORT_LIMIT {
+            return (429, None);
+        }
+        let ts = crate::store::now_iso();
+        let event = if e.url.is_empty() {
+            Some("connect")
+        } else if e.url != r.url {
+            Some("navigate")
+        } else {
+            None
+        };
+        e.url = r.url.clone();
+        e.title = r.title.clone();
+        e.last_seen = ts.clone();
+        let line = event.map(|ev| {
+            client_log_line(json, &ts, ev, &r.id, &r.url, &r.title, &e.remote, &e.device)
+        });
+        drop(known);
+        if r.nav {
+            self.send_except(
+                &format!("{{\"type\":\"navigate\",\"url\":{}}}", json_str(&r.url)),
+                &r.id,
+            );
+        }
+        if let (Some((x, y)), SyncMode::Scroll) = (r.scroll, sync) {
+            self.send_except(
+                &format!(
+                    "{{\"type\":\"scroll\",\"url\":{},\"x\":{x},\"y\":{y}}}",
+                    json_str(&r.url)
+                ),
+                &r.id,
+            );
+        }
+        (204, line)
+    }
+
+    /// `--sync`: the connected pages as [`CLIENTS_PATH`] answers them (`clientsJson` in
+    /// src/server.ts).
+    pub fn clients_json(&self) -> String {
+        let Ok(known) = self.known.lock() else {
+            return "{\"clients\":[]}\n".into();
+        };
+        let mut list: Vec<&ClientEntry> = known.iter().filter(|e| e.streams > 0).collect();
+        list.sort_by(|a, b| a.since.cmp(&b.since).then_with(|| a.id.cmp(&b.id)));
+        let items: Vec<String> = list
+            .iter()
+            .map(|e| {
+                format!(
+                    "{{\"id\":{},\"url\":{},\"title\":{},\"remote\":{},\"device\":{},\"since\":{},\"lastSeen\":{}}}",
+                    json_str(&e.id),
+                    json_str(&e.url),
+                    json_str(&e.title),
+                    json_str(&e.remote),
+                    json_str(&e.device),
+                    json_str(&e.since),
+                    json_str(&e.last_seen)
+                )
+            })
+            .collect();
+        format!("{{\"clients\":[{}]}}\n", items.join(","))
+    }
+
+    /// Send `event` to every open page except those of tab `id`.
+    fn send_except(&self, event: &str, id: &str) {
+        if let Ok(mut e) = self.events.lock() {
+            let n = e.next;
+            e.recent
+                .push_back((n, event.to_string(), Some(id.to_string())));
+            e.next += 1;
+            while e.recent.len() > KEPT_EVENTS {
+                e.recent.pop_front();
+            }
+        }
+        self.changed.notify_all();
+    }
+
     /// Send `event` (one line of JSON) to every open page.
     pub fn send(&self, event: &str) {
         if let Ok(mut f) = self.failure.lock() {
@@ -749,7 +1074,7 @@ impl LiveReload {
         }
         if let Ok(mut e) = self.events.lock() {
             let id = e.next;
-            e.recent.push_back((id, event.to_string()));
+            e.recent.push_back((id, event.to_string(), None));
             e.next += 1;
             while e.recent.len() > KEPT_EVENTS {
                 e.recent.pop_front();
@@ -801,7 +1126,14 @@ impl LiveReload {
     /// 15 s keeps idle connections from being cut (and finds clients that went away).
     /// A page that was connected to an earlier instance of this server (`last_event_id` differs
     /// from [`LiveReload::instance`]) is told to reload at once.
-    fn stream(&self, out: &mut Conn, options: &SiteServerOptions, last_event_id: Option<&str>) {
+    /// With `--sync`, `client` is the tab ID the stream names, its address and device.
+    fn stream(
+        &self,
+        out: &mut Conn,
+        options: &SiteServerOptions,
+        last_event_id: Option<&str>,
+        client: Option<(String, String, &str)>,
+    ) {
         let mut head = String::from("HTTP/1.1 200 OK\r\nx-content-type-options: nosniff\r\n");
         if let Some(id) = options.server_id.as_deref().filter(|s| !s.is_empty()) {
             head.push_str(&format!("x-sitefile-server: {id}\r\n"));
@@ -832,6 +1164,10 @@ impl LiveReload {
             return;
         }
         self.clients.fetch_add(1, Ordering::SeqCst);
+        let client = client
+            .filter(|_| self.sync.is_some())
+            .filter(|(id, remote, device)| self.track(id, remote, device))
+            .map(|(id, _, _)| id);
         let mut seen = self.events.lock().map(|e| e.next).unwrap_or(0);
         loop {
             let Ok(e) = self.events.lock() else { break };
@@ -844,8 +1180,8 @@ impl LiveReload {
                 break;
             };
             let mut msg = String::new();
-            for (id, ev) in &e.recent {
-                if *id >= seen {
+            for (id, ev, skip) in &e.recent {
+                if *id >= seen && (skip.is_none() || *skip != client) {
                     msg.push_str(&format!("data: {ev}\n\n"));
                 }
             }
@@ -867,7 +1203,98 @@ impl LiveReload {
             }
         }
         self.clients.fetch_sub(1, Ordering::SeqCst);
+        if let Some(id) = &client {
+            self.untrack(id);
+        }
     }
+}
+
+/// A response with no body: `status`, the base headers and `extra`.
+fn empty_response(options: &SiteServerOptions, status: u16, extra: &[(&str, &str)]) -> Response {
+    let mut headers = base_headers(options);
+    for (k, v) in extra {
+        match headers.iter_mut().find(|(h, _)| h == k) {
+            Some(h) => h.1 = v.to_string(),
+            None => headers.push((k.to_string(), v.to_string())),
+        }
+    }
+    Response {
+        status,
+        headers,
+        body: Vec::new(),
+        note: None,
+    }
+}
+
+/// `--sync`: the answer to a request for [`CLIENT_PATH`]; `body` is the POST body when it was
+/// read (same origin, at most [`MAX_CLIENT_BODY`]).
+fn client_post_response(
+    live: Option<&LiveReload>,
+    options: &SiteServerOptions,
+    req: &Request,
+    body: Option<&[u8]>,
+) -> Response {
+    let Some(live) = live else {
+        return empty_response(options, 404, &[("content-length", "0")]);
+    };
+    if req.method != "POST" {
+        return empty_response(options, 405, &[("allow", "POST"), ("content-length", "0")]);
+    }
+    if !is_same_origin_post(&req.headers) {
+        return empty_response(options, 403, &[("content-length", "0")]);
+    }
+    if req.chunked || req.body_len > MAX_CLIENT_BODY {
+        return empty_response(options, 413, &[("content-length", "0")]);
+    }
+    let text = String::from_utf8_lossy(body.unwrap_or_default());
+    let Some(r) = parse_client_report(&text) else {
+        return empty_response(options, 400, &[("content-length", "0")]);
+    };
+    let (status, line) = live.report(&r, Instant::now(), options.log_json);
+    if let (Some(line), Some(log)) = (line, &options.log) {
+        log(&line);
+    }
+    if status == 204 {
+        empty_response(options, 204, &[])
+    } else {
+        empty_response(options, status, &[("content-length", "0")])
+    }
+}
+
+/// `--sync`: the answer to a request for [`CLIENTS_PATH`] (loopback only, not from a page).
+fn clients_response(
+    live: Option<&LiveReload>,
+    options: &SiteServerOptions,
+    req: &Request,
+    peer: Option<&str>,
+) -> Response {
+    let Some(live) = live else {
+        return empty_response(options, 404, &[("content-length", "0")]);
+    };
+    if req.method != "GET" && req.method != "HEAD" {
+        return empty_response(
+            options,
+            405,
+            &[("allow", "GET, HEAD"), ("content-length", "0")],
+        );
+    }
+    if !is_operator_request(peer.unwrap_or(""), &req.headers) {
+        return empty_response(options, 403, &[("content-length", "0")]);
+    }
+    let json = live.clients_json();
+    let mut r = empty_response(
+        options,
+        200,
+        &[
+            ("content-type", "application/json"),
+            ("cache-control", "no-store"),
+            ("content-length", &json.len().to_string()),
+        ],
+    );
+    if req.method == "GET" {
+        r.body = json.into_bytes();
+    }
+    r
 }
 
 /// `html` with [`RELOAD_SCRIPT`] inserted before the last `</body` (ASCII case-insensitive), else appended.
@@ -4020,12 +4447,24 @@ fn serve_connection(
             .live_reload
             .as_ref()
             .filter(|_| host_ok && raw_path_of(&req.url) == CONSOLE_PATH);
+        // --sync: a page's location report, and the list of connected pages.
+        let synced = options
+            .live_reload
+            .as_ref()
+            .filter(|l| host_ok && l.sync().is_some());
+        let client_post = synced.filter(|_| raw_path_of(&req.url) == CLIENT_PATH);
+        let clients_get = synced.filter(|_| raw_path_of(&req.url) == CLIENTS_PATH);
+        let max_body = if client_post.is_some() {
+            MAX_CLIENT_BODY
+        } else {
+            MAX_CONSOLE_BODY
+        };
         let mut body: Option<Vec<u8>> = None;
-        if console.is_some()
+        if (console.is_some() || client_post.is_some())
             && req.method == "POST"
             && is_same_origin_post(&req.headers)
             && !req.chunked
-            && req.body_len <= MAX_CONSOLE_BODY
+            && req.body_len <= max_body
         {
             let mut buf = vec![0u8; req.body_len as usize];
             if reader.read_exact(&mut buf).is_err() {
@@ -4038,16 +4477,31 @@ fn serve_connection(
         {
             keep = false;
         }
-        if console.is_some() && (req.chunked || req.body_len > MAX_CONSOLE_BODY) {
+        if (console.is_some() || client_post.is_some()) && (req.chunked || req.body_len > max_body)
+        {
             keep = false;
         }
         if let Some(live) = options.live_reload.as_ref().filter(|_| {
             host_ok && req.method == "GET" && raw_path_of(&origin_form(&req.url)) == RELOAD_PATH
         }) {
+            let target = origin_form(&req.url);
+            let search = &target[raw_path_of(&target).len()..];
+            let search = &search[..search.find('#').unwrap_or(search.len())];
+            let client = live
+                .sync()
+                .and_then(|_| stream_client_id(search))
+                .map(|id| {
+                    (
+                        id,
+                        peer.clone().unwrap_or_default(),
+                        device_of(req.headers.get("user-agent").map(String::as_str)),
+                    )
+                });
             live.stream(
                 &mut out,
                 options,
                 req.headers.get("last-event-id").map(String::as_str),
+                client,
             ); // not access-logged: one long request per open page
             break;
         }
@@ -4093,6 +4547,12 @@ fn serve_connection(
                 req.body_len,
                 req.chunked,
             ),
+            None if client_post.is_some() => {
+                client_post_response(client_post.map(Arc::as_ref), options, &req, body.as_deref())
+            }
+            None if clients_get.is_some() => {
+                clients_response(clients_get.map(Arc::as_ref), options, &req, peer.as_deref())
+            }
             None => respond(
                 &current,
                 &site_rules,
@@ -4165,8 +4625,10 @@ fn serve_connection(
             && req.headers.get("x-sitefile-probe") == options.server_id.as_ref();
         // every page load fetches the reload script; it would only clutter the access log
         // nor do console messages (they are logged as `browser ...` lines)
-        let quiet = options.live_reload.is_some()
-            && [RELOAD_SCRIPT_PATH, CONSOLE_PATH].contains(&raw_path_of(&req.url));
+        let quiet = (options.live_reload.is_some()
+            && [RELOAD_SCRIPT_PATH, CONSOLE_PATH].contains(&raw_path_of(&req.url)))
+            || client_post.is_some()
+            || clients_get.is_some();
         if !probe && !quiet && !options.quiet {
             if let Some(log) = &options.log {
                 let shared = options.client_info && !peer.as_deref().is_some_and(is_loopback_text);
@@ -6064,6 +6526,7 @@ mod tests {
             overlay: false,
             navigate_to_changed: true,
             morph: false,
+            sync: None,
         });
         assert_eq!(
             keep.script(),
@@ -6204,6 +6667,183 @@ mod tests {
         ] {
             assert_eq!(l(bad, true), None, "{bad}");
         }
+    }
+
+    #[test]
+    fn sync_reports_stream_ids_operator_and_log_lines() {
+        let o = |sync| {
+            client_script(&LiveReloadOptions {
+                sync,
+                ..Default::default()
+            })
+        };
+        assert!(o(Some(SyncMode::Nav)).ends_with("\"reload\":\"morph\",\"sync\":\"nav\"});\n"));
+        assert!(o(Some(SyncMode::Scroll)).ends_with(",\"sync\":\"scroll\"});\n"));
+        assert!(o(None).ends_with("\"reload\":\"morph\"});\n"));
+        let id = "0123456789abcdef";
+        assert_eq!(
+            parse_client_report(&format!(
+                r#"{{"id":"{id}","url":"/docs/#a","title":" Docs\n  page ","nav":true}}"#
+            )),
+            Some(ClientReport {
+                id: id.into(),
+                url: "/docs/#a".into(),
+                title: "Docs   page".into(),
+                nav: true,
+                scroll: None
+            })
+        );
+        assert_eq!(
+            parse_client_report(&format!(
+                r#"{{"id":"{id}","url":"/","scroll":[0,10000.0]}}"#
+            ))
+            .and_then(|r| r.scroll),
+            Some((0, 10000))
+        );
+        for bad in [
+            String::new(),
+            "x".into(),
+            "[]".into(),
+            r#"{"url":"/"}"#.into(),
+            r#"{"id":"0123456789ABCDEF","url":"/"}"#.into(),
+            format!(r#"{{"id":"{id}"}}"#),
+            format!(r#"{{"id":"{id}","url":"//evil.example/"}}"#),
+            format!(r#"{{"id":"{id}","url":"https://x/"}}"#),
+            format!(r#"{{"id":"{id}","url":"/a b"}}"#),
+            format!(r#"{{"id":"{id}","url":"/{}"}}"#, "a".repeat(2048)),
+            format!(r#"{{"id":"{id}","url":"/","nav":1}}"#),
+            format!(r#"{{"id":"{id}","url":"/","title":5}}"#),
+            format!(r#"{{"id":"{id}","url":"/","scroll":[1]}}"#),
+            format!(r#"{{"id":"{id}","url":"/","scroll":[0.5,1]}}"#),
+            format!(r#"{{"id":"{id}","url":"/","scroll":[0,10001]}}"#),
+        ] {
+            assert_eq!(parse_client_report(&bad), None, "{bad}");
+        }
+        assert_eq!(stream_client_id(&format!("?client={id}")), Some(id.into()));
+        assert_eq!(
+            stream_client_id(&format!("?x=1&client={id}&client=fedcba9876543210")),
+            Some(id.into())
+        );
+        assert_eq!(stream_client_id("?client=nothex"), None);
+        assert_eq!(stream_client_id(""), None);
+        assert!(is_operator_request("127.0.0.1", &headers(&[])));
+        assert!(is_operator_request(
+            "::ffff:127.0.0.1",
+            &headers(&[("user-agent", "curl")])
+        ));
+        assert!(!is_operator_request("192.168.1.2", &headers(&[])));
+        assert!(!is_operator_request(
+            "127.0.0.1",
+            &headers(&[("origin", "http://127.0.0.1:1")])
+        ));
+        assert!(!is_operator_request(
+            "127.0.0.1",
+            &headers(&[("sec-fetch-mode", "navigate")])
+        ));
+        let ts = "2026-01-02T03:04:05.006Z";
+        assert_eq!(
+            client_log_line(
+                false,
+                ts,
+                "navigate",
+                id,
+                "/a/",
+                "A \"page\"",
+                "127.0.0.1",
+                "Mac"
+            ),
+            format!("client navigate {id} /a/ 127.0.0.1 Mac")
+        );
+        assert_eq!(
+            client_log_line(
+                true,
+                ts,
+                "navigate",
+                id,
+                "/a/",
+                "A \"page\"",
+                "127.0.0.1",
+                "Mac"
+            ),
+            format!(
+                r#"{{"type":"client","ts":"{ts}","event":"navigate","id":"{id}","url":"/a/","title":"A \"page\"","remote":"127.0.0.1","device":"Mac"}}"#
+            )
+        );
+        assert_eq!(
+            client_log_line(true, ts, "connect", id, "/", "", "::1", "other"),
+            format!(
+                r#"{{"type":"client","ts":"{ts}","event":"connect","id":"{id}","url":"/","remote":"::1","device":"other"}}"#
+            )
+        );
+    }
+
+    #[test]
+    fn sync_report_tracks_pages_broadcasts_and_rate_limits() {
+        let live = LiveReload::with_options(&LiveReloadOptions {
+            sync: Some(SyncMode::Scroll),
+            ..Default::default()
+        });
+        let (a, b) = ("aaaaaaaaaaaaaaaa", "bbbbbbbbbbbbbbbb");
+        let report = |id: &str, url: &str, nav: bool, scroll: Option<(u32, u32)>| ClientReport {
+            id: id.into(),
+            url: url.into(),
+            title: String::new(),
+            nav,
+            scroll,
+        };
+        let now = Instant::now();
+        assert_eq!(live.report(&report(a, "/", false, None), now, false).0, 404);
+        assert!(live.track(a, "127.0.0.1", "Mac"));
+        assert!(live.track(b, "127.0.0.1", "other"));
+        assert_eq!(
+            live.report(&report(a, "/", false, None), now, false),
+            (204, Some(format!("client connect {a} / 127.0.0.1 Mac")))
+        );
+        assert_eq!(
+            live.report(&report(a, "/", false, None), now, false),
+            (204, None)
+        );
+        assert_eq!(
+            live.report(&report(a, "/x/", true, None), now, false),
+            (204, Some(format!("client navigate {a} /x/ 127.0.0.1 Mac")))
+        );
+        live.report(&report(b, "/x/", false, Some((0, 5000))), now, false);
+        let e = live.events.lock().unwrap();
+        let sent: Vec<(String, Option<String>)> = e
+            .recent
+            .iter()
+            .map(|(_, ev, skip)| (ev.clone(), skip.clone()))
+            .collect();
+        drop(e);
+        assert_eq!(
+            sent,
+            vec![
+                (r#"{"type":"navigate","url":"/x/"}"#.into(), Some(a.into())),
+                (
+                    r#"{"type":"scroll","url":"/x/","x":0,"y":5000}"#.into(),
+                    Some(b.into())
+                ),
+            ]
+        );
+        let json = live.clients_json();
+        assert!(json.starts_with(&format!(
+            r#"{{"clients":[{{"id":"{a}","url":"/x/","title":"","remote":"127.0.0.1","device":"Mac","since":""#
+        )));
+        live.untrack(a);
+        assert!(
+            !live.clients_json().contains(a),
+            "a page that left is not listed"
+        );
+        assert_eq!(live.report(&report(a, "/", false, None), now, false).0, 404);
+        let mut limited = 0;
+        for _ in 0..CLIENT_REPORT_LIMIT + 5 {
+            if live.report(&report(b, "/x/", false, None), now, false).0 == 429 {
+                limited += 1;
+            }
+        }
+        assert!(limited >= 5);
+        let off = LiveReload::new();
+        assert!(off.sync().is_none());
     }
 
     #[test]

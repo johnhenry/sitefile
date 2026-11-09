@@ -123,8 +123,11 @@ export async function runExtraCommand(argv: readonly string[]): Promise<number> 
   return runCommand(cmd, name === 'serve' ? optionalOpen(rest) : rest);
 }
 
-/** `serve --open` takes its path only as `--open=<path>`: a bare `--open` (before `--`) is `--open=`. */
+/**
+ * `serve --open` and `--sync` take a value only as `--open=<path>`, `--sync=scroll`: a bare `--open`
+ * or `--sync` (before `--`) is `--open=`, `--sync=`.
+ */
 export function optionalOpen(args: readonly string[]): string[] {
   const end = args.indexOf('--');
-  return args.map((a, i) => (a === '--open' && (end === -1 || i < end) ? '--open=' : a));
+  return args.map((a, i) => ((a === '--open' || a === '--sync') && (end === -1 || i < end) ? `${a}=` : a));
 }
