@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Tags · ${SITE_TITLE}</title>
+  <link rel="stylesheet" href="/style.css">
+  ${feed_link}
+</head>
+<body>
+  ${site_header}
+  <main>
+    <h1>Tags</h1>
+    <ul>
+      ${#each posts by tags as tag}
+      <li><a href="/tags/${tag.key}/">${tag.key}</a> (${tag.count}) · <a href="/tags/${tag.key}/feed.xml">feed</a></li>
+      ${else}
+      <li>No tags yet.</li>
+      ${/each}
+    </ul>
+  </main>
+</body>
+</html>

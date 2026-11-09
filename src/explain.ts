@@ -47,7 +47,7 @@ export function operationLabel(op: Operation): string {
     case 'SITEMAP':
       return `SITEMAP ${op.dest}`;
     case 'FEED':
-      return `FEED ${op.list} ${op.dest}`;
+      return op.each ? `FEED FOR ${op.each.as} IN ${op.list} BY ${op.each.by}` : `FEED ${op.list} ${op.dest}`;
     case 'FINGERPRINT':
       return `FINGERPRINT ${op.patterns.join(' ')}`;
     case 'CANONICAL':

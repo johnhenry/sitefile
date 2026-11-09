@@ -293,11 +293,17 @@ pub(crate) fn instruction(ins: &Instruction) -> Value {
             ("dest", dest.as_ref().map(operand)),
             ("overwrite", Some(json!(overwrite))),
         ]),
-        Instruction::Feed { span: sp, list, list_span, base, link, dest, title, overwrite } => obj(vec![
+        Instruction::Feed { span: sp, list, list_span, each, base, link, dest, title, overwrite } => obj(vec![
             ("kind", s("FEED")),
             ("span", Some(span(sp))),
             ("list", Some(json!(list))),
             ("listSpan", Some(span(list_span))),
+            (
+                "each",
+                each.as_ref().map(|e| {
+                    json!({ "as": e.as_name, "by": { "key": e.by.key, "span": span(&e.by.span) }, "span": span(&e.span) })
+                }),
+            ),
             ("base", Some(operand(base))),
             ("link", Some(operand(link))),
             ("dest", dest.as_ref().map(operand)),

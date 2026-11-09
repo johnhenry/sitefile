@@ -5041,12 +5041,20 @@ impl<'a> Exec<'a> {
         let memoized = self.memo.is_some();
         match op {
             Operation::Transform { .. } => self.produce_transform(op, op_id),
-            Operation::Feed { list, link, .. } => {
-                // A feed reads its list and what its LINK names.
+            Operation::Feed {
+                list, link, each, ..
+            } => {
+                // A feed reads its list and what its LINK (and per-group TO and TITLE) name.
                 let key = memoized.then(|| {
-                    let mut names = operand_names(&[link]);
+                    let mut ops = vec![link];
+                    if let Some(e) = each {
+                        ops.push(&e.dest);
+                        ops.extend(e.title.iter());
+                    }
+                    let mut names = operand_names(&ops);
                     names.insert(list.clone());
-                    memo_key(&["feed", op_id, &self.names_key(names, None)])
+                    let except = each.as_ref().map(|e| e.as_name.as_str());
+                    memo_key(&["feed", op_id, &self.names_key(names, except)])
                 });
                 if let Some(hit) = self.memo_lookup(&key) {
                     return Ok(hit);
@@ -5413,9 +5421,9 @@ impl<'a> Exec<'a> {
         let Operation::Feed {
             list,
             base,
-            link,
             dest,
             title,
+            each,
             span,
             ..
         } = op
@@ -5432,11 +5440,78 @@ impl<'a> Exec<'a> {
                 span,
             ));
         };
-        if items.is_empty() {
+        let xml_file = |title: &str, dest: &str, items: &[Value]| -> Result<(String, Node)> {
+            let entries = self.feed_entries(op, items)?;
+            let xml = atom_xml(title, &format!("{base}/"), &page_url(base, dest), &entries);
+            Ok((
+                dest.to_string(),
+                make_file(xml.into_bytes(), origin.as_str(), 0o644),
+            ))
+        };
+        let Some(g) = each else {
+            if items.is_empty() {
+                (self.warn)(&format!(
+                    "{origin}: '{list}' is empty, so the feed has no entries"
+                ));
+            }
+            return Ok(vec![xml_file(title, dest, items)?]);
+        };
+        // FEED tag … FOR tag IN list BY key: one feed per group, its TO and TITLE evaluated with the group.
+        let as_name = &g.as_name;
+        let by = &g.by;
+        let groups = crate::pages::group_by(
+            items,
+            by,
+            &format!("FEED {as_name} FOR {as_name} IN {list} BY {by}"),
+            span,
+        )?;
+        if groups.is_empty() {
             (self.warn)(&format!(
-                "{origin}: '{list}' is empty, so the feed has no entries"
+                "{origin}: FOR {as_name} IN {list} BY {by} writes no feeds: no element has '{by}'"
             ));
         }
+        let mut files = Vec::new();
+        for group in &groups {
+            let group_scope = scope.with_item(as_name, group);
+            let raw = group_scope.interpolate(&g.dest)?;
+            let target = normalize_virtual(
+                &raw,
+                Some(&g.dest.span),
+                &format!("FEED destination for {as_name}"),
+            )?;
+            if target.trailing_slash {
+                return Err(SitefileError::at(
+                    E_PATH,
+                    format!("FEED destination '{raw}' must be a file path, not a directory"),
+                    &g.dest.span,
+                ));
+            }
+            let title = match &g.title {
+                Some(t) => group_scope.interpolate(t)?,
+                None => base.clone(),
+            };
+            let group_items = match group.get("items") {
+                Some(Value::Array(a)) => a.as_slice(),
+                _ => &[],
+            };
+            files.push(xml_file(&title, &target.path, group_items)?);
+        }
+        Ok(files)
+    }
+
+    /// The Atom entries of a FEED's elements, in list order.
+    fn feed_entries(&self, op: &Operation, items: &[Value]) -> Result<Vec<FeedEntry>> {
+        let Operation::Feed {
+            list,
+            base,
+            link,
+            span,
+            ..
+        } = op
+        else {
+            unreachable!()
+        };
+        let scope = self.scope();
         let mut entries = Vec::new();
         for (i, item) in items.iter().enumerate() {
             let Value::Object(doc) = item else {
@@ -5499,11 +5574,7 @@ impl<'a> Exec<'a> {
                 content,
             });
         }
-        let xml = atom_xml(title, &format!("{base}/"), &page_url(base, dest), &entries);
-        Ok(vec![(
-            dest.clone(),
-            make_file(xml.into_bytes(), origin, 0o644),
-        )])
+        Ok(entries)
     }
 
     fn produce_transform(&mut self, op: &Operation, op_id: &str) -> Result<Produced> {

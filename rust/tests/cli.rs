@@ -425,6 +425,13 @@ fn blog_builds_an_index_one_page_per_post_and_a_feed() {
     assert!(!post.to_lowercase().contains("href=\"javascript:"));
     assert!(post.contains("<li><a href=\"/tags/security/\">security</a></li>"));
     assert!(read(out.join("tags/sitefile/index.html")).contains("Tagged “sitefile” (2)"));
+    // Every tag with its count, and a feed per tag.
+    assert!(read(out.join("tags/index.html")).contains(
+        "<li><a href=\"/tags/sitefile/\">sitefile</a> (2) · <a href=\"/tags/sitefile/feed.xml\">feed</a></li>"
+    ));
+    let tag_feed = read(out.join("tags/sitefile/feed.xml"));
+    assert!(tag_feed.contains("<title>Field Notes: sitefile</title>"));
+    assert_eq!(tag_feed.matches("<entry>").count(), 2);
     assert!(!out.join("posts/coming-soon/index.html").exists());
     let feed = read(out.join("feed.xml"));
     assert!(feed.contains("<updated>2026-03-01T00:00:00Z</updated>"));

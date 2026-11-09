@@ -36,10 +36,14 @@ RENDER --escape=html ./templates/index.html TO /page/${page.number}/index.html F
 RENDER --escape=html ./templates/post.html TO /posts/${post.slug}/index.html FOR post IN posts
 # One page per tag: /tags/sitefile/index.html lists the posts tagged sitefile.
 RENDER --escape=html ./templates/tag.html TO /tags/${tag.key}/index.html FOR tag IN posts BY tags
+# And /tags/index.html lists every tag with its count (${#each posts by tags as tag} in the template).
+RENDER --escape=html ./templates/tags.html TO /tags/index.html
 
 # An Atom feed of the posts (newest first, as imported), and a sitemap of
 # every page rendered so far. Both write absolute URLs under SITE_URL.
 FEED posts BASE ${SITE_URL} LINK /posts/${item.slug}/index.html TITLE ${SITE_TITLE}
+# A feed per tag too: /tags/sitefile/feed.xml has the posts tagged sitefile.
+FEED tag BASE ${SITE_URL} LINK /posts/${item.slug}/index.html TO /tags/${tag.key}/feed.xml TITLE "${SITE_TITLE}: ${tag.key}" FOR tag IN posts BY tags
 SITEMAP BASE ${SITE_URL}
 
 # The stylesheet gets a content-hashed name (style.<hash>.css) that can be

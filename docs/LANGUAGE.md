@@ -368,6 +368,13 @@ These pin down what the draft above leaves open. Tests cover each rule.
   - `${#each list as item}…${else}…${/each}` repeats for each element; the
     `${else}` part renders for an empty list. A missing key such as
     `${#each post.tags as t}` on a post without tags counts as empty.
+  - `${#each list by key as group}…${/each}` repeats for each group of the
+    list's elements by the field `key`, exactly as `RENDER … FOR … BY` groups
+    them (see Tag pages below): `group` is `{ key, count, items }`, groups in
+    `SORT BY` order of their keys, the same `E_TYPE` errors (`${#each posts by
+    tags}: 'tags' of document '/a.md' is not text or a list of text`). No
+    element with the field means no groups, so `${else}` renders. This is how
+    one page lists every tag with its count.
   - `${#if value}…${else}…${/if}` and `${#if !value}`: missing, `null`,
     `false`, `''`, `0` and empty lists are false.
   - `${value|raw}` inserts a value without escaping, for `${post.content|raw}`
@@ -607,6 +614,8 @@ ARG PER_PAGE: number = 10
 IMPORT posts FROM ./posts AS markdown SORT BY date DESC DRAFTS ${DRAFTS}
 RENDER --escape=html ./index.html TO /page/${page.number}/index.html FOR page IN posts PAGE ${PER_PAGE} FIRST /index.html
 RENDER --escape=html ./tag.html TO /tags/${tag.key}/index.html FOR tag IN posts BY tags
+RENDER --escape=html ./tags.html TO /tags/index.html
+FEED tag BASE ${SITE_URL} LINK /posts/${item.slug}/ TO /tags/${tag.key}/feed.xml TITLE "Tagged ${tag.key}" FOR tag IN posts BY tags
 ```
 
 - **Drafts: `IMPORT … DRAFTS <true|false>`.** With `false`, the elements whose
@@ -635,6 +644,22 @@ RENDER --escape=html ./tag.html TO /tags/${tag.key}/index.html FOR tag IN posts 
   in case (`Rust`, `rust`) are two groups whose paths collide
   (`E_PATH_COLLISION`). If no element has the field, nothing is rendered and
   the build warns.
+- **A page listing every tag: `${#each posts by tags as tag}`.** The groups of
+  `BY` are only the loop variable inside that RENDER; any template can group a
+  list itself with `${#each list by key as g}` (see Markdown and template
+  blocks above), so `tags.html` above is
+  `${#each posts by tags as tag}<a href="/tags/${tag.key}/">${tag.key}</a> (${tag.count})${/each}`.
+- **A feed per tag: `FEED tag … FOR tag IN list BY key`.** FEED's `FOR <var>
+  IN <import> BY <key>` clause (after TITLE) writes one Atom feed per group:
+  the subject of the FEED is the loop variable (`FEED tag …`; another name is
+  `E_SYNTAX`), each feed's entries are its group's `items` (in list order), and
+  `TO` (required with FOR, `E_SYNTAX`) and `TITLE` are evaluated per group with
+  `${tag.key}` / `${tag.count}`, so `TO /tags/${tag.key}/feed.xml`. `LINK` still
+  uses `${item…}` (the loop variable cannot be named `item`, `E_DUPLICATE`).
+  Groups are formed as for `RENDER … BY` (same order, same `E_TYPE` errors);
+  feeds whose destinations collide are `E_CONFLICT` (unless identical) or
+  `E_PATH_COLLISION`, a destination ending in `/` is `E_PATH`, and no group at
+  all writes nothing and warns. Without TITLE every feed is titled with the BASE URL.
 - **Pagination: `RENDER … FOR page IN list PAGE <n> [FIRST <dest>]`.** The
   list is cut into pages of `n` items (`n` is an operand, a whole number from 1
   to 999999999, `E_VALIDATION` otherwise; `${PER_PAGE}` works) and the template
@@ -899,8 +924,8 @@ use `${NAME}`.
   with a host and no credentials, query, fragment, whitespace or control
   characters (`E_VALIDATION` otherwise); trailing slashes are dropped, so
   `https://example.com/blog/` and `https://example.com/blog` are the same.
-- `FEED [--overwrite] <import> BASE <url> LINK <path> [TO <dest>] [TITLE <text>]`
-  (clauses in this order) writes an [Atom 1.0](https://www.rfc-editor.org/rfc/rfc4287)
+- `FEED [--overwrite] <import> BASE <url> LINK <path> [TO <dest>] [TITLE <text>] [FOR <var> IN <import> BY <key>]`
+  (clauses in this order; `FOR`: a feed per group, see Tag pages above) writes an [Atom 1.0](https://www.rfc-editor.org/rfc/rfc4287)
   feed (default `/feed.xml`) with one entry per element of a list import,
   **in list order** (use `SORT BY date DESC`). `<import>` must be an IMPORT on
   an earlier line (`E_UNDEFINED`) whose value is a list of objects (`E_TYPE`),

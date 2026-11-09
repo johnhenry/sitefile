@@ -309,12 +309,17 @@ export interface SitemapInstruction {
 /**
  * `FEED [--overwrite] <import> BASE <url> LINK <path> [TO <dest>] [TITLE <text>]`: an Atom feed
  * from a list import. LINK is evaluated per element, with the element as `${item…}`.
+ * `FEED tag … TO <dest> FOR tag IN <import> BY <key>`: one feed per group (`{ key, count, items }`)
+ * of the import's elements; TO and TITLE are evaluated per group with `${tag…}`.
  */
 export interface FeedInstruction {
   readonly kind: 'FEED';
   readonly span: SourceSpan;
+  /** The import (also with FOR, where the subject is the loop variable). */
   readonly list: string;
   readonly listSpan: SourceSpan;
+  /** `FOR <as> IN <list> BY <key>`: a feed per group. */
+  readonly each?: { readonly as: string; readonly by: { readonly key: string; readonly span: SourceSpan }; readonly span: SourceSpan };
   readonly base: Operand;
   readonly link: Operand;
   /** Default `/feed.xml`. */

@@ -194,8 +194,11 @@ export type Operation =
       readonly list: string;
       readonly base: string;
       readonly link: Operand;
+      /** Without `each`: the feed's path and title. */
       readonly dest: string;
       readonly title: string;
+      /** `FOR as IN list BY key`: a feed per group, `dest` and `title` interpolated per group (`${as…}`). */
+      readonly each?: { readonly as: string; readonly by: string; readonly dest: Operand; readonly title?: Operand };
       readonly overwrite: boolean;
       readonly span: SourceSpan;
     }
@@ -587,13 +590,15 @@ export function plan(program: Program, buildArgs: Readonly<Record<string, string
         break;
       case 'FEED': {
         const base = checkBaseUrl(evaluateOperand(ins.base, vars), 'FEED BASE', ins.base.span);
+        const each = ins.each && ins.dest ? { as: ins.each.as, by: ins.each.by.key, dest: ins.dest, ...(ins.title && { title: ins.title }) } : undefined;
         operations().push({
           kind: 'FEED',
           list: ins.list,
           base,
           link: ins.link,
-          dest: fileDest(ins.dest, vars, '/feed.xml', 'FEED'),
-          title: ins.title ? evaluateOperand(ins.title, vars) : base,
+          dest: each ? '' : fileDest(ins.dest, vars, '/feed.xml', 'FEED'),
+          title: each ? base : ins.title ? evaluateOperand(ins.title, vars) : base,
+          ...(each && { each }),
           overwrite: ins.overwrite,
           span: ins.span,
         });

@@ -342,7 +342,7 @@ directory holds or which variables a template uses.
   `FROM image` base, labelled `image ghcr.io/me/theme:1`), `local:./<path>` (a context
   path an operation or `FROM` reads), `op:<line>` (an operation, labelled `COPY ./src /out/`,
   `RENDER ./t.html TO /index.html`, `RENDER ./t.html FOR post IN posts` (with ` BY key` and ` PAGE n` when given), `TRANSFORM motion ./title.txt`,
-  `SITEMAP /sitemap.xml`, `FEED posts /feed.xml`, `FINGERPRINT /assets/**`, `CHECKLINKS --warn`; FOR destinations are not evaluated), `stage:<name>` or
+  `SITEMAP /sitemap.xml`, `FEED posts /feed.xml` (`FEED FOR tag IN posts BY tags` for a feed per group), `FINGERPRINT /assets/**`, `CHECKLINKS --warn`; FOR destinations are not evaluated), `stage:<name>` or
   `stage:#<n>` for an unnamed stage (the stage's final tree, labelled `FROM ./theme AS theme`),
   `stage:<import>+<stage>` for a stage of a Sitefile imported `AS sitefile` (labelled `stage assets of IMPORT theme`,
   with the IMPORT's line; the imported Sitefile is not read, so its own operations are not shown),

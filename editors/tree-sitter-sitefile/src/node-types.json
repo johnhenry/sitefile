@@ -545,6 +545,16 @@
           }
         ]
       },
+      "group": {
+        "multiple": false,
+        "required": false,
+        "types": [
+          {
+            "type": "group_clause",
+            "named": true
+          }
+        ]
+      },
       "link": {
         "multiple": false,
         "required": true,
@@ -577,6 +587,16 @@
         "types": [
           {
             "type": "identifier",
+            "named": true
+          }
+        ]
+      },
+      "loop": {
+        "multiple": false,
+        "required": false,
+        "types": [
+          {
+            "type": "for_clause",
             "named": true
           }
         ]
@@ -2669,6 +2689,16 @@
           }
         ]
       },
+      "key": {
+        "multiple": false,
+        "required": false,
+        "types": [
+          {
+            "type": "identifier",
+            "named": true
+          }
+        ]
+      },
       "list": {
         "multiple": false,
         "required": true,
@@ -3396,6 +3426,10 @@
   {
     "type": "boolean",
     "named": true
+  },
+  {
+    "type": "by",
+    "named": false
   },
   {
     "type": "comment",

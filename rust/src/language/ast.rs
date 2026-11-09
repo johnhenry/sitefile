@@ -287,6 +287,14 @@ pub struct GroupBy {
     pub span: SourceSpan,
 }
 
+/// `FOR tag IN list BY key` of a FEED: a feed per group.
+#[derive(Debug, Clone, PartialEq)]
+pub struct FeedEach {
+    pub as_name: String,
+    pub by: GroupBy,
+    pub span: SourceSpan,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct PageClause {
     pub size: Operand,
@@ -455,10 +463,13 @@ pub enum Instruction {
         overwrite: bool,
     },
     /// `FEED [--overwrite] <import> BASE <url> LINK <path> [TO <dest>] [TITLE <text>]`; LINK may use `${item…}`.
+    /// `FEED tag … TO <dest> FOR tag IN <import> BY <key>`: one feed per group; TO and TITLE may use `${tag…}`.
     Feed {
         span: SourceSpan,
+        /// The import (also with FOR, where the subject is the loop variable).
         list: String,
         list_span: SourceSpan,
+        each: Option<FeedEach>,
         base: Operand,
         link: Operand,
         dest: Option<Operand>,

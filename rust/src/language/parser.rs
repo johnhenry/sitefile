@@ -4,8 +4,8 @@
 use crate::digest::is_integrity;
 use crate::error::{ErrorCode::*, Result, SitefileError, SourceSpan};
 use crate::language::ast::{
-    imported_stage, is_ident, literal_text, DraftsClause, EscapeMode, ExportFormat, ForEach,
-    FragmentBody, FromBase, GroupBy, ImportArg, ImportKind, ImportSecret, Instruction,
+    imported_stage, is_ident, literal_text, DraftsClause, EscapeMode, ExportFormat, FeedEach,
+    ForEach, FragmentBody, FromBase, GroupBy, ImportArg, ImportKind, ImportSecret, Instruction,
     OciCompression, Operand, PageClause, SchemaClause, SortBy, Source, StageRef, TemplatePart,
     TransformOption, ValueType, REDIRECT_STATUSES,
 };
@@ -69,8 +69,8 @@ pub const EXPORT_CLAUSES: [&str; 6] = ["AS", "BASE", "AT", "COMPRESSION", "KEY",
 pub const TRANSFORM_CLAUSES: [&str; 3] = ["OPTIONS", "FOR", "ARGS"];
 /// Clauses after `SITEMAP`, in this order (`BASE` is required).
 pub const SITEMAP_CLAUSES: [&str; 2] = ["BASE", "TO"];
-/// Clauses after `FEED <import>`, in this order (`BASE` and `LINK` are required).
-pub const FEED_CLAUSES: [&str; 4] = ["BASE", "LINK", "TO", "TITLE"];
+/// Clauses after `FEED <import>`, in this order (`BASE` and `LINK` are required; `FOR` is `FOR v IN list BY key`).
+pub const FEED_CLAUSES: [&str; 5] = ["BASE", "LINK", "TO", "TITLE", "FOR"];
 /// Clauses after `FINGERPRINT <pattern>…`.
 pub const FINGERPRINT_CLAUSES: [&str; 2] = ["MANIFEST", "INTEGRITY"];
 /// Clauses of CANONICAL, in this order (`BASE` is required).
@@ -1027,11 +1027,12 @@ fn parse_sitemap(c: &mut Cursor, span: SourceSpan) -> Result<Instruction> {
     })
 }
 
-/// `FEED [--overwrite] <import> BASE <url> LINK <path> [TO <dest>] [TITLE <text>]` (clauses in this order)
+/// `FEED [--overwrite] <import> BASE <url> LINK <path> [TO <dest>] [TITLE <text>] [FOR <var> IN <import> BY <key>]`
+/// (clauses in this order). With FOR, the subject is the loop variable and TO is required.
 fn parse_feed(c: &mut Cursor, span: SourceSpan) -> Result<Instruction> {
     let flags = parse_flags(c, SITE_FLAGS)?;
-    let list_span = c.span();
-    let list = c.ident("import name", "")?;
+    let subject_span = c.span();
+    let subject = c.ident("import name", "")?;
     c.expect_keyword("BASE")?;
     let base = c.operand("base URL")?;
     c.expect_keyword("LINK")?;
@@ -1046,11 +1047,44 @@ fn parse_feed(c: &mut Cursor, span: SourceSpan) -> Result<Instruction> {
     } else {
         None
     };
+    let mut list = subject.clone();
+    let mut list_span = subject_span.clone();
+    let mut each = None;
+    let for_at = c.span();
+    if c.keyword("FOR") {
+        let as_name = c.ident("loop variable", "")?;
+        c.expect_keyword("IN")?;
+        list_span = c.span();
+        list = c.ident("list name", "")?;
+        let by_at = c.span();
+        c.expect_keyword("BY")?;
+        let key = c.ident("group key", "")?;
+        if subject != as_name {
+            return Err(SitefileError::at(
+                E_SYNTAX,
+                format!("FEED {subject} … FOR {as_name} IN {list} BY {key} writes a feed per group; its subject must be the loop variable: FEED {as_name} …"),
+                &subject_span,
+            ));
+        }
+        if dest.is_none() {
+            return Err(SitefileError::at(
+                E_SYNTAX,
+                format!("FEED {as_name} … FOR {as_name} IN {list} writes a feed per group, so it needs TO <dest> (such as /tags/${{{as_name}.key}}/feed.xml)"),
+                &for_at,
+            ));
+        }
+        each = Some(FeedEach {
+            as_name,
+            by: GroupBy { key, span: by_at },
+            span: for_at,
+        });
+    }
     c.expect_end()?;
     Ok(Instruction::Feed {
         span,
         list,
         list_span,
+        each,
         base,
         link,
         dest,
@@ -2571,6 +2605,47 @@ mod tests {
             1,
             6,
             "expected import name",
+        );
+        let Instruction::Feed {
+            list,
+            list_span,
+            each: Some(e),
+            ..
+        } = one("FEED t BASE https://x LINK /a TO /t/${t.key}.xml FOR t IN posts BY tags")
+        else {
+            panic!()
+        };
+        assert_eq!(
+            (
+                list.as_str(),
+                list_span.column,
+                e.as_name.as_str(),
+                e.by.key.as_str(),
+                e.span.column,
+                e.by.span.column
+            ),
+            ("posts", 59, "t", "tags", 50, 65)
+        );
+        parse_err(
+            "FEED posts BASE https://x LINK /a TO /f.xml FOR t IN posts BY tags",
+            E_SYNTAX,
+            1,
+            6,
+            "its subject must be the loop variable: FEED t …",
+        );
+        parse_err(
+            "FEED t BASE https://x LINK /a FOR t IN posts BY tags",
+            E_SYNTAX,
+            1,
+            31,
+            "so it needs TO <dest> (such as /tags/${t.key}/feed.xml)",
+        );
+        parse_err(
+            "FEED t BASE https://x LINK /a TO /f.xml FOR t IN posts",
+            E_SYNTAX,
+            1,
+            55,
+            "expected BY",
         );
         parse_err(
             "REDIRECT /old /new STATUS 200",

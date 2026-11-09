@@ -1,0 +1,13 @@
+# Tag pages, a page listing every tag, and a feed per tag.
+ARG SITE_URL = "https://blog.example.com"
+IMPORT posts FROM ./posts AS markdown SORT BY date DESC
+RENDER --escape=html ./tag.html TO /tags/${tag.key}/index.html FOR tag IN posts BY tags
+RENDER --escape=html <<HTML TO /tags/index.html
+<ul>
+${#each posts by tags as tag}
+<li><a href="/tags/${tag.key}/">${tag.key}</a> (${tag.count})</li>
+${/each}
+</ul>
+HTML
+FEED tag BASE ${SITE_URL} LINK /posts/${item.slug}/ TO /tags/${tag.key}/feed.xml TITLE "Tagged ${tag.key}" FOR tag IN posts BY tags
+EXPORT /

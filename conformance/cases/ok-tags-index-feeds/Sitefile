@@ -1,0 +1,14 @@
+ARG SITE = "Tags & feeds"
+IMPORT posts FROM ./posts.yaml AS yaml
+RENDER --escape=html <<HTML TO /tags/index.html
+<h1>${SITE}</h1>
+${#each posts by tags as tag}
+<a href="/tags/${tag.key}/">${tag.key}</a> (${tag.count}):${#each tag.items as p} ${p.title}${/each}
+${else}
+none
+${/each}
+${#each posts by missing as g}${g.key}${else}no groups${/each}
+HTML
+FEED tag BASE https://example.com/ LINK /posts/${item.slug}/ TO /tags/${tag.key}/feed.xml TITLE "${SITE}: ${tag.key}" FOR tag IN posts BY tags
+FEED posts BASE https://example.com LINK /posts/${item.slug}/
+EXPORT /

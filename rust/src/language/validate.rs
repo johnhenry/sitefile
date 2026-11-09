@@ -472,12 +472,29 @@ fn check(input: Vec<Instruction>, file: &str) -> Result<Vec<Instruction>> {
             Instruction::Feed { .. } => Some(FEED_ITEM),
             _ => None,
         };
+        // FEED tag … FOR tag IN list BY key: TO and TITLE may use ${tag.key} for the current group.
+        let (group_var, group_ops): (Option<&str>, Vec<&Operand>) = match ins {
+            Instruction::Feed {
+                each: Some(e),
+                dest,
+                title,
+                ..
+            } => (
+                Some(e.as_name.as_str()),
+                dest.iter().chain(title.iter()).collect(),
+            ),
+            _ => (None, Vec::new()),
+        };
         for (op, is_dest) in operands_of(ins) {
+            let in_group = group_ops.iter().any(|g| std::ptr::eq(*g, op));
             for part in &op.parts {
                 let TemplatePart::Var { name, path, span } = part else {
                     continue;
                 };
                 if is_dest && Some(name.as_str()) == loop_var {
+                    continue;
+                }
+                if in_group && Some(name.as_str()) == group_var {
                     continue;
                 }
                 if !path.is_empty() {
@@ -692,7 +709,10 @@ fn check(input: Vec<Instruction>, file: &str) -> Result<Vec<Instruction>> {
                 }
             }
             Instruction::Feed {
-                list, list_span, ..
+                list,
+                list_span,
+                each,
+                ..
             } => {
                 if scope.fragments.contains(list.as_str()) {
                     return Err(SitefileError::at(
@@ -711,6 +731,18 @@ fn check(input: Vec<Instruction>, file: &str) -> Result<Vec<Instruction>> {
                     ));
                 }
                 not_sitefile(list, &format!("FEED {list}"), list_span, &scope)?;
+                if let Some(e) = each {
+                    if e.as_name == FEED_ITEM {
+                        return Err(SitefileError::at(
+                            E_DUPLICATE,
+                            format!("FOR {FEED_ITEM}: '{FEED_ITEM}' is the element in FEED's LINK; pick another loop variable name"),
+                            &e.span,
+                        ));
+                    }
+                    if scope.taken(&e.as_name) {
+                        return Err(loop_var_taken(&e.as_name, &e.span));
+                    }
+                }
             }
             Instruction::Sitemap { .. }
             | Instruction::Redirect { .. }
@@ -899,6 +931,12 @@ mod tests {
         );
         prog("IMPORT posts FROM ./p AS markdown\nFEED posts BASE https://x LINK /p/${item.slug}.html\nEXPORT /");
         prog_err("IMPORT posts FROM ./p AS markdown\nFEED posts BASE https://x/${item.a} LINK /a\nEXPORT /", E_SYNTAX, 2, 27, "dotted access");
+        // FEED tag … FOR tag IN posts BY tags: TO and TITLE may use the group.
+        prog("IMPORT posts FROM ./p AS markdown\nFEED t BASE https://x LINK /p/${item.slug}/ TO /t/${t.key}.xml TITLE \"${t.key}\" FOR t IN posts BY tags\nEXPORT /");
+        prog_err("IMPORT posts FROM ./p AS markdown\nFEED t BASE https://x/${t.key} LINK /a TO /${t.key}.xml FOR t IN posts BY tags\nEXPORT /", E_SYNTAX, 2, 23, "dotted access");
+        prog_err("IMPORT posts FROM ./p AS markdown\nFEED item BASE https://x LINK /a TO /${item.key}.xml FOR item IN posts BY tags\nEXPORT /", E_DUPLICATE, 2, 54, "'item' is the element in FEED's LINK");
+        prog_err("IMPORT posts FROM ./p AS markdown\nFEED posts BASE https://x LINK /a TO /${posts.key}.xml FOR posts IN posts BY tags\nEXPORT /", E_DUPLICATE, 2, 56, "'posts' is already defined");
+        prog_err("IMPORT posts FROM ./p AS markdown\nFEED t BASE https://x LINK /a TO /${t.key}.xml FOR t IN nope BY tags\nEXPORT /", E_UNDEFINED, 2, 57, "FEED nope: 'nope' is not an IMPORT");
         prog_err(
             "SITEMAP BASE ${URL}\nEXPORT /",
             E_UNDEFINED,

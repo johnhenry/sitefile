@@ -385,6 +385,13 @@ pub fn interpolations(text: &str) -> Vec<Interp> {
                     {
                         k += 1;
                     }
+                    // `by key` (`${#each posts by tags as tag}`) comes before `as`.
+                    let by: String = chars[k..].iter().take(4).collect();
+                    if by == " by " {
+                        if let Some((_, kb)) = ident_at(&chars, k + 4) {
+                            k = kb;
+                        }
+                    }
                     let rest: String = chars[k..].iter().take(4).collect();
                     if rest == " as " {
                         if let Some((va, vb)) = ident_at(&chars, k + 4) {
@@ -499,9 +506,24 @@ pub fn build(lines: &Lines) -> Index {
             "PLUGIN" => name_def(&mut defs, 1, SymKind::Plugin),
             "TOOL" => name_def(&mut defs, 1, SymKind::Tool),
             "FEED" => {
+                // `FEED tag … FOR tag IN posts BY tags`: the subject is the loop variable.
+                let f = ins.find_kw("FOR", ins.first_operand());
                 if let Some(l) = word(ins.first_operand()) {
                     if is_ident(&l.text) {
-                        uses.push((l.text.clone(), l.line, l.start, l.end, Pending::Global));
+                        let how = if f.is_some() {
+                            Pending::Scoped(ix)
+                        } else {
+                            Pending::Global
+                        };
+                        uses.push((l.text.clone(), l.line, l.start, l.end, how));
+                    }
+                }
+                if let Some(f) = f {
+                    name_def(&mut defs, f + 1, SymKind::LoopVar);
+                    if let Some(l) = word(f + 3) {
+                        if is_ident(&l.text) {
+                            uses.push((l.text.clone(), l.line, l.start, l.end, Pending::Global));
+                        }
                     }
                 }
             }
@@ -752,6 +774,15 @@ mod tests {
         assert_eq!(names, ["X", "post", "posts", "y"]);
         assert_eq!((v[0].start, v[0].end), (4, 5));
         assert_eq!(v[2].each_var.as_ref().map(|e| e.0.as_str()), Some("p"));
+        let ix = idx("IMPORT posts FROM ./p AS markdown\nFEED tag BASE https://x LINK /a TO /t/${tag.key}.xml FOR tag IN posts BY tags");
+        let tag = ix.occ_at(1, 6).unwrap();
+        assert_eq!(ix.defs[tag.def.unwrap()].kind, SymKind::LoopVar);
+        assert_eq!(ix.occs_of(tag.def.unwrap()).len(), 3);
+        let posts = ix.occs.iter().filter(|o| o.name == "posts").count();
+        assert_eq!(posts, 2);
+        let v = interpolations("${#each posts by tags as tag}${tag.key}${/each}");
+        assert_eq!(v[0].name, "posts");
+        assert_eq!(v[0].each_var.as_ref().map(|e| e.0.as_str()), Some("tag"));
     }
 
     #[test]

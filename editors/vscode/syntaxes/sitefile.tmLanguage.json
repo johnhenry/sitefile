@@ -4240,6 +4240,34 @@
               "name": "invalid.illegal.unknown-flag.sitefile"
             },
             {
+              "match": "(?<![^\\s])((?i:FOR))\\s+([A-Za-z_][A-Za-z0-9_]*)\\s+((?i:IN))\\s+([A-Za-z_][A-Za-z0-9_]*)(?=\\s|$)",
+              "captures": {
+                "1": {
+                  "name": "keyword.other.clause.sitefile"
+                },
+                "2": {
+                  "name": "variable.other.definition.loop.sitefile"
+                },
+                "3": {
+                  "name": "keyword.other.clause.sitefile"
+                },
+                "4": {
+                  "name": "variable.other.readwrite.sitefile"
+                }
+              }
+            },
+            {
+              "match": "(?<![^\\s])((?i:BY))\\s+([A-Za-z_][A-Za-z0-9_]*)(?=\\s|$)",
+              "captures": {
+                "1": {
+                  "name": "keyword.other.clause.sitefile"
+                },
+                "2": {
+                  "name": "variable.other.property.group-key.sitefile"
+                }
+              }
+            },
+            {
               "match": "(?<![^\\s])((?i:BASE|LINK|TO|TITLE))(?=\\s|$)",
               "captures": {
                 "1": {
@@ -4693,7 +4721,7 @@
           ]
         },
         {
-          "match": "(\\$\\{)(#each)\\s+([A-Za-z_][A-Za-z0-9_]*(?:\\.[A-Za-z0-9_-]+)*)\\s+(as)\\s+([A-Za-z_][A-Za-z0-9_]*)\\s*(\\})",
+          "match": "(\\$\\{)(#each)\\s+([A-Za-z_][A-Za-z0-9_]*(?:\\.[A-Za-z0-9_-]+)*)\\s+(?:(by)\\s+([A-Za-z_][A-Za-z0-9_]*)\\s+)?(as)\\s+([A-Za-z_][A-Za-z0-9_]*)\\s*(\\})",
           "name": "meta.template.block.sitefile",
           "captures": {
             "1": {
@@ -4713,9 +4741,15 @@
               "name": "keyword.control.loop.sitefile"
             },
             "5": {
-              "name": "variable.other.definition.loop.sitefile"
+              "name": "variable.other.property.group-key.sitefile"
             },
             "6": {
+              "name": "keyword.control.loop.sitefile"
+            },
+            "7": {
+              "name": "variable.other.definition.loop.sitefile"
+            },
+            "8": {
               "name": "punctuation.definition.template.end.sitefile"
             }
           }

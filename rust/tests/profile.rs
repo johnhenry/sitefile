@@ -138,10 +138,12 @@ fn build_profile_lists_steps_in_sitefile_order() {
             "operation 35 RENDER",
             "operation 36 RENDER",
             "operation 38 RENDER",
-            "operation 42 FEED",
-            "operation 43 SITEMAP",
-            "operation 47 FINGERPRINT",
-            "operation 50 CHECKLINKS",
+            "operation 40 RENDER",
+            "operation 44 FEED",
+            "operation 46 FEED",
+            "operation 47 SITEMAP",
+            "operation 51 FINGERPRINT",
+            "operation 54 CHECKLINKS",
             "export export"
         ]
     );

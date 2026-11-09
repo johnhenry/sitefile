@@ -1,6 +1,7 @@
 import { SitefileError, type SourceSpan } from './errors.js';
 import type { EscapeMode } from './language/ast.js';
 import type { Scalar } from './values.js';
+import { groupBy } from './pages.js';
 import { FILE_HELPERS, renderFile, VALUE_HELPERS, type HelperAttr, type TemplateTree } from './media.js';
 
 /** A string of a `${file …}` expression: text and `${name.key}` references. */
@@ -28,6 +29,8 @@ export type TemplateNode =
   | {
       readonly kind: 'each';
       readonly list: Ref;
+      /** `${#each list by key as group}`: the loop runs over `{ key, count, items }` groups (src/pages.ts). */
+      readonly by?: string;
       readonly as: string;
       readonly body: readonly TemplateNode[];
       readonly empty: readonly TemplateNode[];
@@ -58,7 +61,7 @@ interface Ref {
 
 const REF = String.raw`[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z0-9_-]+)*`;
 const VAR_RE = new RegExp(String.raw`^(${REF})(?:\|(raw))?$`);
-const EACH_RE = new RegExp(String.raw`^#each\s+(${REF})\s+as\s+([A-Za-z_][A-Za-z0-9_]*)\s*$`);
+const EACH_RE = new RegExp(String.raw`^#each\s+(${REF})\s+(?:by\s+([A-Za-z_][A-Za-z0-9_]*)\s+)?as\s+([A-Za-z_][A-Za-z0-9_]*)\s*$`);
 const IF_RE = new RegExp(String.raw`^#if\s+(!?)\s*(${REF})\s*$`);
 const BLOCK_RE = /^(#each|#if|else|\/each|\/if)(?![A-Za-z0-9_.])/;
 
@@ -66,7 +69,7 @@ type Token =
   | { readonly kind: 'text'; readonly value: string }
   | Extract<TemplateNode, { kind: 'var' }>
   | Extract<TemplateNode, { kind: 'file' }>
-  | { readonly kind: 'open-each'; readonly list: Ref; readonly as: string; readonly span: SourceSpan }
+  | { readonly kind: 'open-each'; readonly list: Ref; readonly by?: string; readonly as: string; readonly span: SourceSpan }
   | { readonly kind: 'open-if'; readonly cond: Ref; readonly negate: boolean; readonly span: SourceSpan }
   | { readonly kind: 'else' | 'close-each' | 'close-if'; readonly span: SourceSpan };
 
@@ -76,7 +79,8 @@ type Token =
  * - `${name}` / `${name.seg.seg}` substitutes a value (segments may be array
  *   indexes); `${name|raw}` substitutes it without escaping.
  * - `${#each list as item}…${else}…${/each}` repeats for each element of a list
- *   (the `${else}` part renders when the list is empty). A missing key such as
+ *   (the `${else}` part renders when the list is empty). `${#each list by key as g}`
+ *   repeats for each group `{ key, count, items }` of the list's elements by a field. A missing key such as
  *   `post.tags` counts as an empty list; an unknown top-level name is an error.
  * - `${#if x}…${else}…${/if}` / `${#if !x}`: false, null, missing, '', 0 and
  *   empty lists are falsy.
@@ -367,8 +371,8 @@ function blockToken(expr: string, span: SourceSpan): Token {
   const word = BLOCK_RE.exec(expr)![1]!;
   if (word === '#each') {
     const m = EACH_RE.exec(expr);
-    if (!m) throw new SitefileError('E_TEMPLATE', `expected \${#each list as item}, got '\${${expr}}'`, span);
-    return { kind: 'open-each', list: ref(m[1]!, span), as: m[2]!, span };
+    if (!m) throw new SitefileError('E_TEMPLATE', `expected \${#each list as item} or \${#each list by key as group}, got '\${${expr}}'`, span);
+    return { kind: 'open-each', list: ref(m[1]!, span), ...(m[2] !== undefined && { by: m[2] }), as: m[3]!, span };
   }
   if (word === '#if') {
     const m = IF_RE.exec(expr);
@@ -419,7 +423,7 @@ function buildTree(tokens: readonly Token[], file: string, end: SourceSpan): Tem
         const o = f.open;
         const node: TemplateNode =
           o.kind === 'open-each'
-            ? { kind: 'each', list: o.list, as: o.as, body: f.first, empty: f.second ?? [], span: o.span }
+            ? { kind: 'each', list: o.list, ...(o.by !== undefined && { by: o.by }), as: o.as, body: f.first, empty: f.second ?? [], span: o.span }
             : { kind: 'if', cond: o.cond, negate: o.negate, then: f.first, otherwise: f.second ?? [], span: o.span };
         target().push(node);
         break;
@@ -523,10 +527,12 @@ export function renderTemplate(
           // A missing key (post.tags on a post without tags) is an empty list;
           // an unknown top-level name is still an error, so typos are caught.
           const found = valueOf(n.list, n.list.path.length > 0);
-          const items = found === undefined || found === null ? [] : found;
-          if (!Array.isArray(items)) {
+          const list = found === undefined || found === null ? [] : found;
+          if (!Array.isArray(list)) {
             throw new SitefileError('E_TYPE', `${dotted(n.list)} is ${describe(found)}, not a list; \${#each} needs a list`, n.list.span);
           }
+          // `by key`: one `{ key, count, items }` per distinct value, as RENDER … FOR … BY.
+          const items = n.by === undefined ? list : groupBy(list, n.by, `\${#each ${[n.list.name, ...n.list.path].join('.')} by ${n.by}}`, n.span);
           if (items.length === 0) {
             out += run(n.empty);
             break;

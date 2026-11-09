@@ -283,7 +283,7 @@ export default grammar({
         optional(seq(kw($, 'TO'), field('target', $._operand))),
       ),
 
-    // FEED [--overwrite] <import> BASE <url> LINK <path> [TO <dest>] [TITLE <text>]
+    // FEED [--overwrite] <import> BASE <url> LINK <path> [TO <dest>] [TITLE <text>] [FOR tag IN <import> BY <key>]
     feed_instruction: ($) =>
       seq(
         kw($, 'FEED'),
@@ -295,6 +295,7 @@ export default grammar({
         field('link', $._operand),
         optional(seq(kw($, 'TO'), field('target', $._operand))),
         optional(seq(kw($, 'TITLE'), field('title', $._operand))),
+        optional(seq(field('loop', $.for_clause), field('group', $.group_clause))),
       ),
 
     // REDIRECT [--overwrite] <from> <to> [STATUS 301|302|303|307|308]
@@ -460,8 +461,9 @@ export default grammar({
         optional(seq(token.immediate('='), field('value', choice($.string, $.raw_string, alias(token.immediate(/[^\s"'}]+/), $.word))))),
       ),
 
-    // ${#each list as item}
-    template_each: ($) => seq('${', '#each', field('list', $.reference), 'as', field('item', $.identifier), '}'),
+    // ${#each list as item}, ${#each list by key as group}
+    template_each: ($) =>
+      seq('${', '#each', field('list', $.reference), optional(seq('by', field('key', $.identifier))), 'as', field('item', $.identifier), '}'),
 
     // ${#if value} / ${#if !value}
     template_if: ($) => seq('${', '#if', optional(field('negate', '!')), field('condition', $.reference), '}'),

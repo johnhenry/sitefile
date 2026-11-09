@@ -35,7 +35,7 @@ const INSTRUCTIONS: &[(&str, &str, &str)] = &[
     (
         "RENDER",
         "RENDER [--escape=none|html] [--overwrite] [--from=stage] <template> TO <dest> [FOR item IN list [BY key] [PAGE n [FIRST <dest>]]]",
-        "Renders a template (a file or an inline `<<NAME` body) to a file. Templates use `${NAME}`, `${name.key}`, `${#each list as item}…${/each}`, `${#if x}…${else}…${/if}` and `${value|raw}`.",
+        "Renders a template (a file or an inline `<<NAME` body) to a file. Templates use `${NAME}`, `${name.key}`, `${#each list as item}…${/each}` (`${#each list by key as group}` for `{key, count, items}` groups), `${#if x}…${else}…${/if}` and `${value|raw}`.",
     ),
     (
         "TRANSFORM",
@@ -59,8 +59,8 @@ const INSTRUCTIONS: &[(&str, &str, &str)] = &[
     ),
     (
         "FEED",
-        "FEED [--overwrite] <import> BASE <url> LINK <path> [TO <dest>] [TITLE <text>]",
-        "Writes an Atom feed (default `/feed.xml`) from a list import such as `AS markdown`, in list order. Each element needs `title` and `date`; `LINK` is evaluated per element with `${item.key}`.",
+        "FEED [--overwrite] <import> BASE <url> LINK <path> [TO <dest>] [TITLE <text>] [FOR <var> IN <import> BY <key>]",
+        "Writes an Atom feed (default `/feed.xml`) from a list import such as `AS markdown`, in list order. Each element needs `title` and `date`; `LINK` is evaluated per element with `${item.key}`. `FEED tag … TO /tags/${tag.key}/feed.xml FOR tag IN posts BY tags` writes one feed per tag.",
     ),
     (
         "REDIRECT",
@@ -187,7 +187,10 @@ const CLAUSES: &[(&str, &str, &str)] = &[
     ("FEED", "BASE", "`BASE <url>`: the absolute http(s) URL the site is published at; entry links are made absolute with it."),
     ("FEED", "LINK", "`LINK <path>`: each entry's page, evaluated per element (`/posts/${item.slug}/index.html`); `…/index.html` becomes `…/`."),
     ("FEED", "TO", "`TO <dest>`: the feed file (default `/feed.xml`)."),
-    ("FEED", "TITLE", "`TITLE <text>`: the feed's title (default: the BASE URL)."),
+    ("FEED", "TITLE", "`TITLE <text>`: the feed's title (default: the BASE URL). With FOR, it may use `${tag.key}`."),
+    ("FEED", "FOR", "`FOR tag IN list BY key`: one feed per group of the list's elements (`{key, count, items}`), as `RENDER … FOR … BY`. The subject is the loop variable (`FEED tag …`), TO is required and TO and TITLE may use `${tag.key}`: `FEED tag BASE … LINK … TO /tags/${tag.key}/feed.xml FOR tag IN posts BY tags`."),
+    ("FEED", "IN", "`IN list`: an IMPORT that is a list."),
+    ("FEED", "BY", "`BY key`: the field whose values group the elements (a list field counts each value)."),
     ("FINGERPRINT", "MANIFEST", "`MANIFEST <dest>`: a JSON file mapping each old path to its fingerprinted path (sorted by old path)."),
     ("FINGERPRINT", "INTEGRITY", "`INTEGRITY`: adds `integrity=\"sha384-…\"` (Subresource Integrity) to each `<script src>` and `<link rel=stylesheet|modulepreload>` that loads a renamed file, unless it has one."),
     ("CANONICAL", "BASE", "`BASE <url>`: the absolute http(s) URL the site is published at."),

@@ -82,8 +82,11 @@ pub enum TemplateNode {
         span: SourceSpan,
         raw: bool,
     },
+    /// `by` is the key of `${#each list by key as group}`: the loop runs over
+    /// `{key, count, items}` groups (`pages.rs`).
     Each {
         list: Ref,
+        by: Option<String>,
         as_name: String,
         body: Vec<TemplateNode>,
         empty: Vec<TemplateNode>,
@@ -109,6 +112,7 @@ enum Token {
     },
     OpenEach {
         list: Ref,
+        by: Option<String>,
         as_name: String,
         span: SourceSpan,
     },
@@ -197,8 +201,8 @@ fn block_word(expr: &str) -> Option<&'static str> {
     None
 }
 
-/// `^#each\s+(REF)\s+as\s+(IDENT)\s*$`
-fn match_each(expr: &str) -> Option<(&str, &str)> {
+/// `^#each\s+(REF)\s+(?:by\s+(IDENT)\s+)?as\s+(IDENT)\s*$`
+fn match_each(expr: &str) -> Option<(&str, Option<&str>, &str)> {
     let rest = expr.strip_prefix("#each")?;
     let w = ws_len(rest);
     if w == 0 {
@@ -214,7 +218,22 @@ fn match_each(expr: &str) -> Option<(&str, &str)> {
     if w == 0 {
         return None;
     }
-    let rest = rest[w..].strip_prefix("as")?;
+    let mut rest = &rest[w..];
+    let mut by = None;
+    // `by KEY ` (the regex backtracks to `as` when this does not match, as with a list named `by`).
+    if let Some(after) = rest.strip_prefix("by") {
+        let w = ws_len(after);
+        if w > 0 {
+            let k = match_ident(after[w..].as_bytes());
+            let tail = &after[w + k..];
+            let w2 = ws_len(tail);
+            if k > 0 && w2 > 0 {
+                by = Some(&after[w..w + k]);
+                rest = &tail[w2..];
+            }
+        }
+    }
+    let rest = rest.strip_prefix("as")?;
     let w = ws_len(rest);
     if w == 0 {
         return None;
@@ -228,7 +247,7 @@ fn match_each(expr: &str) -> Option<(&str, &str)> {
     if ws_len(rest) != rest.len() {
         return None;
     }
-    Some((list, name))
+    Some((list, by, name))
 }
 
 /// `^#if\s+(!?)\s*(REF)\s*$`
@@ -271,15 +290,16 @@ fn match_var(expr: &str) -> Option<(&str, bool)> {
 fn block_token(expr: &str, span: &SourceSpan) -> Result<Token> {
     let word = block_word(expr).unwrap_or("");
     if word == "#each" {
-        let Some((list, as_name)) = match_each(expr) else {
+        let Some((list, by, as_name)) = match_each(expr) else {
             return err(
                 E_TEMPLATE,
-                format!("expected ${{#each list as item}}, got '${{{expr}}}'"),
+                format!("expected ${{#each list as item}} or ${{#each list by key as group}}, got '${{{expr}}}'"),
                 Some(span),
             );
         };
         return Ok(Token::OpenEach {
             list: split_ref(list, span),
+            by: by.map(str::to_string),
             as_name: as_name.to_string(),
             span: span.clone(),
         });
@@ -317,7 +337,8 @@ fn block_token(expr: &str, span: &SourceSpan) -> Result<Token> {
 /// - `${name}` / `${name.seg.seg}` substitutes a value (segments may be array
 ///   indexes); `${name|raw}` substitutes it without escaping.
 /// - `${#each list as item}…${else}…${/each}` repeats for each element of a list
-///   (the `${else}` part renders when the list is empty). A missing key such as
+///   (the `${else}` part renders when the list is empty). `${#each list by key as g}`
+///   repeats for each group `{key, count, items}` of the list's elements by a field. A missing key such as
 ///   `post.tags` counts as an empty list; an unknown top-level name is an error.
 /// - `${#if x}…${else}…${/if}` / `${#if !x}`: false, null, missing, '', 0 and
 ///   empty lists are falsy.
@@ -536,6 +557,7 @@ fn build_tree(tokens: Vec<Token>, file: &str, end_line: u32) -> Result<Vec<Templ
                         open:
                             Token::OpenEach {
                                 list,
+                                by,
                                 as_name,
                                 span,
                             },
@@ -543,6 +565,7 @@ fn build_tree(tokens: Vec<Token>, file: &str, end_line: u32) -> Result<Vec<Templ
                         second,
                     }) => TemplateNode::Each {
                         list,
+                        by,
                         as_name,
                         body: first,
                         empty: second.unwrap_or_default(),
@@ -1159,10 +1182,11 @@ fn run<'s, 'v: 's>(
             }
             TemplateNode::Each {
                 list,
+                by,
                 as_name,
                 body,
                 empty,
-                ..
+                span,
             } => {
                 // A missing key (post.tags on a post without tags) is an empty list;
                 // an unknown top-level name is still an error, so typos are caught.
@@ -1180,6 +1204,23 @@ fn run<'s, 'v: 's>(
                             ),
                             Some(&list.span),
                         )
+                    }
+                };
+                // `by key`: one `{key, count, items}` per distinct value, as RENDER … FOR … BY.
+                let grouped;
+                let items: &[Value] = match by {
+                    None => items,
+                    Some(key) => {
+                        let what = format!(
+                            "${{#each {} by {key}}}",
+                            std::iter::once(&list.name)
+                                .chain(list.path.iter())
+                                .map(String::as_str)
+                                .collect::<Vec<_>>()
+                                .join(".")
+                        );
+                        grouped = crate::pages::group_by(items, key, &what, span)?;
+                        &grouped
                     }
                 };
                 if items.is_empty() {
@@ -1895,6 +1936,25 @@ mod tests {
             b("${#each posts as p}${#each p.tags as p}${p}${/each}${p.title}${/each}"),
             "xyA &amp; BC"
         );
+    }
+
+    #[test]
+    fn each_by_groups() {
+        assert_eq!(
+            b("${#each posts by tags as g}${g.key}=${g.count}:${#each g.items as p}${p.title};${/each} ${/each}"),
+            "x=1:A &amp; B; y=1:A &amp; B; "
+        );
+        assert_eq!(
+            b("${#each posts by nothing as g}${g.key}${else}none${/each}"),
+            "none"
+        );
+        let e = blog("${#each posts by as g}${/each}", EscapeMode::Html).unwrap_err();
+        assert_eq!(
+            e.detail,
+            "expected ${#each list as item} or ${#each list by key as group}, got '${#each posts by as g}'"
+        );
+        let e = blog("${#each T by x as g}${/each}", EscapeMode::Html).unwrap_err();
+        assert!(e.detail.contains("not a list"), "{}", e.detail);
     }
 
     #[test]

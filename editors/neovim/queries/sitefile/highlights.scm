@@ -131,9 +131,10 @@
 (reference name: (identifier) @variable)
 (reference key: (key) @variable.member)
 (template_each item: (identifier) @variable.parameter)
+(template_each key: (identifier) @property)
 [ "#each" "/each" ] @keyword.repeat
 [ "#if" "else" "/if" ] @keyword.conditional
-"as" @keyword
+[ "as" "by" ] @keyword
 (template_escape) @string.escape
 (template_file "file" @function.builtin)
 (template_file helper: (helper) @function.call)

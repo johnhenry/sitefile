@@ -19,6 +19,12 @@
   file APIs). README "Install" covers npm, the prebuilt binaries with checksum verification, and
   `cargo install`; docs/RUST.md and the editor READMEs point at the binaries. The MIT `LICENSE`
   was already present and in the npm package.
+- **Tag index pages and per-tag feeds** (johnhenry/sitefile#135): templates can group a list with
+  `${#each posts by tags as tag}…${/each}` (`tag` is `{ key, count, items }`, grouped exactly like
+  `RENDER … FOR … BY`), so one page (`/tags/index.html`) lists every tag with its count; and
+  `FEED tag … TO /tags/${tag.key}/feed.xml [TITLE …] FOR tag IN posts BY tags` writes one Atom feed
+  per tag. Both implementations, the tree-sitter and VS Code grammars and the language server
+  (hover, definitions) know both forms; `examples/blog` uses them.
 
 ## 0.0.5 (2026-11-09)
 

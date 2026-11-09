@@ -45,7 +45,7 @@ The grammar follows the real scanner and parser (`src/language/scanner.ts`,
   anything else is plain text. An unclosed tag or string in the body cannot run
   past the closing line.
 - **Templates** in `RENDER` bodies: `${x}`, `${x.y|raw}`, `${#each list as
-  item}`, `${#if x}` / `${#if !x}`, `${else}`, `${/each}`, `${/if}` and the
+  item}`, `${#each list by key as group}`, `${#if x}` / `${#if !x}`, `${else}`, `${/each}`, `${/if}` and the
   `$${` escape, also inside the embedded language's own strings (for example
   `href="${url}"`). Anything else inside `${…}` is marked invalid. `COPY` and
   `TRANSFORM` bodies are written byte for byte, so `${…}` there is not

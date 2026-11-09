@@ -233,6 +233,15 @@ impl LanguagesSpec {
 /// CSP's base policy when POLICY is not given.
 pub const DEFAULT_CSP: &str = "default-src 'self'; base-uri 'self'; object-src 'none'";
 
+/// `FEED tag … FOR tag IN list BY key`: a feed per group, `dest` and `title` interpolated per group (`${tag…}`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct FeedGroups {
+    pub as_name: String,
+    pub by: String,
+    pub dest: Operand,
+    pub title: Option<Operand>,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum Operation {
     /// Rename the files matching `patterns` (checked, NFC; a trailing `/` became `/**`) to `name.<hash>.ext`
@@ -304,12 +313,14 @@ pub enum Operation {
         languages: Option<LanguagesSpec>,
     },
     /// An Atom feed of a list import; `link` is interpolated per element (`${item…}`).
+    /// Without `each`, `dest` and `title` are the feed's path and title.
     Feed {
         list: String,
         base: String,
         link: Operand,
         dest: String,
         title: String,
+        each: Option<FeedGroups>,
         overwrite: bool,
         span: SourceSpan,
     },
@@ -1222,6 +1233,7 @@ pub fn plan_with(
             Instruction::Feed {
                 span,
                 list,
+                each,
                 base,
                 link,
                 dest,
@@ -1231,10 +1243,25 @@ pub fn plan_with(
             } => {
                 let base =
                     check_base_url(&evaluate_operand(base, &vars)?, "FEED BASE", &base.span)?;
-                let dest = file_dest(dest.as_ref(), &vars, "/feed.xml", "FEED")?;
-                let title = match title {
-                    Some(t) => evaluate_operand(t, &vars)?,
-                    None => base.clone(),
+                let groups = match (each, dest) {
+                    (Some(e), Some(d)) => Some(FeedGroups {
+                        as_name: e.as_name.clone(),
+                        by: e.by.key.clone(),
+                        dest: d.clone(),
+                        title: title.clone(),
+                    }),
+                    _ => None,
+                };
+                let (dest, title) = if groups.is_some() {
+                    (String::new(), base.clone())
+                } else {
+                    (
+                        file_dest(dest.as_ref(), &vars, "/feed.xml", "FEED")?,
+                        match title {
+                            Some(t) => evaluate_operand(t, &vars)?,
+                            None => base.clone(),
+                        },
+                    )
                 };
                 operations(&mut stages, span)?.push(Operation::Feed {
                     list: list.clone(),
@@ -1242,6 +1269,7 @@ pub fn plan_with(
                     link: link.clone(),
                     dest,
                     title,
+                    each: groups,
                     overwrite: *overwrite,
                     span: span.clone(),
                 });
@@ -2119,6 +2147,7 @@ impl Operation {
                 link,
                 dest,
                 title,
+                each,
                 overwrite,
                 span,
             } => {
@@ -2127,6 +2156,16 @@ impl Operation {
                 m.insert("link".into(), operand_json(link));
                 m.insert("dest".into(), json!(dest));
                 m.insert("title".into(), json!(title));
+                if let Some(e) = each {
+                    let mut g = Map::new();
+                    g.insert("as".into(), json!(e.as_name));
+                    g.insert("by".into(), json!(e.by));
+                    g.insert("dest".into(), operand_json(&e.dest));
+                    if let Some(t) = &e.title {
+                        g.insert("title".into(), operand_json(t));
+                    }
+                    m.insert("each".into(), Value::Object(g));
+                }
                 m.insert("overwrite".into(), json!(overwrite));
                 m.insert("span".into(), span_json(span));
             }

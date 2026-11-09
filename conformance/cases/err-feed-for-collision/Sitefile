@@ -1,0 +1,3 @@
+IMPORT posts FROM ./posts.yaml AS yaml
+FEED t BASE https://x LINK /${item.title}.html TO /t/${t.key}.xml FOR t IN posts BY tags
+EXPORT /
