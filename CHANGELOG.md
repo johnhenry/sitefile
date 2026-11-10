@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.0.7 (2026-11-10)
+
 - **Windows build of the Rust binary** (johnhenry/sitefile#318, PR #327): `rust/` now builds for
   `x86_64-pc-windows-msvc`. Unix-only code is behind `cfg(unix)`, with Windows stand-ins in the new
   `rust/src/platform.rs` (on Unix it re-exports the `std::os::unix` items, so nothing changes there):
