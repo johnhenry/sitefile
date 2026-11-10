@@ -136,8 +136,26 @@ jobs:
         shell: bash
     steps:
       - uses: actions/checkout@v4
+        if: runner.os != 'Windows'
         with:
           ref: ${{ needs.resolve.outputs.tag }}
+
+      # One conformance fixture is named "a&b <c>.html", which Windows can't
+      # create, so git can't check the repository out there (ci.yml's
+      # rust-windows job does the same). Fetch the tag as a tarball instead and
+      # leave that one file out.
+      - name: Fetch the source (Windows, without the fixture Windows can't name)
+        if: runner.os == 'Windows'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          TAG: ${{ needs.resolve.outputs.tag }}
+        run: |
+          set -euo pipefail
+          curl -fsSL -H "Authorization: Bearer $GH_TOKEN" -o src.tar.gz \
+            "https://api.github.com/repos/$REPO/tarball/$TAG"
+          tar -xzf src.tar.gz --strip-components=1 --exclude='*/public/a&b <c>.html'
+          rm src.tar.gz
 
       - uses: dtolnay/rust-toolchain@stable
         with:
