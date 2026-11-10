@@ -32,13 +32,13 @@ use crate::export::oci::{
     layout_tree, parse_config, parse_manifest, site_layer_index, site_layer_indices, IndexEntry,
     LayoutParts, OciOptions, ParsedConfig, ParsedManifest, OCI_LAYOUT_BYTES,
 };
+use crate::platform::{DirBuilderExt, OpenOptionsExt};
 use crate::refs::{looks_like_image_id, parse_local_ref, ref_key, ImageRef};
 use crate::tree::Tree;
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::io::{self, Read, Write};
-use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -115,7 +115,11 @@ pub fn resolve_store_home() -> PathBuf {
 pub fn resolve_store_home_from(h: Option<&str>) -> PathBuf {
     let p = match h {
         Some(h) if !h.is_empty() => PathBuf::from(h),
+        #[cfg(unix)]
         _ => PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| "/".into())).join(".sitefile"),
+        #[cfg(windows)]
+        _ => PathBuf::from(crate::platform::home_var().unwrap_or_else(|| "/".into()))
+            .join(".sitefile"),
     };
     crate::export::exporter::resolve_path(&p)
 }
@@ -1518,9 +1522,15 @@ mod tests {
 
     #[test]
     fn store_home_resolution() {
+        #[cfg(unix)]
         assert_eq!(
             resolve_store_home_from(Some("/x/y/../z")),
             PathBuf::from("/x/z")
+        );
+        #[cfg(windows)]
+        assert_eq!(
+            resolve_store_home_from(Some(r"C:\x\y\..\z")),
+            PathBuf::from(r"C:\x\z")
         );
         assert!(resolve_store_home_from(None).ends_with(".sitefile"));
         assert_eq!(short_id("sha256:0123456789abcdef"), "0123456789ab");

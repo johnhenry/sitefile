@@ -40,7 +40,7 @@ impl Tmp {
         ));
         let _ = fs::remove_dir_all(&p);
         fs::create_dir_all(&p).unwrap();
-        let t = Tmp(fs::canonicalize(&p).unwrap());
+        let t = Tmp(sitefile::platform::canonicalize(&p).unwrap());
         t.write(&[(
             "plugins/image.wasm",
             fs::read(repo_root().join("plugins/image/image.wasm")).unwrap(),

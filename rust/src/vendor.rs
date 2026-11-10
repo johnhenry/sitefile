@@ -180,7 +180,7 @@ fn vendor_unredacted(options: &BuildOptions) -> Result<VendorResult> {
         warn(w);
     }
     let dir = vendor_dir_rel(options.vendor_dir.as_deref().unwrap_or(DEFAULT_VENDOR_DIR))?;
-    let context_real = std::fs::canonicalize(&options.context_dir).map_err(|_| {
+    let context_real = crate::platform::canonicalize(&options.context_dir).map_err(|_| {
         SitefileError::plain(
             E_NOT_FOUND,
             format!("build context '{}' does not exist", options.context_dir),

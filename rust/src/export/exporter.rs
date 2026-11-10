@@ -3,10 +3,10 @@
 //! with the same destination safety rules and race hardening as TypeScript.
 
 use crate::error::{ErrorCode::*, Result, SitefileError};
+use crate::platform::{Meta, MetadataExt, OpenOptionsExt};
 use crate::tree::Tree;
 use std::fs;
 use std::io::{self, Read, Write};
-use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 
@@ -158,10 +158,15 @@ pub fn resolve_path(p: &Path) -> PathBuf {
             .unwrap_or_else(|_| PathBuf::from("/"))
             .join(p)
     };
-    let mut out = PathBuf::from("/");
+    let mut out = PathBuf::from(std::path::MAIN_SEPARATOR_STR);
     for c in joined.components() {
         match c {
-            Component::RootDir | Component::Prefix(_) | Component::CurDir => {}
+            // Windows: keep the drive or UNC prefix (`C:\`), the root of the result.
+            Component::Prefix(prefix) => {
+                out = PathBuf::from(prefix.as_os_str());
+                out.push(std::path::MAIN_SEPARATOR_STR);
+            }
+            Component::RootDir | Component::CurDir => {}
             Component::ParentDir => {
                 out.pop();
             }
@@ -177,7 +182,7 @@ pub(super) struct FileId {
     ino: u64,
 }
 
-pub(super) fn id_of(m: &fs::Metadata) -> FileId {
+pub(super) fn id_of(m: &Meta) -> FileId {
     FileId {
         dev: m.dev(),
         ino: m.ino(),
@@ -186,12 +191,12 @@ pub(super) fn id_of(m: &fs::Metadata) -> FileId {
 
 /// Size and nanosecond ctime of a file: what [`FileId`] can't tell apart when an inode
 /// number is reused for a replacement.
-pub(super) fn replacement_stamp_of(m: &fs::Metadata) -> (u64, i64, i64) {
+pub(super) fn replacement_stamp_of(m: &Meta) -> (u64, i64, i64) {
     (m.size(), m.ctime(), m.ctime_nsec())
 }
 
-pub(super) fn lstat_opt(p: &Path) -> io::Result<Option<fs::Metadata>> {
-    match fs::symlink_metadata(p) {
+pub(super) fn lstat_opt(p: &Path) -> io::Result<Option<Meta>> {
+    match crate::platform::lstat(p) {
         Ok(m) => Ok(Some(m)),
         Err(e)
             if e.kind() == io::ErrorKind::NotFound || e.kind() == io::ErrorKind::NotADirectory =>
@@ -202,11 +207,11 @@ pub(super) fn lstat_opt(p: &Path) -> io::Result<Option<fs::Metadata>> {
     }
 }
 
-pub(super) fn is_real_dir(m: &fs::Metadata) -> bool {
+pub(super) fn is_real_dir(m: &Meta) -> bool {
     !m.file_type().is_symlink() && m.is_dir()
 }
 
-pub(super) fn is_real_file(m: &fs::Metadata) -> bool {
+pub(super) fn is_real_file(m: &Meta) -> bool {
     !m.file_type().is_symlink() && m.is_file()
 }
 
@@ -220,7 +225,7 @@ fn fs_root(p: &Path) -> bool {
 }
 
 fn realpath_or(p: &Path, what: &str) -> Result<PathBuf> {
-    fs::canonicalize(p).map_err(|e| {
+    crate::platform::canonicalize(p).map_err(|e| {
         SitefileError::plain(
             E_EXPORT,
             format!("cannot resolve {what} '{}': {e}", show(p)),
@@ -229,10 +234,12 @@ fn realpath_or(p: &Path, what: &str) -> Result<PathBuf> {
 }
 
 fn home_dir() -> PathBuf {
-    let h = std::env::var_os("HOME")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("/"));
-    fs::canonicalize(&h).unwrap_or_else(|_| resolve_path(&h))
+    #[cfg(unix)]
+    let h = std::env::var_os("HOME");
+    #[cfg(windows)]
+    let h = crate::platform::home_var().map(std::ffi::OsString::from);
+    let h = h.map(PathBuf::from).unwrap_or_else(|| PathBuf::from("/"));
+    crate::platform::canonicalize(&h).unwrap_or_else(|_| resolve_path(&h))
 }
 
 /// The real location of `abs` without following a final symlink: realpath the
@@ -247,7 +254,7 @@ fn realpath_missing(abs: &Path) -> Result<PathBuf> {
         .unwrap_or_default()];
     let mut dir = abs.parent().unwrap_or(Path::new("/")).to_path_buf();
     loop {
-        match fs::canonicalize(&dir) {
+        match crate::platform::canonicalize(&dir) {
             Ok(real) => {
                 let mut out = real;
                 for r in rest.iter().rev() {
@@ -320,7 +327,7 @@ fn verified_parent_id(parent: &Path) -> Result<FileId> {
             show(parent)
         ))
     };
-    let real = fs::canonicalize(parent).map_err(changed)?;
+    let real = crate::platform::canonicalize(parent).map_err(changed)?;
     if real != parent {
         return Err(unsafe_err(format!(
             "export parent '{}' resolves to '{}'; aborting",
@@ -328,7 +335,7 @@ fn verified_parent_id(parent: &Path) -> Result<FileId> {
             show(&real)
         )));
     }
-    let st = fs::metadata(parent).map_err(changed)?;
+    let st = crate::platform::stat(parent).map_err(changed)?;
     if !st.is_dir() {
         return Err(unsafe_err(format!(
             "export parent '{}' is not a directory",
@@ -419,7 +426,7 @@ fn remove_file_if_same(p: &Path, expected: FileId) {
 fn check_destination(
     out: &Path,
     options: &ExportOptions,
-) -> Result<(PathBuf, PathBuf, Option<fs::Metadata>)> {
+) -> Result<(PathBuf, PathBuf, Option<Meta>)> {
     let out_real = realpath_missing(&resolve_path(out))?;
     let context_real = realpath_or(&resolve_path(&options.context_dir), "build context")?;
     let home = home_dir();
@@ -433,7 +440,7 @@ fn check_destination(
     if let Some(s) = &st {
         if s.file_type().is_symlink() {
             // Never write through a final symlink; but if it points at something dangerous, say so.
-            if let Ok(target) = fs::canonicalize(&out_real) {
+            if let Ok(target) = crate::platform::canonicalize(&out_real) {
                 assert_safe_destination(&target, &context_real, &home)?;
             }
             return Err(SitefileError::plain(
@@ -579,7 +586,7 @@ fn export_entries(
         SitefileError::plain(E_EXPORT, format!("cannot create '{}': {e}", show(&tmp)))
     })?;
     let tmp_id = (|| -> Result<FileId> {
-        let t = fs::symlink_metadata(&tmp).map_err(|e| {
+        let t = crate::platform::lstat(&tmp).map_err(|e| {
             unsafe_err(format!(
                 "temporary directory '{}' is not a real directory: {e}",
                 show(&tmp)
@@ -641,9 +648,9 @@ fn export_entries(
                 .mode(0o600)
                 .open(target)?;
             f.write_all(bytes)?;
-            f.set_permissions(fs::Permissions::from_mode(mode))?;
+            crate::platform::set_file_mode(&f, mode)?;
             Ok(if record {
-                Some(stamp_of(&f.metadata()?))
+                Some(stamp_of(&crate::platform::fstat(&f)?))
             } else {
                 None
             })
@@ -865,11 +872,10 @@ pub fn export_file(
             .mode(0o644)
             .open(&tmp)
             .map_err(io_fail)?;
-        let id = id_of(&f.metadata().map_err(io_fail)?);
+        let id = id_of(&crate::platform::fstat(&f).map_err(io_fail)?);
         tmp_id = Some(id);
         f.write_all(data).map_err(io_fail)?;
-        f.set_permissions(fs::Permissions::from_mode(0o644))
-            .map_err(io_fail)?;
+        crate::platform::set_file_mode(&f, 0o644).map_err(io_fail)?;
         drop(f);
         if let Some(hook) = &options.before_swap {
             hook();
@@ -933,7 +939,8 @@ pub fn export_file(
 pub(crate) mod tests {
     use super::*;
     use crate::tree::make_file;
-    use std::os::unix::fs::symlink;
+    #[cfg(unix)]
+    use std::os::unix::fs::{symlink, PermissionsExt};
 
     /// A unique, real-path temp directory removed on drop.
     pub struct TmpDir(PathBuf);
@@ -945,7 +952,7 @@ pub(crate) mod tests {
                 random_hex(6)
             ));
             fs::create_dir_all(&p).unwrap();
-            TmpDir(fs::canonicalize(&p).unwrap())
+            TmpDir(crate::platform::canonicalize(&p).unwrap())
         }
         pub fn path(&self) -> &Path {
             &self.0
@@ -983,6 +990,7 @@ pub(crate) mod tests {
     fn opts(ctx: &Path) -> ExportOptions {
         ExportOptions::new(ctx)
     }
+    #[cfg(unix)]
     fn mode(p: &Path) -> u32 {
         fs::metadata(p).unwrap().permissions().mode() & 0o777
     }
@@ -1001,6 +1009,7 @@ pub(crate) mod tests {
         assert!(occupied(io::Error::other("boom"), "/a").is_err());
     }
 
+    #[cfg(unix)]
     #[test]
     fn writes_files_dirs_bytes_and_modes() {
         let d = TmpDir::new("export");
@@ -1048,6 +1057,7 @@ pub(crate) mod tests {
         siblings_ok(d.path());
     }
 
+    #[cfg(unix)]
     #[test]
     fn refuses_context_and_parents_of_it() {
         let d = TmpDir::new("export");
@@ -1134,6 +1144,7 @@ pub(crate) mod tests {
         assert_eq!(names(&d.path().join("fresh")), ["b"]);
     }
 
+    #[cfg(unix)]
     #[test]
     fn out_that_is_a_file_or_symlink_fails() {
         let d = TmpDir::new("export");
@@ -1196,6 +1207,7 @@ pub(crate) mod tests {
         assert_eq!(random_hex(6).len(), 12);
     }
 
+    #[cfg(unix)]
     fn victim(root: &Path) -> (PathBuf, PathBuf) {
         let dir = root.join("victim");
         fs::create_dir(&dir).unwrap();
@@ -1203,11 +1215,13 @@ pub(crate) mod tests {
         fs::write(&file, "keep me").unwrap();
         (dir, file)
     }
+    #[cfg(unix)]
     fn victim_untouched(v: &(PathBuf, PathBuf)) {
         assert_eq!(names(&v.0), ["precious.txt"]);
         assert_eq!(read(&v.1), "keep me");
     }
 
+    #[cfg(unix)]
     #[test]
     fn race_out_replaced_by_symlink() {
         let d = TmpDir::new("export");
@@ -1234,6 +1248,7 @@ pub(crate) mod tests {
         siblings_ok(&ctx);
     }
 
+    #[cfg(unix)]
     #[test]
     fn race_parent_replaced_by_symlink() {
         let d = TmpDir::new("export");
@@ -1331,6 +1346,7 @@ pub(crate) mod tests {
 
     // ------------------------------------------------------------ export_file
 
+    #[cfg(unix)]
     #[test]
     fn file_writes_and_replaces_inside_context() {
         let d = TmpDir::new("fmt");
@@ -1366,6 +1382,7 @@ pub(crate) mod tests {
         export_file(b"x", &b.path().join("fresh/b.zip"), &opts(a.path())).unwrap();
     }
 
+    #[cfg(unix)]
     #[test]
     fn file_refusals() {
         let a = TmpDir::new("fmt");
@@ -1437,11 +1454,22 @@ pub(crate) mod tests {
 
     #[test]
     fn resolve_is_lexical() {
-        assert_eq!(
-            resolve_path(Path::new("/a/b/../c/./d/")),
-            PathBuf::from("/a/c/d")
-        );
-        assert_eq!(resolve_path(Path::new("/..")), PathBuf::from("/"));
+        #[cfg(unix)]
+        {
+            assert_eq!(
+                resolve_path(Path::new("/a/b/../c/./d/")),
+                PathBuf::from("/a/c/d")
+            );
+            assert_eq!(resolve_path(Path::new("/..")), PathBuf::from("/"));
+        }
+        #[cfg(windows)]
+        {
+            assert_eq!(
+                resolve_path(Path::new(r"C:\a\b\..\c\.\d\")),
+                PathBuf::from(r"C:\a\c\d")
+            );
+            assert_eq!(resolve_path(Path::new(r"C:\..")), PathBuf::from(r"C:\"));
+        }
         assert!(resolve_path(Path::new("rel")).is_absolute());
     }
 }

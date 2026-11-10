@@ -505,7 +505,7 @@ pub fn write_vendor_dir(
         }
     }
     fs::create_dir_all(&parent).map_err(io)?;
-    let parent_real = fs::canonicalize(&parent).map_err(io)?;
+    let parent_real = crate::platform::canonicalize(&parent).map_err(io)?;
     if parent_real != context_real && !inside(context_real, &parent_real) {
         return Err(escape());
     }

@@ -848,6 +848,7 @@ pub(crate) mod tests {
         assert_eq!(&*read_zip(&z).get("/logo.PNG").unwrap().bytes, a.as_bytes());
     }
 
+    #[cfg(unix)]
     fn has_tool(cmd: &str, arg: &str) -> bool {
         std::process::Command::new(cmd)
             .arg(arg)
@@ -857,6 +858,7 @@ pub(crate) mod tests {
             .is_ok()
     }
 
+    #[cfg(unix)] // Windows runners' unzip/tar are MSYS tools that mangle native paths
     #[test]
     fn system_tools_accept_the_archives() {
         let dir = crate::export::exporter::tests::TmpDir::new("fmt");

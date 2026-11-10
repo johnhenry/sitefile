@@ -343,6 +343,16 @@ pub struct Loaded {
 pub fn relative_path(from: &Path, to: &Path) -> String {
     let a: Vec<_> = from.components().collect();
     let b: Vec<_> = to.components().collect();
+    // Windows: on another drive there is no relative path; Node's
+    // `path.relative` then returns the target itself.
+    if cfg!(windows)
+        && matches!(
+            (a.first(), b.first()),
+            (Some(std::path::Component::Prefix(x)), Some(std::path::Component::Prefix(y))) if x != y
+        )
+    {
+        return to.to_string_lossy().into_owned();
+    }
     let mut i = 0;
     while i < a.len() && i < b.len() && a[i] == b[i] {
         i += 1;
@@ -493,7 +503,7 @@ pub(crate) fn realpath_loose(p: &Path) -> PathBuf {
     let mut tail: Vec<std::ffi::OsString> = Vec::new();
     let mut cur = p.to_path_buf();
     loop {
-        if let Ok(r) = std::fs::canonicalize(&cur) {
+        if let Ok(r) = crate::platform::canonicalize(&cur) {
             let mut out = r;
             for t in tail.iter().rev() {
                 out.push(t);
@@ -784,7 +794,7 @@ fn build_with(options: &BuildOptions, temp_dirs: &Mutex<Vec<PathBuf>>) -> Result
     let tools = resolve_tools(&p, options, &warn)?;
     let plugin_permission = check_plugins(&p, options, &warn)?;
 
-    let context_real = std::fs::canonicalize(&options.context_dir).map_err(|_| {
+    let context_real = crate::platform::canonicalize(&options.context_dir).map_err(|_| {
         SitefileError::plain(
             E_NOT_FOUND,
             format!("build context '{}' does not exist", options.context_dir),
@@ -3622,7 +3632,7 @@ pub fn root_sitefile_source(
     label: &str,
     sitefile_path: &Path,
 ) -> Result<SitefileSource> {
-    let context_real = std::fs::canonicalize(&options.context_dir).map_err(|_| {
+    let context_real = crate::platform::canonicalize(&options.context_dir).map_err(|_| {
         SitefileError::plain(
             E_NOT_FOUND,
             format!("build context '{}' does not exist", options.context_dir),

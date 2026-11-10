@@ -569,7 +569,7 @@ mod tests {
             },
         );
         let ctx = tmp("ctx-");
-        let ctx = std::fs::canonicalize(&ctx).unwrap();
+        let ctx = crate::platform::canonicalize(&ctx).unwrap();
         write_vendor_dir(
             &ctx,
             "vendor/sitefile",

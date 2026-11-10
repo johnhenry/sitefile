@@ -4867,6 +4867,7 @@ impl Drop for ListeningServer {
     }
 }
 
+#[cfg(unix)]
 #[repr(C)]
 struct IfAddrs {
     ifa_next: *mut IfAddrs,
@@ -4875,23 +4876,31 @@ struct IfAddrs {
     ifa_addr: *mut u8,
 }
 
+#[cfg(unix)]
 extern "C" {
     fn getifaddrs(ifap: *mut *mut IfAddrs) -> std::ffi::c_int;
     fn freeifaddrs(ifa: *mut IfAddrs);
 }
 
+#[cfg(unix)]
 const IFF_UP: std::ffi::c_uint = 0x1;
+#[cfg(unix)]
 const IFF_LOOPBACK: std::ffi::c_uint = 0x8;
+#[cfg(unix)]
 const IFF_RUNNING: std::ffi::c_uint = 0x40;
 #[cfg(any(target_os = "macos", target_os = "ios", target_os = "freebsd"))]
 const AF_INET6: u16 = if cfg!(target_os = "freebsd") { 28 } else { 30 };
-#[cfg(not(any(target_os = "macos", target_os = "ios", target_os = "freebsd")))]
+#[cfg(all(
+    unix,
+    not(any(target_os = "macos", target_os = "ios", target_os = "freebsd"))
+))]
 const AF_INET6: u16 = 10;
 
 /// The family of a `struct sockaddr` (BSDs: a length byte, then the family byte).
 ///
 /// # Safety
 /// `sa` points to a readable `struct sockaddr`.
+#[cfg(unix)]
 unsafe fn sa_family(sa: *const u8) -> u16 {
     if cfg!(any(
         target_os = "macos",
@@ -4904,9 +4913,17 @@ unsafe fn sa_family(sa: *const u8) -> u16 {
     }
 }
 
+/// Windows: always empty (listing interfaces needs `GetAdaptersAddresses`,
+/// which std does not wrap), so `serve` shows no network URLs there (#318).
+#[cfg(windows)]
+pub fn network_addresses(_bind_host: &str) -> Vec<String> {
+    Vec::new()
+}
+
 /// The addresses other machines can reach a server bound to all interfaces at
 /// (`networkAddresses` in src/server.ts: up, non-loopback interfaces; IPv4 for `0.0.0.0`, IPv4
 /// then IPv6 for `::`, no IPv6 link-local; each family sorted as text, without duplicates).
+#[cfg(unix)]
 pub fn network_addresses(bind_host: &str) -> Vec<String> {
     if bind_host != "0.0.0.0" && bind_host != "::" {
         return Vec::new();

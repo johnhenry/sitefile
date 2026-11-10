@@ -22,7 +22,7 @@ impl Tmp {
         ));
         let _ = fs::remove_dir_all(&p);
         fs::create_dir_all(&p).unwrap();
-        Tmp(fs::canonicalize(&p).unwrap())
+        Tmp(sitefile::platform::canonicalize(&p).unwrap())
     }
 }
 impl Drop for Tmp {
@@ -115,6 +115,7 @@ fn vendor_then_build_offline_without_network_flags() {
     );
     assert!(
         v.stdout
+            .replace('\\', "/")
             .ends_with("vendor/sitefile\nUpdated Sitefile.lock\n"),
         "{}",
         v.stdout
@@ -249,23 +250,26 @@ fn vendor_dir_validation_and_refusals() {
         fs::read_to_string(ctx.join("third_party/README")).unwrap(),
         "not ours"
     );
-    let outside = t.0.join("outside");
-    fs::create_dir_all(&outside).unwrap();
-    std::os::unix::fs::symlink(&outside, ctx.join("escape")).unwrap();
-    let esc = sitefile(
-        &home,
-        &[
-            "vendor",
-            s(&ctx),
-            NET[0],
-            NET[1],
-            "--vendor-dir",
-            "escape/v",
-        ],
-    );
-    assert_eq!(esc.code, 1);
-    assert!(esc.stderr.contains("E_PATH_ESCAPE"), "{}", esc.stderr);
-    assert_eq!(fs::read_dir(&outside).unwrap().count(), 0);
+    #[cfg(unix)]
+    {
+        let outside = t.0.join("outside");
+        fs::create_dir_all(&outside).unwrap();
+        std::os::unix::fs::symlink(&outside, ctx.join("escape")).unwrap();
+        let esc = sitefile(
+            &home,
+            &[
+                "vendor",
+                s(&ctx),
+                NET[0],
+                NET[1],
+                "--vendor-dir",
+                "escape/v",
+            ],
+        );
+        assert_eq!(esc.code, 1);
+        assert!(esc.stderr.contains("E_PATH_ESCAPE"), "{}", esc.stderr);
+        assert_eq!(fs::read_dir(&outside).unwrap().count(), 0);
+    }
     // a custom directory is used when named
     assert_eq!(
         sitefile(

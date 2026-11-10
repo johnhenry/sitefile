@@ -336,8 +336,8 @@ pub fn verify_tree(tree: &Tree, manifest: &Manifest, ignore: Option<&str>) -> Ve
 
 /// The tree path of `file` when it lies inside directory `dir` (by real paths).
 pub fn path_inside(dir: &str, file: &str) -> Option<String> {
-    let d = fs::canonicalize(dir).ok()?;
-    let f = fs::canonicalize(file).ok()?;
+    let d = crate::platform::canonicalize(dir).ok()?;
+    let f = crate::platform::canonicalize(file).ok()?;
     let rel = f.strip_prefix(&d).ok()?;
     if rel.as_os_str().is_empty() {
         return None;

@@ -1,5 +1,7 @@
 //! `serve` keys, `--open` and `--qr` (issue #224), driven through a pipe
 //! (`SITEFILE_SERVE_KEYS=1`): the same session as test/serve-keys.test.ts.
+//! Unix-only: the fake browser is a shell script.
+#![cfg(unix)]
 
 use std::fs;
 use std::io::{Read, Write};
@@ -16,7 +18,7 @@ fn tmp(name: &str) -> PathBuf {
     let p = std::env::temp_dir().join(format!("sitefile-keys-rs-{}-{name}", std::process::id()));
     let _ = fs::remove_dir_all(&p);
     fs::create_dir_all(&p).unwrap();
-    fs::canonicalize(&p).unwrap()
+    sitefile::platform::canonicalize(&p).unwrap()
 }
 
 fn wait_for(path: &std::path::Path, what: &str) -> String {

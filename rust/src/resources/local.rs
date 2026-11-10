@@ -5,13 +5,13 @@
 use crate::digest::sha256;
 use crate::error::{ErrorCode::*, Result, SitefileError, SourceSpan};
 use crate::paths::nfc;
+use crate::platform::{Meta, MetadataExt, PermissionsExt};
 use crate::resources::ignore::IgnoreRules;
 use crate::resources::types::{Provenance, Resource};
 use crate::tree::{make_file, ConflictPolicy, Node, Tree};
 use std::collections::HashSet;
 use std::fs::{self, Metadata};
 use std::io;
-use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 
 pub const SITEFILEIGNORE: &str = ".sitefileignore";
@@ -55,8 +55,11 @@ pub struct LocalContext {
 
 #[cfg(any(target_os = "linux", target_os = "android"))]
 const ELOOP: i32 = 40;
-#[cfg(not(any(target_os = "linux", target_os = "android")))]
+#[cfg(all(unix, not(any(target_os = "linux", target_os = "android"))))]
 const ELOOP: i32 = 62;
+/// `ERROR_CANT_RESOLVE_FILENAME`, what `canonicalize` reports for a symlink loop on Windows.
+#[cfg(windows)]
+const ELOOP: i32 = 1921;
 
 fn display(rel: &str) -> String {
     if rel.is_empty() {
@@ -121,7 +124,7 @@ impl LocalContext {
     pub fn open(dir: impl AsRef<Path>, options: &LocalContextOptions) -> Result<LocalContext> {
         let dir = dir.as_ref();
         let shown = dir.display().to_string();
-        let root = match fs::canonicalize(dir) {
+        let root = match crate::platform::canonicalize(dir) {
             Ok(r) => r,
             Err(e) if e.kind() == io::ErrorKind::NotFound => {
                 return Err(SitefileError::plain(
@@ -221,7 +224,7 @@ impl LocalContext {
     }
 
     /// Hard-linked files may alias files outside the context, which realpath cannot detect.
-    fn check_hardlink(&self, st: &Metadata, rel: &str, span: Option<&SourceSpan>) -> Result<()> {
+    fn check_hardlink(&self, st: &Meta, rel: &str, span: Option<&SourceSpan>) -> Result<()> {
         if self.allow_hardlinks || !st.is_file() || st.nlink() <= 1 {
             return Ok(());
         }
@@ -298,9 +301,9 @@ impl LocalContext {
         rel: &str,
         span: Option<&SourceSpan>,
         link_name: Option<&str>,
-    ) -> Result<(PathBuf, Metadata)> {
+    ) -> Result<(PathBuf, Meta)> {
         let abs = self.host_path(rel, span)?;
-        let real = match fs::canonicalize(&abs) {
+        let real = match crate::platform::canonicalize(&abs) {
             Ok(r) => r,
             Err(e) => {
                 let detail = if e.kind() == io::ErrorKind::NotFound
@@ -338,7 +341,7 @@ impl LocalContext {
                 span.cloned(),
             ));
         }
-        let st = fs::metadata(&real).map_err(|e| {
+        let st = crate::platform::stat(&real).map_err(|e| {
             SitefileError::new(
                 E_NOT_FOUND,
                 format!("cannot resolve '{}': {e}", display(rel)),
@@ -557,7 +560,7 @@ impl LocalContext {
                 continue;
             }
             let mut child_real = real_dir.join(&raw);
-            let st: Metadata;
+            let st: Meta;
             if is_link {
                 let (r, s) = self.resolve(&child_ctx, span, Some(&display(&child_ctx)))?;
                 child_real = r;
@@ -567,7 +570,7 @@ impl LocalContext {
                     continue;
                 }
             } else {
-                st = fs::symlink_metadata(&child_real).map_err(|e| {
+                st = crate::platform::lstat(&child_real).map_err(|e| {
                     SitefileError::new(
                         E_NOT_FOUND,
                         format!("cannot resolve '{}': {e}", display(&child_ctx)),
@@ -623,6 +626,7 @@ impl LocalContext {
 pub(crate) mod tests {
     use super::*;
     use crate::error::ErrorCode;
+    #[cfg(unix)]
     use std::os::unix::fs::symlink;
     use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -666,6 +670,7 @@ pub(crate) mod tests {
     fn open(ctx: &Path) -> LocalContext {
         LocalContext::open(ctx, &LocalContextOptions::default()).unwrap()
     }
+    #[cfg(unix)]
     fn chmod(p: &Path, mode: u32) {
         fs::set_permissions(p, fs::Permissions::from_mode(mode)).unwrap();
     }
@@ -774,7 +779,7 @@ pub(crate) mod tests {
     fn open_resolves_the_real_root() {
         with_temp(|ctx, _| {
             let c = open(ctx);
-            assert_eq!(c.root, fs::canonicalize(ctx).unwrap());
+            assert_eq!(c.root, crate::platform::canonicalize(ctx).unwrap());
             assert_eq!(
                 code(LocalContext::open(
                     ctx.join("nope"),
@@ -785,6 +790,7 @@ pub(crate) mod tests {
         });
     }
 
+    #[cfg(unix)]
     #[test]
     fn stat_and_read_file() {
         with_temp(|ctx, _| {
@@ -811,6 +817,7 @@ pub(crate) mod tests {
         });
     }
 
+    #[cfg(unix)]
     #[test]
     fn symlinks_escaping_the_context_are_rejected() {
         with_temp(|ctx, outside| {
@@ -827,6 +834,7 @@ pub(crate) mod tests {
         });
     }
 
+    #[cfg(unix)]
     #[test]
     fn read_tree_fails_naming_a_link_that_escapes() {
         with_temp(|ctx, outside| {
@@ -839,6 +847,7 @@ pub(crate) mod tests {
         });
     }
 
+    #[cfg(unix)]
     #[test]
     fn symlinks_inside_the_context_are_followed() {
         with_temp(|ctx, _| {
@@ -856,6 +865,7 @@ pub(crate) mod tests {
         });
     }
 
+    #[cfg(unix)]
     #[test]
     fn directory_symlink_cycles_are_skipped() {
         with_temp(|ctx, _| {
@@ -868,6 +878,7 @@ pub(crate) mod tests {
         });
     }
 
+    #[cfg(unix)]
     #[test]
     fn symlink_loops_are_unsupported() {
         with_temp(|ctx, _| {
@@ -877,6 +888,7 @@ pub(crate) mod tests {
         });
     }
 
+    #[cfg(unix)]
     #[test]
     fn ignore_list_is_honoured_while_walking() {
         with_temp(|ctx, _| {
@@ -927,6 +939,7 @@ pub(crate) mod tests {
         });
     }
 
+    #[cfg(unix)]
     #[test]
     fn tree_modes_are_normalized_and_output_is_deterministic() {
         with_temp(|ctx, _| {
@@ -952,6 +965,7 @@ pub(crate) mod tests {
         });
     }
 
+    #[cfg(unix)]
     #[test]
     fn fifos_and_sockets_are_unsupported() {
         with_temp(|ctx, _| {
@@ -1057,6 +1071,7 @@ pub(crate) mod tests {
         });
     }
 
+    #[cfg(unix)]
     #[test]
     fn sitefileignore_symlinked_outside_is_refused() {
         with_temp(|ctx, outside| {
@@ -1099,9 +1114,12 @@ pub(crate) mod tests {
             let c = open(ctx);
             assert_eq!(code(c.read_file("innocent.txt", None)), E_HARDLINK);
             assert_eq!(code(c.read_tree("", "test", None)), E_HARDLINK);
-            symlink("innocent.txt", ctx.join("alias.txt")).unwrap();
-            assert_eq!(code(c.read_file("alias.txt", None)), E_HARDLINK);
-            assert_eq!(code(c.real_file("alias.txt", None)), E_HARDLINK);
+            #[cfg(unix)]
+            {
+                symlink("innocent.txt", ctx.join("alias.txt")).unwrap();
+                assert_eq!(code(c.read_file("alias.txt", None)), E_HARDLINK);
+                assert_eq!(code(c.real_file("alias.txt", None)), E_HARDLINK);
+            }
         });
     }
 
@@ -1143,6 +1161,7 @@ pub(crate) mod tests {
         });
     }
 
+    #[cfg(unix)]
     #[test]
     fn dangling_sitefileignore_symlink_fails_clearly() {
         with_temp(|ctx, _| {
@@ -1165,6 +1184,7 @@ pub(crate) mod tests {
         });
     }
 
+    #[cfg(unix)]
     #[test]
     fn real_file_returns_real_path_and_bytes() {
         with_temp(|ctx, _| {

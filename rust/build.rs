@@ -16,6 +16,11 @@ fn main() {
         build.files(files);
     }
     build.compile("sitefile_brotlienc");
+    // Windows gives the main thread a 1 MiB stack (Linux and macOS: 8 MiB), which
+    // deep plugin/render paths overflow; ask for the same 8 MiB (#318).
+    if std::env::var("CARGO_CFG_TARGET_ENV").as_deref() == Ok("msvc") {
+        println!("cargo:rustc-link-arg-bins=/STACK:8388608");
+    }
     println!("cargo:rerun-if-changed=vendor/brotli");
     println!("cargo:rerun-if-changed=build.rs");
 }

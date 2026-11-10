@@ -124,7 +124,7 @@ pub fn check_node(
             given.display()
         ));
     }
-    let real = std::fs::canonicalize(&given)
+    let real = crate::platform::canonicalize(&given)
         .ok()
         .filter(|r| r.is_file())
         .ok_or_else(|| format!("could not start: no Node binary at {}", given.display()))?;
@@ -455,7 +455,25 @@ struct PluginProcess {
 /// Percent-encode a path for a `file://` URL.
 fn file_url(file: &Path) -> String {
     let mut s = String::from("file://");
-    for b in file.to_string_lossy().bytes() {
+    #[cfg(unix)]
+    let text = file.to_string_lossy();
+    // Windows (Node's `pathToFileURL`): `C:\a\b` is `file:///C:/a/b`, and
+    // `\\host\share\x` is `file://host/share/x`.
+    #[cfg(windows)]
+    let text = {
+        let t = file.to_string_lossy().replace('\\', "/");
+        let t = t.strip_prefix("//?/").map(str::to_string).unwrap_or(t);
+        let t = t
+            .strip_prefix("UNC/")
+            .map(|r| format!("//{r}"))
+            .unwrap_or(t);
+        match t.strip_prefix("//") {
+            Some(unc) => unc.to_string(),
+            None if t.starts_with('/') => t,
+            None => format!("/{t}"),
+        }
+    };
+    for b in text.bytes() {
         if b.is_ascii_alphanumeric() || b"/-._~!$&'()*+,;=:@".contains(&b) {
             s.push(b as char);
         } else {
@@ -465,10 +483,20 @@ fn file_url(file: &Path) -> String {
     s
 }
 
+#[cfg(unix)]
 fn find_on_path(name: &str) -> Option<PathBuf> {
     let path = std::env::var_os("PATH")?;
     std::env::split_paths(&path)
         .map(|d| d.join(name))
+        .find(|p| p.is_file())
+}
+
+/// Windows: `name.exe` in each PATH directory, then the name as given.
+#[cfg(windows)]
+fn find_on_path(name: &str) -> Option<PathBuf> {
+    let path = std::env::var_os("PATH")?;
+    std::env::split_paths(&path)
+        .flat_map(|d| [d.join(format!("{name}.exe")), d.join(name)])
         .find(|p| p.is_file())
 }
 
@@ -1181,10 +1209,12 @@ mod tests {
             Instant::now().elapsed().as_nanos()
         ));
         fs::create_dir_all(&d).unwrap();
-        fs::canonicalize(d).unwrap()
+        crate::platform::canonicalize(d).unwrap()
     }
 
     /// A project folder with `plugins/<name>.mjs` (+ extra files); returns (root, plugin path).
+    /// Drop the host before removing `root`: its Node process runs in the plugin folder,
+    /// and Windows can't remove a process's working directory (error 32).
     fn plugin(src: &str, extra: &[(&str, &str)]) -> (PathBuf, PathBuf) {
         let root = tmp("sitefile-plugins-rs-");
         fs::create_dir_all(root.join("plugins")).unwrap();
@@ -1264,10 +1294,22 @@ mod tests {
         assert_eq!(b64_decode_lenient("aGVsbG8="), b"hello");
         assert_eq!(b64_decode_lenient("aGVsbG8"), b"hello");
         assert_eq!(b64_decode_lenient("aG Vs\nbG8=junk"), b"hello");
+        #[cfg(unix)]
         assert_eq!(
             file_url(Path::new("/a b/c#d.mjs")),
             "file:///a%20b/c%23d.mjs"
         );
+        #[cfg(windows)]
+        {
+            assert_eq!(
+                file_url(Path::new(r"C:\a b\c#d.mjs")),
+                "file:///C:/a%20b/c%23d.mjs"
+            );
+            assert_eq!(
+                file_url(Path::new(r"\\host\share\p.mjs")),
+                "file://host/share/p.mjs"
+            );
+        }
     }
 
     #[test]
@@ -1306,6 +1348,7 @@ mod tests {
         );
         assert!(h.cacheable("p"));
         h.close();
+        drop(h); // stop Node: Windows can\'t remove its working directory
         fs::remove_dir_all(root).unwrap();
     }
 
@@ -1328,6 +1371,7 @@ mod tests {
                 ("sub/b.bin".into(), vec![1, 2, 3])
             ])
         );
+        drop(h); // stop Node: Windows can\'t remove its working directory
         fs::remove_dir_all(root).unwrap();
     }
 
@@ -1362,6 +1406,7 @@ mod tests {
             json!({ "readOwn": "allowed", "readContext": "denied", "readEtc": "denied", "write": "denied", "spawn": "denied", "net": "denied", "env": [] })
         );
         assert!(!root.join("plugins/written.txt").exists());
+        drop(h); // stop Node: Windows can\'t remove its working directory
         fs::remove_dir_all(root).unwrap();
     }
 
@@ -1376,6 +1421,7 @@ mod tests {
             e.message()
         );
         h.close();
+        drop(h); // stop Node: Windows can\'t remove its working directory
         fs::remove_dir_all(root).unwrap();
         e
     }
@@ -1466,6 +1512,7 @@ mod tests {
         );
         drop(logs);
         h.close();
+        drop(h); // stop Node: Windows can\'t remove its working directory
         fs::remove_dir_all(root).unwrap();
 
         // Within the limit: unaffected.
@@ -1479,6 +1526,7 @@ mod tests {
         };
         let (mut h, _) = host_with(&file, policy);
         assert_eq!(text(&h.call("p", &req("/a"), None).unwrap()), "4194304");
+        drop(h); // stop Node: Windows can\'t remove its working directory
         fs::remove_dir_all(root).unwrap();
     }
 
@@ -1501,6 +1549,7 @@ mod tests {
         );
         let e = h.call("p", &req("/a"), None).unwrap_err();
         assert_eq!(e.message(), "PLUGIN p exited with code 4");
+        drop(h); // stop Node: Windows can\'t remove its working directory
         fs::remove_dir_all(root).unwrap();
     }
 
@@ -1524,6 +1573,7 @@ mod tests {
             "{:?}",
             logs.lock().unwrap()
         );
+        drop(h); // stop Node: Windows can\'t remove its working directory
         fs::remove_dir_all(root).unwrap();
 
         let (root, file) = plugin(
@@ -1533,6 +1583,7 @@ mod tests {
         let (mut h, _) = host_with(&file, PluginPolicy::default());
         h.call("p", &req("/a"), None).unwrap();
         assert!(!h.cacheable("p"));
+        drop(h); // stop Node: Windows can\'t remove its working directory
         fs::remove_dir_all(root).unwrap();
     }
 
@@ -1600,11 +1651,12 @@ mod tests {
         fs::remove_dir_all(garbage.parent().unwrap()).unwrap();
 
         if !node_available() {
+            drop(h); // stop Node: Windows can\'t remove its working directory
             fs::remove_dir_all(root).unwrap();
             return;
         }
         // The chosen Node runs the plugin and is named in one notice.
-        let node = fs::canonicalize(find_on_path("node").unwrap()).unwrap();
+        let node = crate::platform::canonicalize(find_on_path("node").unwrap()).unwrap();
         let version = check_node(Some(&node), 10_000).unwrap().version;
         let notices = Arc::new(Mutex::new(Vec::<String>::new()));
         let n = notices.clone();
@@ -1620,6 +1672,7 @@ mod tests {
                 node.display()
             )]
         );
+        drop(h); // stop Node: Windows can\'t remove its working directory
         fs::remove_dir_all(root).unwrap();
     }
 
@@ -1648,10 +1701,13 @@ mod tests {
             undeclared_cache_warning("p"),
             "PLUGIN p does not export cache, so its results are reused as if it were deterministic: export const cache = true to confirm, or cache = false if a result can depend on the clock, randomness or an earlier call"
         );
-        // Nothing reused: no warning.
+        // Nothing reused: no warning. (Stop the first host's Node first: on
+        // Windows its working directory, the plugin folder, can't be removed.)
+        drop(h);
         let (mut h, logs) = host_with(&file, PluginPolicy::default());
         h.call("p", &req("/a"), None).unwrap();
         assert!(warned(&logs).is_empty());
+        drop(h); // stop Node: Windows can\'t remove its working directory
         fs::remove_dir_all(root).unwrap();
         // Declared either way: no warning.
         for (src, cacheable) in [
@@ -1674,6 +1730,7 @@ mod tests {
             h.call("p", &req("/a"), None).unwrap();
             assert_eq!(h.cacheable("p"), cacheable, "{src}");
             assert!(warned(&logs).is_empty(), "{src}");
+            drop(h); // stop Node: Windows can\'t remove its working directory
             fs::remove_dir_all(root).unwrap();
         }
         rejects(
@@ -1687,7 +1744,11 @@ mod tests {
     fn a_missing_node_binary_is_an_error_not_a_panic() {
         let (root, file) = plugin("export function transform() { return 'x'; }", &[]);
         let (mut h, _) = host_with(&file, PluginPolicy::default());
-        h.set_node("/nonexistent/node");
+        h.set_node(if cfg!(windows) {
+            r"C:\nonexistent\node.exe"
+        } else {
+            "/nonexistent/node"
+        });
         let e = h.call("p", &req("/a"), None).unwrap_err();
         assert_eq!(e.code, ErrorCode::E_PLUGIN);
         assert!(
@@ -1695,6 +1756,7 @@ mod tests {
             "{}",
             e.message()
         );
+        drop(h); // stop Node: Windows can\'t remove its working directory
         fs::remove_dir_all(root).unwrap();
     }
 }

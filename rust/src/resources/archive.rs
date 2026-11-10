@@ -1160,9 +1160,8 @@ impl ZipSource for FileSource {
         self.size
     }
     fn read(&self, at: usize, len: usize) -> Result<Cow<'_, [u8]>> {
-        use std::os::unix::fs::FileExt;
         let mut buf = vec![0u8; len];
-        self.file.read_exact_at(&mut buf, at as u64).map_err(|_| {
+        crate::platform::read_exact_at(&self.file, &mut buf, at as u64).map_err(|_| {
             SitefileError::plain(
                 E_ARCHIVE,
                 format!("{}: the file changed while it was read", self.origin),
