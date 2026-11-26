@@ -5,6 +5,7 @@ import net from 'node:net';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { SitefileError } from '../errors.js';
+import { findRecipeName, isDefaultRecipeNames, recipeNames, RECIPE_NAMES_ENV } from '../recipe.js';
 import { collectBuildArgs } from '../build-args.js';
 import { build } from '../executor.js';
 import { networkOption } from './network.js';
@@ -158,7 +159,8 @@ async function startDetached(reg: ServerRegistry, state: ServerState): Promise<S
   const child = spawn(process.execPath, [WORKER, state.id], {
     detached: true,
     stdio: ['ignore', log.fd, log.fd],
-    env: { ...process.env, SITEFILE_HOME: reg.store.home },
+    // The recipe names of this process reach the worker, which is another process.
+    env: { ...process.env, SITEFILE_HOME: reg.store.home, ...(isDefaultRecipeNames(recipeNames()) ? {} : { [RECIPE_NAMES_ENV]: recipeNames().join(',') }) },
   });
   await log.close();
   let exited = false;
@@ -632,7 +634,7 @@ async function detachedWatchOf(v: ParsedValues, source: ServerState['source']): 
     ...(v['navigate-to-changed'] ? { navigateToChanged: true } : {}),
     ...(v['keep-service-workers'] ? { keepServiceWorkers: true } : {}),
   };
-  if (!buildFlags && !(await isFile(path.join(dir, 'Sitefile')))) return page;
+  if (!buildFlags && findRecipeName(dir) === undefined) return page;
   if (v['no-rewrite-base'] && v['rewrite-base'] !== undefined) usage('--rewrite-base and --no-rewrite-base cannot be combined');
   await collectBuildArgs(argFiles, argFlags);
   const build: WatchBuild = {
@@ -914,7 +916,7 @@ async function serveWatch(v: ParsedValues, pos: string[]): Promise<number> {
   const argFlags = strs(v['build-arg']);
   const pollMs = pollOption(!!v.poll, str(v['poll-interval']));
   const buildFlags = !!file || target !== undefined || argFiles.length > 0 || argFlags.length > 0;
-  const plain = !buildFlags && !(await isFile(path.join(context, 'Sitefile')));
+  const plain = !buildFlags && findRecipeName(context) === undefined;
   const cssInject = !v['no-css-inject'];
   const navigate = !!v['navigate-to-changed'];
   const reloadMode = reloadOf(v) ?? 'morph';

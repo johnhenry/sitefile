@@ -1,6 +1,7 @@
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { SitefileError } from './errors.js';
+import { recipePath } from './recipe.js';
 import { collectBuildArgs } from './build-args.js';
 import { planBuild, sitefileCompression } from './executor.js';
 import { defaultOutName } from './export-formats.js';
@@ -265,7 +266,7 @@ function expand(def: Definition, bakeDir: string): Map<string, BakeTarget[]> {
       list.push({
         name,
         context,
-        file: fields.file !== undefined ? joinTo(bakeDir, sub('file', fields.file)) : path.join(context, 'Sitefile'),
+        file: fields.file !== undefined ? joinTo(bakeDir, sub('file', fields.file)) : recipePath(context),
         args,
         argFiles: (fields['arg-files'] ?? []).map((f) => joinTo(bakeDir, sub('arg-files', f))),
         target: fields.target !== undefined ? sub('target', fields.target) : null,

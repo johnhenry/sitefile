@@ -69,7 +69,14 @@ When none exists, the error names every file tried: `error[E_NOT_FOUND]: no reci
 Stockerfile, Sitefile)`. With the default list the message is the one it has always been (`cannot read
 Sitefile '<dir>/Sitefile'`). Names are bare file names (no `/`); invalid entries are dropped. Only the
 recipe is renamed: the lockfile stays `Sitefile.lock`, and `IMPORT … AS sitefile` still reads `Sitefile`
-in the imported directory. This is implemented in the Rust binary only (docs/RUST.md, "Known differences").
+in the imported directory (johnhenry/sitefile#334).
+
+Code that embeds the library sets the list itself, in both implementations: TypeScript `setRecipeNames([...])`,
+`recipeNames()`, `resolveRecipe(dir, names?)`, `DEFAULT_RECIPE_NAMES` and the build option `recipeNames`
+(exported from `@johnhenry/sitefile`); Rust `sitefile::set_recipe_names(&[...])` and `BuildOptions::recipe_names`
+(docs/RUST.md, "Embedding the crate"). The list in force is the build's own, else the one set in the process,
+else `SITEFILE_RECIPE_NAMES`, else the default. `serve -d` hands a non-default list to its worker through
+`SITEFILE_RECIPE_NAMES`.
 
 ### Building from a Git URL
 
