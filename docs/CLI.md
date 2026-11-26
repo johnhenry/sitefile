@@ -55,6 +55,22 @@ sitefile why <path> [context] [--json] [--target stage]
 --escape=html, …`), after the planner's warnings and before the result line; they never change the exit code.
 `build`, `inspect`, `graph` and `why` do not lint. See [LANGUAGE.md](LANGUAGE.md#lint-rules-sitefile-validate).
 
+### Which file is the recipe
+
+Without `-f`, the recipe is the first of these names that is a file in the context directory, searched in
+order. The list is `Sitefile` unless `SITEFILE_RECIPE_NAMES` (comma-separated, e.g.
+`SITEFILE_RECIPE_NAMES=Stockerfile,Sitefile`) or an embedding program changes it. `-f` always wins and is
+never searched for. Every command that reads the recipe uses the list: `build`, `validate`, `inspect`,
+`graph`, `why`, `hosts`, `vendor`, `outdated`, `bake` (a target without `file`), and `serve` and `build`
+with `--watch` (a change to the recipe in use rebuilds, and no recipe name is ever ignored). `serve`
+decides whether a directory is a project or a plain folder by the same list.
+
+When none exists, the error names every file tried: `error[E_NOT_FOUND]: no recipe found in '.' (tried:
+Stockerfile, Sitefile)`. With the default list the message is the one it has always been (`cannot read
+Sitefile '<dir>/Sitefile'`). Names are bare file names (no `/`); invalid entries are dropped. Only the
+recipe is renamed: the lockfile stays `Sitefile.lock`, and `IMPORT … AS sitefile` still reads `Sitefile`
+in the imported directory. This is implemented in the Rust binary only (docs/RUST.md, "Known differences").
+
 ### Building from a Git URL
 
 ```
@@ -71,7 +87,7 @@ and removed afterwards. `build`, `validate`, `inspect`, `graph` and `why` accept
 
 - The default `--out` is in the current directory (`./dist`, `./dist.zip`, …), not in the checkout.
 - `-f` is a path inside the repository (relative, no `..`). Messages name the Sitefile `Sitefile`
-  (or the `-f` path), never the temporary directory.
+  (or the `-f` path; with a custom recipe name list, the name found), never the temporary directory.
 - The repository's `Sitefile.lock` and `vendor/sitefile` are used as in a local build, but the lockfile
   is **never written back** (there is nothing to write it to): add `--frozen-lockfile` to require every
   remote input to be locked already.

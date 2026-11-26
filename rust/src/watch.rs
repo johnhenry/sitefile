@@ -174,7 +174,9 @@ pub struct BuildOutcome {
 pub struct WatchOptions<'a> {
     /// The build context, as given (shown in messages).
     pub context: &'a str,
-    /// `-f`: the Sitefile path (default `<context>/Sitefile`).
+    /// `-f`: the Sitefile path (default: the first of the process-wide recipe names, `crate::recipe`, that
+    /// exists in `context`). An embedder that gives a build its own `recipe_names` passes the path it
+    /// resolved here: this struct has no field for the list, so as not to change how it is constructed.
     pub sitefile: Option<&'a str>,
     /// `--build-arg-file` files (re-read by every build).
     pub arg_files: &'a [String],
@@ -213,7 +215,9 @@ pub fn watch_loop(
         .map_err(|e| SitefileError::plain(E_NOT_FOUND, format!("'{}': {e}", o.context)))?;
     let sitefile = resolve_real(&match o.sitefile {
         Some(f) => PathBuf::from(f),
-        None => Path::new(o.context).join("Sitefile"),
+        // The first recipe name that exists (the first name when none does yet: a later build finds
+        // the one that appears, since the whole context is watched).
+        None => PathBuf::from(crate::recipe::recipe_path(o.context, None)),
     });
     let lock = sitefile
         .parent()
@@ -312,6 +316,10 @@ mod tests {
         let ig = |p: &str| is_ignored_change(&root.join(p), std::slice::from_ref(&root), &ignored);
         assert!(!ig("public/index.html"));
         assert!(!ig("Sitefile"));
+        assert!(
+            !ig("Stockerfile"),
+            "no recipe name is ignored, whatever the list"
+        );
         assert!(ig("dist"));
         assert!(ig("dist/index.html"));
         assert!(!ig("distillery/x"), "prefix of a name is not inside it");

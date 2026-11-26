@@ -8,7 +8,7 @@ use crate::base_image::{resolve_base, ResolveBaseOptions};
 use crate::digest::sha256;
 use crate::error::{ErrorCode::*, Result, SitefileError, SourceSpan};
 use crate::executor::{
-    fetch_git_import, fetch_remote_import, git_selection_bytes, load_program,
+    fetch_git_import, fetch_remote_import, git_selection_bytes, load_program_with,
     read_imported_sitefile, root_sitefile_source, warn_unused_secrets, BuildOptions, Callback,
     Loaded, LockfileSetting, RemoteEnv, SitefileSource,
 };
@@ -157,10 +157,11 @@ fn vendor_unredacted(options: &BuildOptions) -> Result<VendorResult> {
         sitefile_path,
         label,
         ..
-    } = load_program(
+    } = load_program_with(
         &options.context_dir,
         options.sitefile.as_deref(),
         options.label.as_deref(),
+        options.recipe_names.as_deref(),
     )?;
     let p = plan(&program, &options.build_args)?;
     let warnings: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));

@@ -1500,18 +1500,23 @@ pub fn start_detached(
     let log2 = log
         .try_clone()
         .map_err(|e| SitefileError::plain(E_SERVER, e.to_string()))?;
-    let mut child = std::process::Command::new(exe)
+    let mut worker = std::process::Command::new(exe);
+    worker
         .arg("__serve-worker")
         .arg(&state.id)
         .stdin(std::process::Stdio::null())
         .stdout(log)
         .stderr(log2)
-        .env("SITEFILE_HOME", &reg.store.home)
-        .process_group(0)
-        .spawn()
-        .map_err(|e| {
-            SitefileError::plain(E_SERVER, format!("cannot start the server process: {e}"))
-        })?;
+        .env("SITEFILE_HOME", &reg.store.home);
+    // The recipe names of this process (set by an embedder, or by the environment) reach a worker
+    // that is another binary, which has not called `set_recipe_names` itself.
+    let names = crate::recipe::recipe_names();
+    if !crate::recipe::is_default(&names) {
+        worker.env(crate::recipe::RECIPE_NAMES_ENV, names.join(","));
+    }
+    let mut child = worker.process_group(0).spawn().map_err(|e| {
+        SitefileError::plain(E_SERVER, format!("cannot start the server process: {e}"))
+    })?;
     let deadline = Instant::now() + START_TIMEOUT;
     let result = loop {
         let cur = match reg.read(&state.id) {

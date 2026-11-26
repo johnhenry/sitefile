@@ -167,9 +167,18 @@ pub fn is_secret_arg_name(name: &str) -> bool {
 
 /// The Sitefile path the build used, as `build` resolves it.
 pub fn sitefile_path_of(context_dir: &str, sitefile: Option<&str>) -> std::path::PathBuf {
+    sitefile_path_of_with(context_dir, sitefile, None)
+}
+
+/// [`sitefile_path_of`] with the recipe names to search (`None`: the process-wide list).
+pub fn sitefile_path_of_with(
+    context_dir: &str,
+    sitefile: Option<&str>,
+    recipe_names: Option<&[String]>,
+) -> std::path::PathBuf {
     let given = match sitefile {
         Some(s) => s.to_string(),
-        None => crate::executor::join_path(context_dir, "Sitefile"),
+        None => crate::recipe::recipe_path(context_dir, recipe_names),
     };
     resolve_path(Path::new(&given))
 }
@@ -183,7 +192,28 @@ pub fn build_facts(
     build_args: &crate::build_args::BuildArgs,
     platform: Option<&str>,
 ) -> Result<BuildFacts> {
-    let file = sitefile_path_of(context_dir, sitefile);
+    build_facts_with(
+        result,
+        context_dir,
+        sitefile,
+        None,
+        label,
+        build_args,
+        platform,
+    )
+}
+
+/// [`build_facts`] with the recipe names to search when `sitefile` is not given.
+pub fn build_facts_with(
+    result: &BuildResult,
+    context_dir: &str,
+    sitefile: Option<&str>,
+    recipe_names: Option<&[String]>,
+    label: Option<&str>,
+    build_args: &crate::build_args::BuildArgs,
+    platform: Option<&str>,
+) -> Result<BuildFacts> {
+    let file = sitefile_path_of_with(context_dir, sitefile, recipe_names);
     let bytes = std::fs::read(&file).map_err(|_| {
         SitefileError::plain(
             E_NOT_FOUND,

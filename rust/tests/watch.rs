@@ -75,9 +75,13 @@ struct Proc {
 
 impl Proc {
     fn start(home: &Path, args: &[&str]) -> Proc {
+        Proc::start_env(home, &[], args)
+    }
+    fn start_env(home: &Path, env: &[(&str, &str)], args: &[&str]) -> Proc {
         let mut child = Command::new(BIN)
             .args(args)
             .env("SITEFILE_HOME", home)
+            .envs(env.iter().copied())
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -1081,4 +1085,35 @@ fn serve_detached_watch_builds_a_context() {
     if let Err(e) = r {
         std::panic::resume_unwind(e);
     }
+}
+
+#[test]
+fn build_watch_and_serve_use_the_listed_recipe_names() {
+    // $SITEFILE_RECIPE_NAMES = Stockerfile,Sitefile: the Stockerfile is the recipe, a change to it
+    // rebuilds.
+    let t = Tmp::new();
+    let home = t.0.join("home");
+    let site = make_site(&t, &[], DEFAULT_SITEFILE);
+    fs::remove_file(site.join("Sitefile")).unwrap();
+    write(
+        site.join("Stockerfile"),
+        "FROM scratch\nCOPY ./public/ /\nCOPY ./public/style.css /one.css\nEXPORT /\n",
+    );
+    let names = "Stockerfile,Sitefile";
+    let w = Proc::start_env(
+        &home,
+        &[("SITEFILE_RECIPE_NAMES", names)],
+        &["build", "--watch", s(&site)],
+    );
+    w.wait_lines("Watching ", 1);
+    assert!(site.join("dist/one.css").is_file(), "{}", w.stdout());
+    // Editing the recipe in use rebuilds.
+    write(
+        site.join("Stockerfile"),
+        "FROM scratch\nCOPY ./public/ /\nCOPY ./public/style.css /two.css\nEXPORT /\n",
+    );
+    w.wait_lines("Exported ", 2);
+    assert!(site.join("dist/two.css").is_file(), "{}", w.stdout());
+    let err = w.stderr();
+    assert_eq!(w.stop(), 0, "{err}");
 }

@@ -18,7 +18,7 @@
 use crate::digest::sha256;
 use crate::error::Result;
 use crate::executor::{
-    load_program, read_imported_sitefile, root_sitefile_source, BuildOptions, Loaded,
+    load_program_with, read_imported_sitefile, root_sitefile_source, BuildOptions, Loaded,
     LockfileSetting, SitefileSource,
 };
 use crate::language::ast::{ExportFormat, ImportKind};
@@ -233,10 +233,11 @@ pub fn outdated(options: &BuildOptions) -> Result<Report> {
         sitefile_path,
         label,
         ..
-    } = load_program(
+    } = load_program_with(
         &options.context_dir,
         options.sitefile.as_deref(),
         options.label.as_deref(),
+        options.recipe_names.as_deref(),
     )?;
     let p = plan(&program, &options.build_args)?;
     if let Some(w) = &options.on_warning {
