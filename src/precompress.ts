@@ -27,6 +27,13 @@ export function compressible(path: string): boolean {
 /** The Brotli encoder version rust/vendor/brotli holds; br sidecars match the Rust port's only while Node bundles it. */
 export const BROTLI_VERSION = '1.2.0';
 
+/**
+ * Node Brotli versions verified to write exactly the bytes of BROTLI_VERSION (#335: 1.2.1 matched on
+ * the pinned digests and on a 130-file corpus). Add a version only after the same check; a version
+ * that writes other bytes means updating rust/vendor/brotli and the pinned digests instead.
+ */
+export const BROTLI_SAME_BYTES: readonly string[] = ['1.2.0', '1.2.1'];
+
 /** `data` as Brotli: quality 11, window 22 (4 MiB), generic mode, one FINISH over the whole input (rust/src/brotli.rs). */
 export function brotli(data: Uint8Array): Uint8Array {
   return new Uint8Array(
