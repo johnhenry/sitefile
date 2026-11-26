@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Tests: the Brotli parity check accepts node:zlib Brotli 1.2.1, which newer Node 26 releases bundle: it writes the same bytes as the vendored 1.2.0 (pinned digests and a 130-file corpus). The bytes are checked first, and an unverified version still fails (#335, #336).
+
 - **Configurable default recipe file names** (johnhenry/sitefile#332, PR #333): the file read when no
   `-f` is given is the first existing name of an ordered list, `["Sitefile"]` by default, so the CLI is
   unchanged. Embedders set the list with `sitefile::set_recipe_names(&["Stockerfile", "Sitefile"])` in Rust, `setRecipeNames(["Stockerfile", "Sitefile"])` in TypeScript (one

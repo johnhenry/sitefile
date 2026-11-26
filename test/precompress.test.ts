@@ -11,7 +11,7 @@ import { isSitefileError } from '../src/errors.js';
 import { parseSitefile } from '../src/language/parser.js';
 import { parseProgram } from '../src/language/validate.js';
 import { plan } from '../src/planner.js';
-import { BROTLI_VERSION, brotli, compressible } from '../src/precompress.js';
+import { BROTLI_SAME_BYTES, brotli, compressible } from '../src/precompress.js';
 
 const temps: string[] = [];
 after(async () => {
@@ -91,11 +91,11 @@ test('br: node:zlib is the Brotli the Rust port vendors, and the bytes are pinne
   const digest = (b: Uint8Array): string => createHash('sha256').update(b).digest('hex');
   const a = Buffer.from('body { color: red; }\n'.repeat(100));
   const b = Buffer.from(Array.from({ length: 20000 }, (_, i) => (i * i).toString(36)).join('\n'));
-  // #335 diagnostic: bytes first, so a newer libbrotli shows whether its output changed.
-  console.log(`brotli ${process.versions.brotli} node ${process.version} a=${digest(brotli(a))} b=${digest(brotli(b))}`);
+  // The bytes first: they are what must match the Rust port. Then the version, which must be one
+  // verified to write those bytes (BROTLI_SAME_BYTES, #335), so an unverified libbrotli still fails.
   assert.equal(digest(brotli(a)), '3645b0cee7d067c4e17a71f145f89ebe78d5b585b19cb43c8ea413cde27fb6b3');
   assert.equal(digest(brotli(b)), 'b56d7c74f4c412d2821feea91972faf1e823c80b45c61291dc3e4cbaea15db3a');
-  assert.equal(process.versions.brotli, BROTLI_VERSION);
+  assert.ok(BROTLI_SAME_BYTES.includes(process.versions.brotli ?? ''), `node:zlib Brotli ${process.versions.brotli} is not verified to match ${BROTLI_SAME_BYTES.join(', ')}`);
   assert.deepEqual(brotliDecompressSync(brotli(b)), b);
 });
 
@@ -113,16 +113,4 @@ test('build: PRECOMPRESS br writes .br sidecars (with gzip ones when both are gi
   assert.equal(br.origin.replace(/[^\s']*Sitefile:/g, 'Sitefile:'), 'Sitefile:2 PRECOMPRESS');
   const only = await run({ 'public/a.css': big, Sitefile: 'COPY ./public/ /\nPRECOMPRESS br /\nEXPORT /\n' });
   assert.deepEqual(only.output.entries().map(([p]) => p), ['/a.css', '/a.css.br']);
-});
-
-// #335 diagnostic (temporary): every src/ and docs/ file, compressed with the Brotli 1.2.0
-// digests recorded beside this test, must give the same bytes under the runner's Brotli.
-test('br: #335 corpus digests match the recorded 1.2.0 output', async () => {
-  const { readFileSync } = await import('node:fs');
-  const want = JSON.parse(readFileSync(new URL('../../test/brotli-335-digests.json', import.meta.url), 'utf8')) as Record<string, string>;
-  const bad = Object.entries(want).filter(
-    ([f, d]) => createHash('sha256').update(brotli(readFileSync(new URL(`../../${f}`, import.meta.url)))).digest('hex') !== d,
-  );
-  console.log(`#335 corpus: brotli ${process.versions.brotli}, ${Object.keys(want).length} files, ${bad.length} differ`);
-  assert.deepEqual(bad.map(([f]) => f), []);
 });
