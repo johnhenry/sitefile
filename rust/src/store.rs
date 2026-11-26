@@ -274,6 +274,13 @@ impl Store {
                     let jitter = u64::from_str_radix(&random_hex(1), 16).unwrap_or(0) * 30 / 255;
                     std::thread::sleep(Duration::from_millis(20 + jitter));
                 }
+                // Windows: creating a file that another writer is deleting fails with "Access is
+                // denied" until the delete completes (#337). That is a busy lock, not a fault:
+                // wait like AlreadyExists, and report the real error only at the deadline.
+                Err(e) if lock_delete_pending(&e) && SystemTime::now() <= deadline => {
+                    let jitter = u64::from_str_radix(&random_hex(1), 16).unwrap_or(0) * 30 / 255;
+                    std::thread::sleep(Duration::from_millis(20 + jitter));
+                }
                 Err(e) => {
                     return Err(store_error(format!(
                         "cannot lock the store at '{}': {e}",
@@ -1144,6 +1151,13 @@ fn lock_is_stale(lock: &Path) -> bool {
     }
 }
 
+/// Whether creating the lock file failed because another writer is deleting it: on Windows a
+/// file pending deletion can't be created again and the open fails with "Access is denied"
+/// (os error 5). Never true elsewhere, where a permission error is a real fault (#337).
+fn lock_delete_pending(e: &io::Error) -> bool {
+    cfg!(windows) && e.kind() == io::ErrorKind::PermissionDenied
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1518,6 +1532,15 @@ mod tests {
             h.join().unwrap();
         }
         assert_eq!(store.refs().unwrap().len(), 6);
+    }
+
+    #[test]
+    fn a_lock_being_deleted_is_busy_on_windows_only() {
+        let denied = io::Error::from(io::ErrorKind::PermissionDenied);
+        assert_eq!(lock_delete_pending(&denied), cfg!(windows));
+        assert!(!lock_delete_pending(&io::Error::from(
+            io::ErrorKind::NotFound
+        )));
     }
 
     #[test]

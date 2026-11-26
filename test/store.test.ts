@@ -5,7 +5,7 @@ import path from 'node:path';
 import { isSitefileError } from '../src/errors.js';
 import { parseLocalRef, parseRef, refKey, registryApiHost, withDefaultRegistry } from '../src/ref.js';
 import { extractArchive } from '../src/resources/archive.js';
-import { shortId, Store } from '../src/store.js';
+import { lockDeletePending, shortId, Store } from '../src/store.js';
 import { makeFile, Tree } from '../src/tree.js';
 import { makeSite, runCli, tmpDir } from './helpers/cli.js';
 
@@ -300,4 +300,13 @@ test('per-command --help and unknown subcommands', async () => {
   }
   assert.equal((await runCli(home, ['image', 'bogus'])).code, 2);
   assert.match((await runCli(home, ['--help'])).stdout, /sitefile serve /);
+});
+
+test('store lock: a lock file being deleted is busy on Windows only (#337)', () => {
+  const denied = (code: string): Error => Object.assign(new Error(code), { code });
+  assert.equal(lockDeletePending(denied('EPERM'), 'win32'), true);
+  assert.equal(lockDeletePending(denied('EACCES'), 'win32'), true);
+  assert.equal(lockDeletePending(denied('EEXIST'), 'win32'), false);
+  assert.equal(lockDeletePending(denied('EPERM'), 'linux'), false);
+  assert.equal(lockDeletePending(denied('EACCES'), 'darwin'), false);
 });
