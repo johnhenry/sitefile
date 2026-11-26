@@ -187,7 +187,7 @@ fn the_error_names_the_files_tried() {
         .unwrap();
     assert_eq!(
         e.message(),
-        format!("cannot read Sitefile '{ctx}/Sitefile'")
+        format!("cannot read Sitefile '{}'", t.0.join("Sitefile").display())
     );
 }
 
