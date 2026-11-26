@@ -88,12 +88,14 @@ test('build: no match warns; a different existing sidecar conflicts unless --ove
 
 test('br: node:zlib is the Brotli the Rust port vendors, and the bytes are pinned (rust/src/brotli.rs has the same digests)', () => {
   // A newer Node may bundle a newer libbrotli that writes other bytes: update rust/vendor/brotli with it.
-  assert.equal(process.versions.brotli, BROTLI_VERSION);
   const digest = (b: Uint8Array): string => createHash('sha256').update(b).digest('hex');
   const a = Buffer.from('body { color: red; }\n'.repeat(100));
   const b = Buffer.from(Array.from({ length: 20000 }, (_, i) => (i * i).toString(36)).join('\n'));
+  // #335 diagnostic: bytes first, so a newer libbrotli shows whether its output changed.
+  console.log(`brotli ${process.versions.brotli} node ${process.version} a=${digest(brotli(a))} b=${digest(brotli(b))}`);
   assert.equal(digest(brotli(a)), '3645b0cee7d067c4e17a71f145f89ebe78d5b585b19cb43c8ea413cde27fb6b3');
   assert.equal(digest(brotli(b)), 'b56d7c74f4c412d2821feea91972faf1e823c80b45c61291dc3e4cbaea15db3a');
+  assert.equal(process.versions.brotli, BROTLI_VERSION);
   assert.deepEqual(brotliDecompressSync(brotli(b)), b);
 });
 
