@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Fix (Windows): concurrent writers could fail with `cannot lock the store … Access is denied (os error 5)` when one created the lock file while another was deleting it. A lock file pending deletion now counts as busy, in both implementations; any other error is unchanged, and a denial that lasts past the 20 s deadline is still reported (#337).
+
 - Tests: the Brotli parity check accepts node:zlib Brotli 1.2.1, which newer Node 26 releases bundle: it writes the same bytes as the vendored 1.2.0 (pinned digests and a 130-file corpus). The bytes are checked first, and an unverified version still fails (#335, #336).
 
 - **Configurable default recipe file names** (johnhenry/sitefile#332, PR #333): the file read when no

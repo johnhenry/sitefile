@@ -118,6 +118,12 @@ export class Store {
         await fh.close();
         break;
       } catch (e) {
+        // Windows: creating a file that another writer is deleting fails with EPERM/EACCES until
+        // the delete completes (#337). That is a busy lock: wait, and report the error only at the deadline.
+        if (lockDeletePending(e) && Date.now() <= deadline) {
+          await new Promise((r) => setTimeout(r, 20 + Math.random() * 30));
+          continue;
+        }
         if (errCode(e) !== 'EEXIST') throw storeError(`cannot lock the store at '${this.home}': ${(e as Error).message}`, e);
         if (await this.lockIsStale(lock)) {
           await fs.rm(lock, { force: true });
@@ -631,4 +637,14 @@ export class Store {
       return { manifests: dropped.size, blobs, bytes };
     });
   }
+}
+
+/**
+ * Whether creating the lock file failed because another writer is deleting it: on Windows a file
+ * pending deletion can't be created again (EPERM or EACCES). Never true elsewhere, where a
+ * permission error is a real fault (#337).
+ */
+export function lockDeletePending(e: unknown, platform: NodeJS.Platform = process.platform): boolean {
+  const code = errCode(e);
+  return platform === 'win32' && (code === 'EPERM' || code === 'EACCES');
 }
