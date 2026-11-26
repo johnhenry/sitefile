@@ -841,7 +841,7 @@ fn detached_watch_of(
     let arg_flags = v.strs("build-arg");
     let build_flags =
         file.is_some() || target.is_some() || !arg_files.is_empty() || !arg_flags.is_empty();
-    if !build_flags && !dir.join("Sitefile").is_file() {
+    if !build_flags && crate::recipe::find_recipe_name(&dir, None).is_none() {
         return Ok((None, page));
     }
     if v.flag("no-rewrite-base") && v.has("rewrite-base") {
@@ -1230,7 +1230,7 @@ fn serve_watch(v: &Parsed) -> Result<i32> {
     // A directory without a Sitefile, given no build flags, is served as it is (re-read on change).
     let build_flags =
         file.is_some() || v.has("target") || !arg_files.is_empty() || !arg_flags.is_empty();
-    let plain = !build_flags && !std::path::Path::new(&context).join("Sitefile").is_file();
+    let plain = !build_flags && crate::recipe::find_recipe_name(&context, None).is_none();
     let css_inject = !v.flag("no-css-inject");
     let navigate = v.flag("navigate-to-changed");
     let sync = sync_of(v)?;

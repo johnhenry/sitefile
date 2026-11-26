@@ -4,6 +4,7 @@ export { parseSitefile } from './language/parser.js';
 export { validate, parseProgram } from './language/validate.js';
 export { plan, type Plan, type Operation, type ImportSpec, type SourceRef } from './planner.js';
 export { build, buildToDirectory, planBuild, loadProgram, type BuildOptions, type BuildResult } from './executor.js';
+export { DEFAULT_RECIPE_NAMES, setRecipeNames, recipeNames, resolveRecipe } from './recipe.js';
 export { exportDirectory } from './exporter.js';
 export { BuildMemo, type MemoStats } from './memo.js';
 export { Profiler } from './profile.js';

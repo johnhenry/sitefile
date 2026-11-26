@@ -81,10 +81,13 @@ pub mod memo;
 pub mod outdated;
 pub mod plugins;
 pub mod profile;
+pub mod recipe;
 pub mod vendor;
 pub mod wacz;
 pub mod warc;
 pub mod watch;
+
+pub use recipe::{recipe_names, resolve_recipe, set_recipe_names, DEFAULT_RECIPE_NAMES};
 
 // Editor tooling (Rust only; docs/LSP.md)
 pub mod lsp;

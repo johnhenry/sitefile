@@ -502,7 +502,7 @@ fn expand(def: &Definition, bake_dir: &str) -> Result<Vec<(String, Vec<BakeTarge
             );
             let file = match &fields.file {
                 Some(f) => join_to(bake_dir, &sub("file", f)?),
-                None => join_path(&context, "Sitefile"),
+                None => crate::recipe::recipe_path(&context, None),
             };
             let mut arg_files = Vec::new();
             for f in fields.arg_files.iter().flatten() {

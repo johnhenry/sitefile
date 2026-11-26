@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+- **Configurable default recipe file names** (johnhenry/sitefile#332, PR #333): the file read when no
+  `-f` is given is the first existing name of an ordered list, `["Sitefile"]` by default, so the CLI is
+  unchanged. Embedders set the list with `sitefile::set_recipe_names(&["Stockerfile", "Sitefile"])` in Rust, `setRecipeNames(["Stockerfile", "Sitefile"])` in TypeScript (one
+  process-wide default, which also reaches `sitefile::cli::main` and detached `serve` workers) or
+  per build with `BuildOptions::recipe_names` / `recipeNames`; a CLI user can opt in with `SITEFILE_RECIPE_NAMES`
+  (comma-separated). `recipe::resolve_recipe` / `resolveRecipe` is the one resolver per implementation, used by build, validate, inspect, graph,
+  why, hosts, vendor, outdated, bake, attestations, `serve` (project or plain folder) and watch mode (a
+  change to the recipe in use rebuilds). When none exists the error names the files tried (`no recipe
+  found in 'dir' (tried: Stockerfile, Sitefile)`); with the default list the message is unchanged.
+  `Sitefile.lock` and `IMPORT … AS sitefile` keep their names. docs/CLI.md, "Which file is the recipe",
+  and docs/RUST.md, "Embedding the crate". New public items only; Rust `BuildOptions` gains a field (use
+  `..Default::default()`). Both implementations, with conformance cases `recipe-names` and `err-recipe-names-missing`; `IMPORT … AS sitefile` is the follow-up johnhenry/sitefile#334.
+
 ## 0.0.7 (2026-11-10)
 
 - **Windows build of the Rust binary** (johnhenry/sitefile#318, PR #327): `rust/` now builds for

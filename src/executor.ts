@@ -35,6 +35,7 @@ import type { Scalar } from './values.js';
 import { exportDirectory, exportFile, isExporterTempName } from './exporter.js';
 import { sourceDateEpoch } from './archive-writers.js';
 import { encodeTree, isArchiveFormat } from './export-formats.js';
+import { effectiveRecipeNames, isDefaultRecipeNames, isFileSync, recipeNotFound, recipePath } from './recipe.js';
 import { buildFacts, makeAttestations, type AttestRequest, type Referrer } from './attest.js';
 import { ANN, buildOciImage, imageMeta, layoutTree, ociArchive, parseConfig, type BaseImage, type OciImage } from './oci.js';
 import { baseRef as parseBaseRef, readLayerBlobs, resolveBase, resolveFromImage, type FromImage } from './base-image.js';
@@ -61,8 +62,13 @@ import { cspPages } from './csp.js';
 export interface BuildOptions {
   /** Build context directory; local paths resolve from here. */
   readonly contextDir: string;
-  /** Sitefile path. Default: `<contextDir>/Sitefile`. */
+  /** Sitefile path. Default: the first of `recipeNames` that exists in `contextDir`. */
   readonly sitefile?: string;
+  /**
+   * The file names searched, in order, in `contextDir` when `sitefile` is not given (default: the
+   * process-wide list, `recipeNames()`, `["Sitefile"]` unless changed). An empty list is the same as none.
+   */
+  readonly recipeNames?: readonly string[];
   /** How messages name the Sitefile (default: its path relative to the working directory). */
   readonly label?: string;
   /**
@@ -224,8 +230,15 @@ interface Loaded {
 }
 
 /** Read, parse and validate a Sitefile. */
-export async function loadProgram(options: Pick<BuildOptions, 'contextDir' | 'sitefile' | 'label'>): Promise<Loaded> {
-  const sitefilePath = path.resolve(options.sitefile ?? path.join(options.contextDir, 'Sitefile'));
+export async function loadProgram(options: Pick<BuildOptions, 'contextDir' | 'sitefile' | 'label' | 'recipeNames'>): Promise<Loaded> {
+  let given = options.sitefile;
+  if (given === undefined) {
+    const names = effectiveRecipeNames(options.recipeNames);
+    given = recipePath(options.contextDir, names);
+    // A Git context's directory is a temporary one: name the label, not it.
+    if (!isDefaultRecipeNames(names) && !isFileSync(given)) throw recipeNotFound(options.label === undefined ? options.contextDir : undefined, names);
+  }
+  const sitefilePath = path.resolve(given);
   let source: string;
   try {
     source = await readFile(sitefilePath, 'utf8');
@@ -262,7 +275,7 @@ function lockPathFor(options: Pick<BuildOptions, 'lockfile'>, sitefilePath: stri
 
 /** `validate --strict-pins`: check the pins of `p` against the lockfile without building or fetching. */
 export async function checkPlanPins(options: BuildOptions, p: Plan): Promise<void> {
-  const sitefilePath = path.resolve(options.sitefile ?? path.join(options.contextDir, 'Sitefile'));
+  const sitefilePath = path.resolve(options.sitefile ?? recipePath(options.contextDir, options.recipeNames));
   const lockPath = lockPathFor(options, sitefilePath);
   const lock = lockPath ? await Lockfile.load(lockPath) : undefined;
   void checkPins(p, lock, options.skipBase ? undefined : (options.baseImage ?? (p.exportFormat === 'oci' ? p.exportBase : undefined)));

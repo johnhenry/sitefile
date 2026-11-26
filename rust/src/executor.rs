@@ -102,8 +102,12 @@ pub enum LockfileSetting {
 pub struct BuildOptions {
     /// Build context directory, as given (messages show it this way).
     pub context_dir: String,
-    /// Sitefile path. Default: `<context_dir>/Sitefile`.
+    /// Sitefile path. Default: the first of `recipe_names` that exists in `context_dir`.
     pub sitefile: Option<String>,
+    /// The file names searched, in order, in `context_dir` when `sitefile` is not given (`None`: the
+    /// process-wide list, `crate::recipe::recipe_names`, `["Sitefile"]` unless changed). An empty list
+    /// is the same as `None`.
+    pub recipe_names: Option<Vec<String>>,
     /// How messages name the Sitefile (default: its path relative to the working directory).
     pub label: Option<String>,
     /// Build secrets by id (`--secret id=…,env=…|src=…`, see src/secrets.rs): sent only as the request
@@ -240,6 +244,7 @@ impl Default for BuildOptions {
         BuildOptions {
             context_dir: ".".into(),
             sitefile: None,
+            recipe_names: None,
             label: None,
             secrets: Secrets::default(),
             build_args: BuildArgs::new(),
@@ -417,15 +422,37 @@ pub fn normalize_posix(p: &str) -> String {
     s
 }
 
-/// Read, parse and validate a Sitefile.
+/// Read, parse and validate a Sitefile (without `sitefile`, the first existing name of the process-wide
+/// recipe names in `context_dir`).
 pub fn load_program(
     context_dir: &str,
     sitefile: Option<&str>,
     label: Option<&str>,
 ) -> Result<Loaded> {
+    load_program_with(context_dir, sitefile, label, None)
+}
+
+/// [`load_program`] with the recipe names to search (`None`: the process-wide list).
+pub fn load_program_with(
+    context_dir: &str,
+    sitefile: Option<&str>,
+    label: Option<&str>,
+    recipe_names: Option<&[String]>,
+) -> Result<Loaded> {
     let given = match sitefile {
         Some(s) => s.to_string(),
-        None => join_path(context_dir, "Sitefile"),
+        None => {
+            let names = crate::recipe::effective(recipe_names);
+            let path = crate::recipe::recipe_path(context_dir, Some(&names));
+            if !Path::new(&path).is_file() && !crate::recipe::is_default(&names) {
+                // A Git context's directory is a temporary one: name the label, not it.
+                return Err(crate::recipe::not_found(
+                    label.is_none().then_some(context_dir),
+                    &names,
+                ));
+            }
+            path
+        }
     };
     let sitefile_path = resolve_path(Path::new(&given));
     let source = std::fs::read(&sitefile_path)
@@ -463,20 +490,22 @@ pub fn load_program(
 
 /// Parse, validate and evaluate variables, without reading any sources.
 pub fn plan_build(options: &BuildOptions) -> Result<Plan> {
-    let loaded = load_program(
+    let loaded = load_program_with(
         &options.context_dir,
         options.sitefile.as_deref(),
         options.label.as_deref(),
+        options.recipe_names.as_deref(),
     )?;
     plan_for(&loaded.program, options)
 }
 
 /// `validate`'s lint warnings (`crate::lint`) for the whole Sitefile (a `--target` does not narrow them).
 pub fn lint_build(options: &BuildOptions, disabled: &[String]) -> Result<Vec<String>> {
-    let loaded = load_program(
+    let loaded = load_program_with(
         &options.context_dir,
         options.sitefile.as_deref(),
         options.label.as_deref(),
+        options.recipe_names.as_deref(),
     )?;
     let p = plan(&loaded.program, &options.build_args)?;
     Ok(crate::lint::lint(
@@ -665,12 +694,9 @@ pub fn check_pins(p: &Plan, lock: Option<&Lockfile>, base: Option<&str>) -> Resu
 
 /// `validate --strict-pins`: check the pins of `p` against the lockfile without building or fetching.
 pub fn check_plan_pins(options: &BuildOptions, p: &Plan) -> Result<()> {
-    let sitefile_path = resolve_path(Path::new(
-        &options
-            .sitefile
-            .clone()
-            .unwrap_or_else(|| join_path(&options.context_dir, "Sitefile")),
-    ));
+    let sitefile_path = resolve_path(Path::new(&options.sitefile.clone().unwrap_or_else(|| {
+        crate::recipe::recipe_path(&options.context_dir, options.recipe_names.as_deref())
+    })));
     let lock = match lock_path_for(&options.lockfile, &sitefile_path) {
         Some(path) => Some(Lockfile::load(path)?),
         None => None,
@@ -755,10 +781,11 @@ fn build_with(options: &BuildOptions, temp_dirs: &Mutex<Vec<PathBuf>>) -> Result
         sitefile_path,
         label,
         ..
-    } = load_program(
+    } = load_program_with(
         &options.context_dir,
         options.sitefile.as_deref(),
         options.label.as_deref(),
+        options.recipe_names.as_deref(),
     )?;
     let full = plan(&program, &options.build_args)?;
     let all_stages = full.stages.clone();
@@ -1620,14 +1647,15 @@ pub fn image_attestations(
     options: &BuildOptions,
     request: crate::export::attest::AttestRequest,
 ) -> Result<Vec<crate::export::attest::Referrer>> {
-    use crate::export::attest::{build_facts, make_attestations, AttestSubject};
+    use crate::export::attest::{build_facts_with, make_attestations, AttestSubject};
     if !request.any() {
         return Ok(Vec::new());
     }
-    let facts = build_facts(
+    let facts = build_facts_with(
         result,
         &options.context_dir,
         options.sitefile.as_deref(),
+        options.recipe_names.as_deref(),
         options.label.as_deref(),
         &options.build_args,
         options.platform.as_deref(),

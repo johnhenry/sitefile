@@ -2,6 +2,7 @@ import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { sha256 } from './digest.js';
 import { SitefileError } from './errors.js';
+import { recipePath } from './recipe.js';
 import type { BuildResult, Pins } from './executor.js';
 import { canonicalJson, MEDIA } from './oci.js';
 import type { Tree } from './tree.js';
@@ -111,16 +112,16 @@ export function isSecretArgName(name: string): boolean {
 }
 
 /** The Sitefile path the build used, as `build` resolves it. */
-export function sitefilePathOf(contextDir: string, sitefile: string | undefined): string {
-  return path.resolve(sitefile ?? path.join(contextDir, 'Sitefile'));
+export function sitefilePathOf(contextDir: string, sitefile: string | undefined, recipeNames?: readonly string[]): string {
+  return path.resolve(sitefile ?? recipePath(contextDir, recipeNames));
 }
 
 /** Collect the facts for a finished build. Reads the Sitefile again to digest it. */
 export async function buildFacts(
   result: Pick<BuildResult, 'resources' | 'base' | 'pins' | 'images'>,
-  options: { readonly contextDir: string; readonly sitefile?: string | undefined; readonly label?: string | undefined; readonly buildArgs?: Readonly<Record<string, string>> | undefined; readonly platform?: string | undefined },
+  options: { readonly contextDir: string; readonly sitefile?: string | undefined; readonly recipeNames?: readonly string[] | undefined; readonly label?: string | undefined; readonly buildArgs?: Readonly<Record<string, string>> | undefined; readonly platform?: string | undefined },
 ): Promise<BuildFacts> {
-  const file = sitefilePathOf(options.contextDir, options.sitefile);
+  const file = sitefilePathOf(options.contextDir, options.sitefile, options.recipeNames);
   let bytes: Uint8Array;
   try {
     bytes = new Uint8Array(await readFile(file));

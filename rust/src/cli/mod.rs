@@ -885,7 +885,12 @@ fn run_build_command(
         ..Default::default()
     };
     if fetched.is_some() {
-        options.label = Some(o.str("file").unwrap_or("Sitefile").to_string());
+        // Messages name the file by its name in the repository, not by the temporary checkout.
+        options.label = Some(match o.str("file") {
+            Some(f) => f.to_string(),
+            None => crate::recipe::find_recipe_name(context, None)
+                .unwrap_or_else(|| crate::recipe::recipe_names().remove(0)),
+        });
     }
     // The default destination depends on the format, which the Sitefile may set.
     // (A wbn's default name also depends on its COMPRESSION: dist.wbn or dist.wbn.gz.)

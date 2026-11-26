@@ -261,6 +261,10 @@ Targets also take `context`, `file`, `target` (a stage), `format`, `tags` and `i
 when one fails (then the exit code is 1); outputs that overlap or a tag used twice are refused before anything is
 built. See [docs/CLI.md](docs/CLI.md#variants-sitefile-bake).
 
+## Recipe file name
+
+Without `-f`, the recipe is the first existing name of `["Sitefile"]`. `SITEFILE_RECIPE_NAMES=Stockerfile,Sitefile` changes the list for a CLI run; programs that embed the library call `setRecipeNames` (TypeScript) or `sitefile::set_recipe_names` (Rust). See [docs/CLI.md](docs/CLI.md#which-file-is-the-recipe).
+
 ## Watch mode
 
 ```bash

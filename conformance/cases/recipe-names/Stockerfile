@@ -1,0 +1,3 @@
+FROM scratch
+COPY ./src/a.txt /from-stockerfile.txt
+EXPORT /

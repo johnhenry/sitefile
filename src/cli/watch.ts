@@ -1,6 +1,7 @@
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { SitefileError } from '../errors.js';
+import { recipePath } from '../recipe.js';
 import { resolveStoreHome } from '../store.js';
 import { DEFAULT_POLL_MS, isIgnoredChange, RebuildScheduler, resolveReal, watchPaths } from '../watch.js';
 
@@ -16,6 +17,8 @@ export interface WatchLoopOptions {
   readonly context: string;
   /** `-f`: the Sitefile path (default `<context>/Sitefile`). */
   readonly sitefile?: string;
+  /** The recipe names searched when `sitefile` is not given (default: the process-wide list). */
+  readonly recipeNames?: readonly string[];
   /** `--build-arg-file` files; they are re-read on every build. */
   readonly argFiles: readonly string[];
   readonly build: () => Promise<BuildOutcome>;
@@ -66,7 +69,7 @@ export async function watchLoop(o: WatchLoopOptions): Promise<number> {
   const st = await fs.stat(o.context).catch(() => undefined);
   if (!st?.isDirectory()) throw new SitefileError('E_NOT_FOUND', `'${o.context}' is not a directory`);
   const root = await fs.realpath(o.context);
-  const sitefile = await resolveReal(o.sitefile ?? path.join(o.context, 'Sitefile'));
+  const sitefile = await resolveReal(o.sitefile ?? recipePath(o.context, o.recipeNames));
   const argFiles = await Promise.all(o.argFiles.map(resolveReal));
   // The build itself writes the export, Sitefile.lock and (maybe) the store; none of that is input.
   const ignored = new Set<string>([await resolveReal(resolveStoreHome()), path.join(path.dirname(sitefile), 'Sitefile.lock')]);

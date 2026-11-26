@@ -10,7 +10,7 @@
 //! links `CHECKLINKS --external` checks (reported as `checklinksExternal`).
 
 use crate::error::{Needs, Result, SourceSpan};
-use crate::executor::{load_program, BuildOptions, Loaded};
+use crate::executor::{load_program_with, BuildOptions, Loaded};
 use crate::language::ast::{ExportFormat, ImportKind};
 use crate::planner::{plan, ImportLocation, Operation, StageBase};
 use crate::refs::{parse_ref, registry_api_host, with_default_registry};
@@ -96,10 +96,11 @@ fn normalize(host: &str) -> String {
 }
 
 pub fn hosts(options: &BuildOptions) -> Result<HostsReport> {
-    let Loaded { program, .. } = load_program(
+    let Loaded { program, .. } = load_program_with(
         &options.context_dir,
         options.sitefile.as_deref(),
         options.label.as_deref(),
+        options.recipe_names.as_deref(),
     )?;
     let p = plan(&program, &options.build_args)?;
     if let Some(w) = &options.on_warning {

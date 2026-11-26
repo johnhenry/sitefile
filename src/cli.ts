@@ -2,6 +2,7 @@
 import { parseArgs } from 'node:util';
 import path from 'node:path';
 import { errorJson, SitefileError, isSitefileError } from './errors.js';
+import { findRecipeName, recipeNames } from './recipe.js';
 import { build, buildToDirectory, checkPlanPins, lintBuild, planBuild, sitefileCompression, type BuildOptions } from './executor.js';
 import { LINT_RULES } from './lint.js';
 import { compressionFromExtension, defaultOutName, formatFromExtension } from './export-formats.js';
@@ -368,7 +369,7 @@ export async function main(
     const options: BuildOptions = {
       contextDir: context,
       ...(file ? { sitefile: file } : {}),
-      ...(fetched ? { label: o.file ?? 'Sitefile' } : {}),
+      ...(fetched ? { label: o.file ?? findRecipeName(context) ?? recipeNames()[0]! } : {}),
       ...(o.target !== undefined ? { target: o.target } : {}),
       buildArgs,
       ...(secrets.size ? { secrets } : {}),
@@ -437,7 +438,7 @@ export async function main(
           labels,
           gitLabels: !!o['git-labels'],
           attest,
-          build: { contextDir: context, ...(file ? { sitefile: file } : {}), ...(fetched ? { label: o.file ?? 'Sitefile' } : {}), buildArgs },
+          build: { contextDir: context, ...(file ? { sitefile: file } : {}), ...(fetched ? { label: o.file ?? findRecipeName(context) ?? recipeNames()[0]! } : {}), buildArgs },
         };
         await remoteCache?.load();
         const dictionaryFrom = await previousBuild(o['experimental-dictionary']);
